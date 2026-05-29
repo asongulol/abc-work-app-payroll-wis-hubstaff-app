@@ -497,6 +497,15 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     if(typeof onSaved==="function") onSaved();
     refreshLocal();
   };
+  // C2 — before/after audit. Build a {field:{from,to}} object for fields that
+  // actually changed, so audit_log.detail records the prior value, not just the
+  // new one (makes a rate/recipient/method change replayable in a dispute).
+  const auditDiff=(oldObj,newObj,fields)=>{
+    const d={};
+    fields.forEach(k=>{ const a=(oldObj?.[k]??null), b=(newObj?.[k]??null);
+      if(String(a===null?"":a)!==String(b===null?"":b)) d[k]={from:a,to:b}; });
+    return d;
+  };
   const [recips,setRecips]=useState(Array.isArray(w.wise_recipients)?w.wise_recipients:[]);
   const [defId,setDefId]=useState(w.wise_recipient_id||null);
   // The Wise UUID used by the manual Batch Payments CSV (recipientId column).
@@ -605,14 +614,31 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   }
 
   async function savePayMethod(val){
+    // Capture the prior method for the audit trail (payment-routing change).
+    const {data:prev}=await client.from("workers").select("payout_method").eq("id",w.id).single();
     setPayMethod(val);
     const {error}=await client.from("workers").update({payout_method: val||null}).eq("id",w.id);
     if(error){ setSavedMsg("Error: "+error.message); return; }
     setSavedMsg("Payout method saved.");
+    logEvent(client,{company_id:r.company_id,action:"edit_contractor",
+      entity:`${f.first_name} ${f.last_name}`,
+      detail:{kind:"payout_method", payout_method:{from:prev?.payout_method??null, to:val||null}}});
     reportBilling(`payout method → ${val||"(none)"}`);
     notifySaved();
   }
   async function saveDetails(){
+    // Diff the worker fields against the values present when the modal opened
+    // (w) and the link fields against r, so the audit records what changed.
+    const wDiff=auditDiff(w,{
+      first_name:f.first_name, middle_name:f.middle_name||null, last_name:f.last_name,
+      email:f.email||null, mobile:f.mobile||null, ph_address:f.ph_address||null,
+      hire_date:f.hire_date||null, date_of_birth:f.date_of_birth||null,
+      health_allowance_eligible:f.health_allowance_eligible,
+      thirteenth_month_eligible:f.thirteenth_month_eligible,
+    },["first_name","middle_name","last_name","email","mobile","ph_address","hire_date",
+       "date_of_birth","health_allowance_eligible","thirteenth_month_eligible"]);
+    const linkDiff=auditDiff({contract:r.contract,role:r.role,hubstaff_name:r.hubstaff_name},
+      {contract,role:role||null,hubstaff_name:hubName||null},["contract","role","hubstaff_name"]);
     const {error:e1}=await client.from("workers").update({
       first_name:f.first_name, middle_name:f.middle_name||null, last_name:f.last_name, email:f.email||null, mobile:f.mobile||null,
       ph_address:f.ph_address||null, hire_date:f.hire_date||null, date_of_birth:f.date_of_birth||null,
@@ -626,7 +652,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     }
     if(e1||e2){setSavedMsg("Error: "+((e1||e2).message));return;}
     logEvent(client,{company_id:r.company_id,action:"edit_contractor",
-      entity:`${f.first_name} ${f.last_name}`,detail:{contract,role}});
+      entity:`${f.first_name} ${f.last_name}`,detail:{changed:{...wDiff,...linkDiff}}});
     setSavedMsg("Details saved.");
     notifySaved();
   }
@@ -667,8 +693,12 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
       worker_id:w.id, company_id:r.company_id, amount_php:amt,
       period_basis:"semi_monthly", effective_start:rateEff});
     if(error){setSavedMsg("Rate error: "+error.message);return;}
+    // Prior rate = the most recent rate row before this one (rateHistory is
+    // sorted newest-first). Records the rate change as from→to for audit.
+    const priorRate=Array.isArray(rateHistory)&&rateHistory[0]?Number(rateHistory[0].amount_php):null;
     logEvent(client,{company_id:r.company_id,action:"set_rate",
-      entity:`${f.first_name} ${f.last_name}`,detail:{amount_php:amt,effective_start:rateEff}});
+      entity:`${f.first_name} ${f.last_name}`,
+      detail:{amount_php:{from:priorRate,to:amt},effective_start:rateEff}});
     setSavedMsg(`Rate set to ₱${amt.toLocaleString()} from ${rateEff}.`);
     reportBilling(`rate → ₱${amt.toLocaleString()} from ${rateEff}`);
     loadRateHistory();
@@ -676,10 +706,15 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   }
 
   async function persist(nextRecips,nextDef){
+    // Capture prior default recipient id (payment-routing change) for audit.
+    const {data:prev}=await client.from("workers").select("wise_recipient_id").eq("id",w.id).single();
     const {error}=await client.from("workers")
       .update({wise_recipients:nextRecips, wise_recipient_id:nextDef}).eq("id",w.id);
     if(error){ setSavedMsg("Error: "+error.message); return; }
     setSavedMsg("Saved.");
+    logEvent(client,{company_id:r.company_id,action:"edit_contractor",
+      entity:`${f.first_name} ${f.last_name}`,
+      detail:{kind:"wise_recipient_default", default_recipient_id:{from:prev?.wise_recipient_id??null,to:nextDef??null}}});
     reportBilling(`Wise recipient (default #${nextDef||"—"})`);
     notifySaved();
   }
@@ -699,11 +734,12 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   function makeDefault(id){ setDefId(id); persist(recips,id); }
   async function persistUuid(){
     const v=(uuidDraft||"").trim()||null;
+    const {data:prev}=await client.from("workers").select("wise_recipient_uuid").eq("id",w.id).single();
     const {error}=await client.from("workers").update({wise_recipient_uuid:v}).eq("id",w.id);
     if(error){ setSavedMsg("Error: "+error.message); return; }
     setDefUuid(v||""); setSavedMsg(v?"Saved Wise recipient UUID.":"Cleared Wise recipient UUID.");
     logEvent(client,{company_id:r.company_id,action:"set_wise_recipient_uuid",
-      entity:`${f.first_name} ${f.last_name}`,detail:{uuid:v}});
+      entity:`${f.first_name} ${f.last_name}`,detail:{uuid:{from:prev?.wise_recipient_uuid??null,to:v}}});
     reportBilling(v?`Wise recipient UUID set`:`Wise recipient UUID cleared`);
     notifySaved();
   }
@@ -6437,15 +6473,32 @@ function AuditLog({client,companyId,consolidated}){
 function summarizeDetail(d){
   if(!d) return "";
   const parts=[];
+  // C2 — render before/after diffs. A value shaped {from,to} prints as
+  // "from → to"; the `changed` object (from saveDetails) lists each field.
+  const fmtVal=v=> v===null||v===undefined||v===""?"∅":String(v);
+  const isDiff=v=> v && typeof v==="object" && ("from" in v) && ("to" in v);
+  const fmtDiff=(label,v)=> `${label}: ${fmtVal(v.from)} → ${fmtVal(v.to)}`;
+  if(d.changed && typeof d.changed==="object"){
+    const ks=Object.keys(d.changed);
+    if(ks.length) parts.push(ks.map(k=>fmtDiff(k,d.changed[k])).join("; "));
+    else parts.push("no field changes");
+  }
+  // Top-level {from,to} fields (rate amount_php, payout_method, uuid, etc.)
+  ["amount_php","payout_method","uuid","default_recipient_id"].forEach(k=>{
+    if(isDiff(d[k])) parts.push(fmtDiff(k,d[k]));
+  });
+  if(d.kind && !d.changed) parts.push(d.kind);
   if(d.contractors!=null) parts.push(`${Array.isArray(d.contractors)?d.contractors.length:d.contractors} contractor(s)`);
   if(d.rows!=null) parts.push(`${d.rows} rows`);
   if(d.entries!=null) parts.push(`${d.entries} entries`);
   if(d.count!=null) parts.push(`${d.count} item(s)`);
   if(d.total_net!=null) parts.push(`net ₱${Number(d.total_net).toLocaleString()}`);
+  if(d.enabled!=null) parts.push(d.enabled?"enabled":"disabled");
   if(d.mode) parts.push(d.mode);
-  if(d.hours!=null) parts.push(`${d.hours}h`);
+  if(d.hours!=null && !isDiff(d.hours)) parts.push(`${d.hours}h`);
   if(d.overrides && d.overrides.length) parts.push(`${d.overrides.length} override(s)`);
   if(Array.isArray(d.contractors) && d.contractors.length<=6) parts.push("("+d.contractors.join(", ")+")");
+  if(d.reason) parts.push(`reason: ${d.reason}`);
   return parts.join(" · ");
 }
 
