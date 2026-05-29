@@ -57,12 +57,19 @@ Set these once via `supabase secrets set`:
 
 ```bash
 supabase secrets set WISE_API_TOKEN=<your-wise-token>
-supabase secrets set WISE_PROFILE_ID=<your-numeric-profile-id>
-supabase secrets set HUBSTAFF_API_TOKEN=<your-hubstaff-token>
-supabase secrets set HUBSTAFF_ORG_ID=<your-numeric-org-id>
+supabase secrets set HUBSTAFF_REFRESH_TOKEN=<your-hubstaff-refresh-token>
+```
+
+Optional:
+
+```bash
+# Override Wise API base (e.g. for sandbox testing)
+supabase secrets set WISE_API_BASE=https://api.sandbox.transferwise.tech
 ```
 
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are auto-injected by Supabase — do NOT try to set them as secrets.
+
+Wise profile ID is looked up dynamically by `wise-payouts` via `/v1/profiles`. Hubstaff org ID is hardcoded (see `hubstaff-sync/index.ts`).
 
 ## Schema
 
