@@ -135,7 +135,24 @@ async function draftOne(token: string, profileId: number, item: any) {
       details: { reference: "Payroll", transferPurpose: "verification.transfers.purpose.pay.bills" },
     }),
   });
-  if (!tRes.ok) return { worker_id: item.worker_id, status: "failed", error: `transfer ${tRes.status}: ${await tRes.text()}` };
+  if (!tRes.ok) {
+    const errText = await tRes.text();
+    // C5 — Wisetag / non-bank-account recipient detection. When the stored
+    // recipient_id is a Wisetag (balance) contact rather than a bank-account
+    // recipient, /v1/transfers rejects it (typically 422/403 referencing the
+    // target account / recipient type). Surface a SPECIFIC, actionable status
+    // instead of a raw error so the UI can say "pay via Manual CSV" rather
+    // than leaving a half-drafted row that would fail at funding.
+    const looksWisetag = (tRes.status === 422 || tRes.status === 403) &&
+      /target.?account|recipient|not.*(bank|active)|balance/i.test(errText);
+    if (looksWisetag) {
+      return { worker_id: item.worker_id, status: "wisetag_unsupported",
+        error: "Recipient is a Wisetag / Wise-balance contact, not a bank-account recipient — "+
+               "the API draft path can't use it. Pay this contractor via the Manual Wise batch CSV.",
+        recipient_id: item.recipient_id };
+    }
+    return { worker_id: item.worker_id, status: "failed", error: `transfer ${tRes.status}: ${errText}` };
+  }
   const transfer = await tRes.json();
 
   // IMPORTANT: we stop here. No POST .../payments. Money has NOT moved.
@@ -268,29 +285,54 @@ Deno.serve(async (req) => {
       }
 
       // 3b. Success path. Store funded_at + funded_by; clear any prior
-      //     fund_error. paid_at is NOT set here — paid_at is "Wise confirmed
-      //     sent", which is set by the Reconcile action when /v1/transfers
-      //     reports outgoing_payment_sent. Funded != sent, so we keep them
-      //     distinct (the lifecycle is: drafted → funded → sent → locked).
+      //     fund_error.
       const fundedAt = new Date().toISOString();
+      const patch: Record<string, unknown> = {
+        funded_at: fundedAt,
+        funded_by: actor,
+        fund_error: null,
+      };
+
+      // H8 — auto-reconcile after fund: immediately re-read the transfer's
+      // status so the UI doesn't lag in "drafted" until a separate Reconcile
+      // pass runs. If Wise already reports a terminal-sent state, set
+      // paid_at (to the real sent/funded date) + status='sent' in the SAME
+      // write. Best-effort: a probe failure just leaves the row funded (the
+      // normal Reconcile will catch up later).
+      let wiseStatus = fJson?.status ?? null;
+      let autoSent = false;
+      try {
+        const dates = await fetchWiseDates(token, { id: transferId });
+        const sRes = await fetch(`${BASE}/v1/transfers/${transferId}`, { headers: authHeaders(token) });
+        if (sRes.ok) {
+          const tdetail = await sRes.json();
+          wiseStatus = tdetail.status ?? wiseStatus;
+          const sentStates = new Set(["outgoing_payment_sent", "completed", "sent"]);
+          const sentIso = dates.dateSent || dates.dateFunded || dates.created || null;
+          if (wiseStatus && sentStates.has(wiseStatus) && sentIso) {
+            patch.paid_at = sentIso;
+            patch.status = "sent";
+            patch.wise_dates = dates;
+            autoSent = true;
+          }
+        }
+      } catch (_e) { /* best-effort; leave row funded for the next Reconcile */ }
+
       let dbWriteOk = true;
       if (paymentId) {
         const u = await fetch(`${supaUrl}/rest/v1/payments?id=eq.${paymentId}`, {
           method: "PATCH",
           headers: { ...restHeaders, "Prefer": "return=minimal" },
-          body: JSON.stringify({
-            funded_at: fundedAt,
-            funded_by: actor,
-            fund_error: null,
-          }),
+          body: JSON.stringify(patch),
         });
         dbWriteOk = u.ok;
       }
       return json({
         ok: true,
         funded_at: fundedAt,
-        wise_status: fJson?.status ?? null,
+        wise_status: wiseStatus,
         wise_type:   fJson?.type   ?? null,
+        auto_sent:   autoSent,
         db_write_ok: dbWriteOk,
       });
     }
@@ -322,7 +364,17 @@ Deno.serve(async (req) => {
               customerTransactionId: crypto.randomUUID(),
               details: { reference: "Payroll", transferPurpose: "verification.transfers.purpose.pay.bills" } }),
           });
-          if (!tRes.ok) { results.push({ worker_id: item.worker_id, status: "failed", error: `transfer ${tRes.status}: ${await tRes.text()}` }); continue; }
+          if (!tRes.ok) {
+            const errText = await tRes.text();
+            // C5 — Wisetag / non-bank-account recipient (see draftOne).
+            const looksWisetag = (tRes.status === 422 || tRes.status === 403) &&
+              /target.?account|recipient|not.*(bank|active)|balance/i.test(errText);
+            results.push(looksWisetag
+              ? { worker_id: item.worker_id, status: "wisetag_unsupported", recipient_id: item.recipient_id,
+                  error: "Wisetag / Wise-balance recipient — can't API-draft; pay via Manual CSV." }
+              : { worker_id: item.worker_id, status: "failed", error: `transfer ${tRes.status}: ${errText}` });
+            continue;
+          }
           const t = await tRes.json();
           results.push({ worker_id: item.worker_id, transfer_id: t.id, fx_rate: quote.rate ?? 1, status: "drafted" });
         } catch (e) { results.push({ worker_id: item.worker_id, status: "failed", error: String(e?.message ?? e) }); }

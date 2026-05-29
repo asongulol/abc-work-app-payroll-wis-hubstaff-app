@@ -4687,7 +4687,7 @@ function UtilizationReport({client,companyId,consolidated}){
 // ============================ WISE PAYOUTS ===================================
 // Drafts Wise transfers for a LOCKED period and writes back transfer id + FX.
 // It NEVER funds (moves money) — you fund the batch in Wise directly.
-function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillingDirty,openContractor,apiPayoutsEnabled}){
+function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillingDirty,openContractor,apiPayoutsEnabled,toggleApiPayouts}){
   const gate = (label)=> typeof confirmBillingDirty==="function" ? confirmBillingDirty(label) : true;
   const [periods,setPeriods]=useState([]);
   const [periodId,setPeriodId]=useState("");
@@ -4921,6 +4921,7 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
       if(error)throw new Error(error.message||"Edge function error");
       if(data&&data.error)throw new Error(data.error);
       let ok=0,fail=0;
+      const wisetag=[];   // contractors rejected as Wisetag/balance recipients (C5)
       for(const res of (data.results||[])){
         if(res.transfer_id){
           await client.from("payments").update({
@@ -4930,11 +4931,17 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
           const row=selected.find(r=>r.worker_id===res.worker_id);
           if(row) await client.from("workers").update({wise_recipient_id:row.recipient_id}).eq("id",res.worker_id);
           ok++;
+        } else if(res.status==="wisetag_unsupported"){
+          const row=selected.find(r=>r.worker_id===res.worker_id);
+          wisetag.push(row?row.name:String(res.worker_id).slice(0,8));
         } else fail++;
       }
       setBatchId(data.batch_group_id);
-      setMsg(`Created Wise batch with ${ok} transfer(s)${fail?`, ${fail} failed`:""}. `+
-        `Batch group id: ${data.batch_group_id}. NO money has moved — open Wise to review, complete, and FUND this batch.`);
+      const wisetagNote=wisetag.length
+        ? ` ${wisetag.length} Wisetag contractor(s) skipped — pay via Manual CSV: ${wisetag.join(", ")}.`
+        : "";
+      setMsg(`Created Wise batch with ${ok} transfer(s)${fail?`, ${fail} failed`:""}.`+wisetagNote+
+        ` Batch group id: ${data.batch_group_id}. NO money has moved — open Wise to review, complete, and FUND this batch.`);
       loadBatch(periodId);
     }catch(ex){
       setMsg("Wise batch failed: "+ex.message+
@@ -5108,9 +5115,16 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
                 {fundBusyId==="__bulk__" ? `Funding…` : `Fund ${drafted.length} drafted (${money(draftedTotal,"PHP")})`}
               </button>
             )}
-            {apiPayoutsEnabled && (
-              <span className="muted" style={{fontSize:11}}>
-                API payouts <b style={{color:"#166534"}}>ENABLED</b> for this company.
+            {toggleApiPayouts && !consolidated && companyId && (
+              <span style={{fontSize:11,display:"inline-flex",gap:6,alignItems:"center",marginLeft:"auto"}}>
+                API payouts {apiPayoutsEnabled
+                  ? <b style={{color:"#166534"}}>ENABLED</b>
+                  : <b className="muted">off</b>}
+                <button className="btn ghost sm" style={{fontSize:11,padding:"2px 8px",
+                  ...(apiPayoutsEnabled?{borderColor:"#b91c1c",color:"#b91c1c"}:{})}}
+                  onClick={async ()=>{ const r=await toggleApiPayouts(!apiPayoutsEnabled); if(r) setMsg(r); }}>
+                  {apiPayoutsEnabled?"Disable…":"Enable API payouts…"}
+                </button>
               </span>
             )}
           </div>
@@ -5132,7 +5146,7 @@ function downloadCSV(filename, rowsOfArrays){
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
-function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirty,openContractor,apiPayoutsEnabled}){
+function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirty,openContractor,apiPayoutsEnabled,toggleApiPayouts}){
   const gate = (label)=> typeof confirmBillingDirty==="function" ? confirmBillingDirty(label) : true;
   const [periods,setPeriods]=useState([]);
   const [periodId,setPeriodId]=useState("");
@@ -6478,7 +6492,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
           <h3 style={{margin:"0 0 4px"}}>3 · Automatic Wise API draft</h3>
           <p className="sub">Draft the Wise transfers directly via the API (drafts only — you fund in Wise).
             Lets you edit recipients/amounts per person and create one batch.</p>
-          <WisePayouts client={client} companyId={companyId} consolidated={consolidated} presetPeriodId={periodId} confirmBillingDirty={confirmBillingDirty} openContractor={openContractor} apiPayoutsEnabled={apiPayoutsEnabled}/>
+          <WisePayouts client={client} companyId={companyId} consolidated={consolidated} presetPeriodId={periodId} confirmBillingDirty={confirmBillingDirty} openContractor={openContractor} apiPayoutsEnabled={apiPayoutsEnabled} toggleApiPayouts={toggleApiPayouts}/>
         </div>
       </>}
     </div>
@@ -6487,7 +6501,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
 
 // ============================ AUDIT LOG ======================================
 const AUDIT_LABELS={import:"Import",delete_import:"Delete import",approve:"Approve time",
-  reject:"Reject time",lock:"Lock period",unlock_period:"Unlock period",mark_paid:"Mark paid",mark_unpaid:"Mark unpaid",manual_hours:"Manual hours",api_payout:"API payout (fund)",
+  reject:"Reject time",lock:"Lock period",unlock_period:"Unlock period",mark_paid:"Mark paid",mark_unpaid:"Mark unpaid",manual_hours:"Manual hours",api_payout:"API payout (fund)",api_payouts_flag:"API payouts flag",
   wise_recipient_sync:"Wise recipient sync",
   wise_lock_release:"Unlock Wise-locked row",
   wise_lock_warning:"Edit attempted on locked row",
@@ -6608,6 +6622,31 @@ function App() {
     sb.client.from("companies").select("api_payouts_enabled").eq("id", companyId).single()
       .then(({data}) => setApiPayoutsEnabled(!!data?.api_payouts_enabled));
   }, [sb.client, companyId, consolidated]);
+  // H7 — flip the per-company API-payout flag from the UI (was SQL-only).
+  // Real-money gate, so it requires a typed ENABLE/DISABLE confirmation and
+  // writes an audit row. Returns a status string for the caller to surface.
+  const toggleApiPayouts = React.useCallback(async (next)=>{
+    if (!sb.client || !companyId || consolidated) return "Pick a single company first.";
+    const word = next ? "ENABLE" : "DISABLE";
+    const typed = window.prompt(
+      `${next?"ENABLE":"DISABLE"} API payouts for this company?\n\n`+
+      (next
+        ? "When ENABLED, the Process & Pay screen can fund Wise transfers directly "+
+          "via the API — this moves REAL MONEY out of your Wise balance (per-row and "+
+          "bulk Fund buttons appear). Each fund still has its own confirmation.\n\n"
+        : "When DISABLED, the Fund buttons disappear; payouts go back to draft-only "+
+          "(money moves via the Manual Wise batch CSV).\n\n")+
+      `Type ${word} to confirm:`);
+    if (typed==null) return null;                       // cancelled
+    if (typed.trim().toUpperCase()!==word) return `Not ${word.toLowerCase()}d — confirmation text didn't match.`;
+    const { error } = await sb.client.from("companies")
+      .update({ api_payouts_enabled: next }).eq("id", companyId);
+    if (error) return "Couldn't update flag: "+error.message;
+    setApiPayoutsEnabled(next);
+    logEvent(sb.client, { company_id:companyId, action:"api_payouts_flag",
+      entity:"company", detail:{ enabled:next } });
+    return `API payouts ${next?"ENABLED":"DISABLED"} for this company.`;
+  }, [sb.client, companyId, consolidated]);
 
   // Session-scoped "billing dirty" tracker: ProfileModal pushes a record into
   // billingDirty whenever a billing-relevant field (rate, payout method, Wise
@@ -6691,7 +6730,7 @@ function App() {
         <div style={{display:tab==="time"?"block":"none"}}><TimeImport {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="imports"?"block":"none"}}><DeleteImports {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="payroll"?"block":"none"}}><Payroll {...{client:sb.client,companyId,consolidated,confirmBillingDirty,openContractor}} /></div>
-        <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="process",confirmBillingDirty,openContractor,apiPayoutsEnabled}} /></div>
+        <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="process",confirmBillingDirty,openContractor,apiPayoutsEnabled,toggleApiPayouts}} /></div>
         <div style={{display:tab==="documents"?"block":"none"}}><Documents {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId,consolidated}} /></div>
