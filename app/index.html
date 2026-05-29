@@ -5166,12 +5166,13 @@ function PullRecipients({client,companyId,consolidated}){
     <div className="card" style={{background:"var(--accent-soft)",borderColor:"#bcd"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
         <div>
-          <h3 style={{margin:0}}>Pull recipients from Wise</h3>
+          <h3 style={{margin:0}}>Pull recipient IDs from Wise</h3>
           <p className="sub" style={{margin:"2px 0 0"}}>Read-only. Lists your saved Wise recipients and matches each to a
-            contractor (by stored Wise ID first, then name). No money moves.</p>
+            contractor (by stored Wise ID first, then name), then stores the numeric <b>recipient ID</b> on the
+            matched contractor. Doesn't pull bank details or the batch-CSV UUID. No money moves.</p>
         </div>
         <button className="btn" disabled={recBusy||!companyId} onClick={pullWiseRecipients}>
-          {recBusy?"Pulling…":"Pull from Wise"}</button>
+          {recBusy?"Pulling…":"Pull IDs from Wise"}</button>
       </div>
       {recSync && (()=>{ const toSave=recSync.preview.filter(p=>p.matched&&!p.already);
         return (
@@ -6764,7 +6765,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
                 </React.Fragment>
               ))}.
               {" "}Click a name above to open the profile and paste the UUID into the <b>"Wise recipient UUID"</b> field — get UUIDs from <i>Wise → Batch payments → Download all templates</i>.
-              {" "}<span className="muted" style={{fontSize:11}}>("Pull recipients from Wise" can't fix this — the Wise API doesn't return UUIDs, only the templates CSV does.)</span>
+              {" "}<span className="muted" style={{fontSize:11}}>("Pull IDs from Wise" can't fix this — the Wise API doesn't return UUIDs, only the templates CSV does.)</span>
             </Banner>}
           <div className="row" style={{alignItems:"flex-end",gap:12,marginBottom:8}}>
             <div className="field"><label style={{fontSize:12}}>Source currency</label>
