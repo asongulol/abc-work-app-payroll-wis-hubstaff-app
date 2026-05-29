@@ -5418,6 +5418,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
   // Default reaches for the channel with the most rows so the most useful view
   // is shown first; 'all' is the consolidated fallback.
   const [payTab,setPayTab]=useState("wise");
+  const [wiseDialog,setWiseDialog]=useState(false);   // step-by-step Wise API payout dialog
   async function runUndo(){
     if(!undo)return;
     const fn=undo.fn; setUndo(null); setBusy(true); setMsg("");
@@ -6479,6 +6480,10 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
             </div>
             <div className="no-print" style={{display:"flex",gap:8,flexWrap:"wrap"}}>
               <button className="btn ghost" onClick={()=>window.print()}>Print</button>
+              <button className="btn ghost" disabled={busy} onClick={downloadWiseBatch}>Download Wise File</button>
+              <button className="btn" disabled={busy||!wiseRows.length} onClick={()=>setWiseDialog(true)}
+                title="Step-by-step Wise API payout (review → confirm → fund). Funding is not enabled yet.">
+                Pay via Wise API</button>
               <button className="btn ghost" disabled={busy} onClick={checkWiseStatus}>Check Wise status</button>
               {rows.some(r=>r.status!=="sent") &&
                 <button className="btn" disabled={busy}
@@ -6751,6 +6756,95 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
           <WisePayouts client={client} companyId={companyId} consolidated={consolidated} presetPeriodId={periodId} confirmBillingDirty={confirmBillingDirty} openContractor={openContractor}/>
         </div>
       </>}
+      {wiseDialog && <WiseApiDialog
+        rows={wiseRows} total={wiseRows.reduce((s,r)=>s+(r.net||0),0)}
+        period={pers} onClose={()=>setWiseDialog(false)} />}
+    </div>
+  );
+}
+
+// Step-by-step Wise API payout dialog. Walks: 1) review recipients,
+// 2) confirm amounts, 3) fund. Funding is DISABLED for now (the real-money
+// fund path lives on the api-payouts branch, untested) — the final step
+// explains that and points to Download Wise File / the API draft instead.
+function WiseApiDialog({ rows, total, period, onClose }){
+  const [step,setStep]=useState(1);
+  const missing=rows.filter(r=>!r.recipient_id && !r.recipient_uuid);
+  const ready=rows.filter(r=>r.recipient_id || r.recipient_uuid);
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
+        <button className="x" onClick={onClose}>×</button>
+        <h2 style={{marginBottom:2}}>Pay via Wise API</h2>
+        <p className="sub" style={{marginTop:0}}>
+          {period?.period_start} → {period?.period_end} · Step {step} of 3
+        </p>
+        {/* step rail */}
+        <div style={{display:"flex",gap:6,margin:"8px 0 14px"}}>
+          {["Review recipients","Confirm amounts","Fund"].map((lbl,i)=>(
+            <div key={i} style={{flex:1,padding:"4px 8px",borderRadius:4,fontSize:12,textAlign:"center",
+              background: step===i+1?"var(--accent)":"#f1f5f9", color: step===i+1?"#fff":"var(--muted)"}}>
+              {i+1}. {lbl}</div>
+          ))}
+        </div>
+
+        {step===1 && (
+          <div>
+            <p style={{fontSize:13}}>{ready.length} of {rows.length} Wise contractor(s) have a recipient on file.</p>
+            {missing.length>0 && (
+              <div className="banner" style={{background:"#fef2f2",borderColor:"#fecaca",color:"#b91c1c",marginBottom:8}}>
+                {missing.length} missing a recipient — they'll be skipped: {missing.map(r=>r.name).join(", ")}.
+                Set their Wise recipient on the Contractors tab.
+              </div>
+            )}
+            <div className="table-scroll" style={{maxHeight:240}}>
+              <table style={{fontSize:13}}>
+                <thead><tr><th>Contractor</th><th>Recipient</th></tr></thead>
+                <tbody>{ready.map(r=>(
+                  <tr key={r.worker_id}><td>{r.name}</td>
+                    <td className="muted">{r.recipient_id?`#${r.recipient_id}`:`uuid ${String(r.recipient_uuid).slice(0,8)}…`}</td></tr>
+                ))}</tbody>
+              </table>
+            </div>
+          </div>
+        )}
+        {step===2 && (
+          <div>
+            <p style={{fontSize:13}}>Confirm the amounts to send (PHP). Total <b>{money(total,"PHP")}</b>.</p>
+            <div className="table-scroll" style={{maxHeight:240}}>
+              <table style={{fontSize:13}}>
+                <thead><tr><th>Contractor</th><th>Amount ₱</th></tr></thead>
+                <tbody>{ready.map(r=>(
+                  <tr key={r.worker_id}><td>{r.name}</td>
+                    <td><b>{Number(r.net||0).toLocaleString(undefined,{minimumFractionDigits:2})}</b></td></tr>
+                ))}</tbody>
+              </table>
+            </div>
+          </div>
+        )}
+        {step===3 && (
+          <div>
+            <div className="banner" style={{background:"#fffbeb",borderColor:"#fde68a",color:"#92400e"}}>
+              <b>API funding isn't enabled yet.</b> The automatic fund step (moving money out of your
+              Wise balance via the API) is built but turned off pending testing. For now, use
+              <b> Download Wise File</b> and upload it in Wise → Batch payments, or the
+              <b> Automatic Wise API draft</b> below (drafts only — you fund in Wise).
+            </div>
+            <p className="muted" style={{fontSize:12,marginTop:8}}>
+              {ready.length} contractor(s) · {money(total,"PHP")} would be funded when this is enabled.
+            </p>
+          </div>
+        )}
+
+        <div style={{display:"flex",justifyContent:"space-between",marginTop:14}}>
+          <button className="btn ghost" onClick={step===1?onClose:()=>setStep(s=>s-1)}>
+            {step===1?"Cancel":"Back"}</button>
+          {step<3
+            ? <button className="btn" onClick={()=>setStep(s=>s+1)}>Next</button>
+            : <button className="btn" disabled title="Funding not enabled yet"
+                style={{opacity:.6,cursor:"not-allowed"}}>Fund (disabled)</button>}
+        </div>
+      </div>
     </div>
   );
 }
