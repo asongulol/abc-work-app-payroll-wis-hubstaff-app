@@ -3650,8 +3650,16 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
             </tr></thead>
             <tbody>
               {sfRows.map(r=>(
-                <tr key={r.worker_id} style={r.rate==null?{background:"var(--warn-soft)"}:{}}>
-                  <td><b>{r.name}</b></td>
+                <tr key={r.worker_id} style={
+                  r.inactive?{background:"#fef2f2"}:r.rate==null?{background:"var(--warn-soft)"}:{}}>
+                  <td>
+                    <b style={r.inactive?{textDecoration:"line-through"}:{}}>{r.name}</b>
+                    {r.inactive && <span className="tip-wrap" tabIndex={0}
+                      style={{marginLeft:6,fontSize:10,verticalAlign:"middle",cursor:"help"}}>
+                      <span className="pill" style={{background:"#fef2f2",color:"#b91c1c"}}>🚫 inactive</span>
+                      <span className="tip-body">This contractor (or their company link) is marked inactive. They're still included in this calculation so you can pay a final period — but Lock &amp; Save will ask you to confirm. If this isn't a final period, reactivate them on the Contractors tab and recalculate.</span>
+                    </span>}
+                  </td>
                   <td>{r.worked}</td><td>{r.expected}</td><td>{(r.ratio*100).toFixed(0)}%</td>
                   <td>{r.rate==null?<span className="muted">no rate</span>:r.rate.toLocaleString()}</td>
                   <td>
@@ -5246,6 +5254,29 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
     return { rows:out, errors };
   }
 
+  // Accept a name+amount fallback suggestion from the reconcile-unmatched list:
+  // backfill the CSV transfer_id onto the suggested worker's payment row. Only
+  // links a transfer id (no money moves); idempotent on re-accept.
+  const [csvAcceptBusy,setCsvAcceptBusy]=useState(null);
+  const [csvAccepted,setCsvAccepted]=useState({});
+  async function acceptCsvSuggestion(sKey,u){
+    if(!u?.suggest?.worker_id || !u?.transfer_id) return;
+    setCsvAcceptBusy(sKey); setMsg("");
+    try{
+      const {error}=await client.from("payments")
+        .update({ wise_transfer_id:String(u.transfer_id) })
+        .eq("pay_period_id",periodId).eq("worker_id",u.suggest.worker_id);
+      if(error) throw new Error(error.message);
+      logEvent(client,{ company_id:companyId, action:"wise_recipient_sync",
+        entity:`${u.suggest.name} → transfer ${u.transfer_id}`,
+        detail:{ kind:"csv_fallback_link", matched_by:"name+amount",
+                 csv_name:u.name, csv_recipient_uuid:u.recipient_uuid } });
+      setCsvAccepted(p=>({...p,[sKey]:true}));
+      setMsg(`Linked transfer ${u.transfer_id} to ${u.suggest.name} (name+amount fallback). Re-run a poll/reconcile to pull its status.`);
+    }catch(ex){ setMsg("Couldn't link suggestion: "+(ex.message||ex)); }
+    finally{ setCsvAcceptBusy(null); }
+  }
+
   async function onReconcileFile(e){
     const f=e.target.files && e.target.files[0]; if(!f) return;
     setBusy(true); setMsg(""); setReconResult(null);
@@ -5258,7 +5289,11 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
         setMsg("Couldn't read the Wise CSV — see details below.");
         return;
       }
-      // Index DB rows for this period by recipient UUID for fast lookup
+      // Index DB rows for this period by recipient UUID for fast lookup,
+      // plus name keys for a fallback when the CSV row's UUID doesn't match
+      // (missing/typo'd UUID, or paid via a different recipient). The fallback
+      // never auto-applies — it surfaces a suggested contractor for one-click
+      // accept in the UI.
       const byUuid=new Map();
       for(const r of (rows||[])){
         if(r.recipient_uuid) byUuid.set(r.recipient_uuid, r);
@@ -5267,6 +5302,15 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
       const variances=[];                       // { name, db_amount, wise_amount }
       const unmatched=[];                       // CSV rows that don't match anyone in this period
       const rowErrors=[];                       // CSV rows with api/user errors from Wise
+      // Fallback name+amount match against DB rows still missing a transfer_id.
+      const suggestMatch=(cr)=>{
+        if(!cr.name) return null;
+        const sk=nameKey(cr.name), lk=looseKey(cr.name);
+        const cands=(rows||[]).filter(r=>!r.transfer_id &&
+          (nameKey(r.name)===sk || looseKey(r.name)===lk) &&
+          (!(cr.amount>0) || Math.abs(cr.amount-Number(r.net||0))<=1.00));
+        return cands.length===1 ? cands[0] : null;   // only a UNIQUE match is safe to suggest
+      };
       for(const cr of parsedRows){
         if(cr.api_error || cr.user_error){
           rowErrors.push({ name:cr.name||cr.recipient_uuid, error:cr.api_error||cr.user_error });
@@ -5274,7 +5318,10 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
         }
         const match=byUuid.get(cr.recipient_uuid);
         if(!match){
-          unmatched.push({ recipient_uuid:cr.recipient_uuid, name:cr.name, amount:cr.amount });
+          const suggestion=suggestMatch(cr);
+          unmatched.push({ recipient_uuid:cr.recipient_uuid, name:cr.name, amount:cr.amount,
+            transfer_id:cr.transfer_id||null,
+            suggest: suggestion?{worker_id:suggestion.worker_id, name:suggestion.name, net:suggestion.net}:null });
           continue;
         }
         // Variance check: did Wise actually send the amount the DB recorded?
@@ -5767,10 +5814,30 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
                     period, recipient swap, or a manual addition in Wise).
                   </p>
                   <ul style={{margin:0,paddingLeft:18,fontSize:13}}>
-                    {reconResult.unmatched.slice(0,10).map((u,i)=>(
-                      <li key={i}>{u.name||"—"} <span className="muted">· uuid {String(u.recipient_uuid).slice(0,8)}…</span>
-                        {u.amount?` · ₱${u.amount.toLocaleString(undefined,{minimumFractionDigits:2})}`:""}</li>
-                    ))}
+                    {reconResult.unmatched.slice(0,10).map((u,i)=>{
+                      const sKey=u.suggest?`csvsug:${u.suggest.worker_id}:${u.transfer_id||u.recipient_uuid}`:null;
+                      const done=sKey&&csvAccepted[sKey];
+                      const inflight=sKey&&csvAcceptBusy===sKey;
+                      return (
+                      <li key={i} style={{marginBottom:u.suggest?6:0}}>
+                        {u.name||"—"} <span className="muted">· uuid {String(u.recipient_uuid).slice(0,8)}…</span>
+                        {u.amount?` · ₱${u.amount.toLocaleString(undefined,{minimumFractionDigits:2})}`:""}
+                        {u.suggest && (
+                          <div style={{marginTop:3,padding:"4px 8px",background:"#eff6ff",
+                            border:"1px solid #bfdbfe",borderRadius:4,display:"inline-flex",gap:8,
+                            alignItems:"center",flexWrap:"wrap"}}>
+                            <span style={{fontSize:12}}>Likely <b>{u.suggest.name}</b> (name + amount match, no UUID on file)</span>
+                            {done
+                              ? <span className="pill active" style={{fontSize:10}}>linked</span>
+                              : u.transfer_id
+                                ? <button className="btn ghost sm" disabled={!!csvAcceptBusy}
+                                    onClick={()=>acceptCsvSuggestion(sKey,u)}>
+                                    {inflight?"Linking…":`Accept & link to ${u.suggest.name}`}</button>
+                                : <span className="muted" style={{fontSize:11}}>(no transferId in CSV to link)</span>}
+                          </div>
+                        )}
+                      </li>
+                    );})}
                     {reconResult.unmatched.length>10 && <li className="muted">…and {reconResult.unmatched.length-10} more</li>}
                   </ul>
                 </div>
