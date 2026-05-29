@@ -724,26 +724,53 @@ Deno.serve(async (req) => {
       if (orphans.length) {
         const byPaymentId: Record<string, any> = {};
         for (const p of payments) byPaymentId[String(p.id)] = p;
-        for (const r of results) {
-          if (r.outcome !== "no_wise_transfer" && r.outcome !== "no_wise_transfer_in_window") continue;
+        const unmatchedResults = results.filter((r: any) =>
+          r.outcome === "no_wise_transfer" || r.outcome === "no_wise_transfer_in_window");
+
+        // Does orphan transfer t fit unmatched payment p (amount + window)?
+        const fitsPayment = (t: any, p: any) => {
+          const tt = new Date(t.created || t.createdAt || 0).getTime();
+          if (Math.abs(tt - dateMs(p)) > windowDays * dayMs) return false;
+          const a = Number(t.targetValue ?? t.targetAmount ?? 0);
+          return Math.abs(a - Number(p.net_php || 0)) <= 1.00;
+        };
+
+        // EXCLUSIVE ASSIGNMENT: count how many unmatched payments each orphan
+        // fits. An orphan that fits exactly one payment is a confident
+        // candidate (UI offers one-click link). An orphan that fits multiple
+        // payments (e.g. two contractors with the same amount in the window) is
+        // AMBIGUOUS — we still surface it, but flagged, so the UI forces an
+        // explicit pick + confirmation instead of a blind one-click link that
+        // could wire the transfer to the wrong contractor.
+        const orphanFitCount = new Map<string, number>();
+        for (const t of orphans) {
+          let n = 0;
+          for (const r of unmatchedResults) {
+            const p = byPaymentId[String(r.payment_id)];
+            if (p && fitsPayment(t, p)) n++;
+          }
+          orphanFitCount.set(String(t.id), n);
+        }
+
+        for (const r of unmatchedResults) {
           const p = byPaymentId[String(r.payment_id)];
           if (!p) continue;
-          const payTs = dateMs(p);
-          const dbAmt = Number(p.net_php || 0);
-          const fits = orphans.filter(t => {
-            const tt = new Date(t.created || t.createdAt || 0).getTime();
-            if (Math.abs(tt - payTs) > windowDays * dayMs) return false;
-            const a = Number(t.targetValue ?? t.targetAmount ?? 0);
-            return Math.abs(a - dbAmt) <= 1.00;
-          }).slice(0, 5);
+          const fits = orphans.filter(t => fitsPayment(t, p)).slice(0, 5);
           if (fits.length) {
-            r.candidate_orphan_transfers = fits.map(t => ({
-              transfer_id: String(t.id),
-              target_account: String(t.targetAccount ?? ""),
-              target_value: Number(t.targetValue ?? t.targetAmount ?? 0),
-              created: t.created || t.createdAt || null,
-              wise_status: t.status || null,
-            }));
+            r.candidate_orphan_transfers = fits.map(t => {
+              const sharedCount = orphanFitCount.get(String(t.id)) || 1;
+              return {
+                transfer_id: String(t.id),
+                target_account: String(t.targetAccount ?? ""),
+                target_value: Number(t.targetValue ?? t.targetAmount ?? 0),
+                created: t.created || t.createdAt || null,
+                wise_status: t.status || null,
+                // shared_with_n_payments > 1 ⇒ ambiguous; UI must require an
+                // explicit confirmation before linking.
+                shared_with_n_payments: sharedCount,
+                ambiguous: sharedCount > 1,
+              };
+            });
           }
         }
       }

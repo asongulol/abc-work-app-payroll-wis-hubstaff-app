@@ -5377,11 +5377,44 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
   // that's no longer the default. Appends without disturbing wise_recipient_id.
   const [linkBusy,setLinkBusy]=useState(null);  // `${worker_id}:${target_account}` while in flight
   const [linkedKeys,setLinkedKeys]=useState({});
-  async function linkOrphanRecipient(workerId, workerName, targetAccount, transferId){
+  async function linkOrphanRecipient(workerId, workerName, targetAccount, transferId, opts){
     if(!workerId||!targetAccount)return;
     const key=`${workerId}:${targetAccount}`;
+    const ambiguous=!!(opts&&opts.ambiguous);
     setLinkBusy(key); setMsg("");
     try{
+      // SANITY PROBE: ask Wise who recipient #targetAccount actually is and
+      // compare to the worker we're about to link it to. Catches the
+      // wrong-contractor mistake (esp. when two contractors share an amount).
+      // Best-effort: if the probe fails (e.g. Wisetag/403), we proceed but warn.
+      let probeNote="";
+      try{
+        const { data:probe }=await client.functions.invoke("wise-payouts",{
+          body:{ action:"get_recipient", recipient_id:Number(targetAccount)||targetAccount } });
+        const recName=probe?.recipient?.name||"";
+        if(recName){
+          const same=nameKey(recName)===nameKey(workerName||"") || looseKey(recName)===looseKey(workerName||"");
+          if(!same){
+            if(!window.confirm(
+              `⚠ Recipient name mismatch.\n\nWise recipient #${targetAccount} is held by "${recName}", `+
+              `but you're linking it to "${workerName}".\n\nThese don't look like the same person. `+
+              `Linking the wrong recipient would pay/attribute to the wrong contractor.\n\nLink anyway?`)){
+              setLinkBusy(null); return;
+            }
+          }
+          probeNote=` (Wise: ${recName})`;
+        }
+      }catch(_e){ /* probe is best-effort; Wisetag recipients 403 here */ }
+
+      // Ambiguous candidate (the transfer's amount fits more than one unmatched
+      // contractor in the window) — require a second explicit confirmation.
+      if(ambiguous && !window.confirm(
+        `This transfer's amount matches more than one unpaid contractor in the window, `+
+        `so it's AMBIGUOUS. Confirm you've verified (via the transfer date and the `+
+        `recipient${probeNote}) that #${targetAccount} belongs to ${workerName} before linking.\n\nLink?`)){
+        setLinkBusy(null); return;
+      }
+
       const { data:cur, error:re } = await client.from("workers")
         .select("wise_recipients").eq("id",workerId).single();
       if(re) throw new Error(re.message);
@@ -5905,12 +5938,17 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
                                     flexWrap:"wrap",padding:"3px 0"}}>
                                     <span>Transfer <code>{o.transfer_id}</code> · recipient <b>#{o.target_account}</b>
                                       {" "}· ₱{amt} · {created}
-                                      {o.wise_status && <span className="muted"> · {o.wise_status}</span>}</span>
+                                      {o.wise_status && <span className="muted"> · {o.wise_status}</span>}
+                                      {o.ambiguous && <span className="pill" style={{fontSize:10,marginLeft:6,
+                                        background:"#fef2f2",color:"#b91c1c"}}
+                                        title={`This amount matches ${o.shared_with_n_payments} unpaid contractors in the window — verify by date + recipient before linking.`}>
+                                        ⚠ ambiguous (matches {o.shared_with_n_payments})</span>}</span>
                                     {done
                                       ? <span className="pill active" style={{fontSize:10}}>linked</span>
                                       : <button className="btn ghost sm" disabled={inflight}
-                                          onClick={()=>linkOrphanRecipient(r.worker_id, workerName, o.target_account, o.transfer_id)}>
-                                          {inflight?"Linking…":`Link #${o.target_account} to ${workerName}`}
+                                          style={o.ambiguous?{borderColor:"#b91c1c",color:"#b91c1c"}:{}}
+                                          onClick={()=>linkOrphanRecipient(r.worker_id, workerName, o.target_account, o.transfer_id, {ambiguous:o.ambiguous})}>
+                                          {inflight?"Linking…":(o.ambiguous?`Verify & link #${o.target_account}`:`Link #${o.target_account} to ${workerName}`)}
                                         </button>}
                                   </div>
                                 );
