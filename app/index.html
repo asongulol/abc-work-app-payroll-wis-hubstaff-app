@@ -3107,6 +3107,10 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   const [period,setPeriod]=useState(null);    // {id,state}
   const [msg,setMsg]=useState("");
   const [busy,setBusy]=useState(false);
+  // When true, the debounced auto-save is paused. Set during a statement
+  // delete so a saveDraft timer scheduled BEFORE the delete (e.g. from the
+  // initial load) can't fire mid-delete and re-upsert the row we just removed.
+  const suppressSave=React.useRef(false);
   const [showHol,setShowHol]=useState(false);
   const [holTick,setHolTick]=useState(0);     // bump to re-read holidays after edits
   const [undo,setUndo]=useState(null);        // {label,fn} — rollback after a destructive recalculation
@@ -3148,7 +3152,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // debounced, so manual changes also survive navigation. Skip locked periods.
   useEffect(()=>{
     if(!rows||!rows.length||(period&&period.state&&period.state!=="open"))return;
-    const t=setTimeout(()=>{ saveDraft(rows); }, 800);
+    const t=setTimeout(()=>{ if(!suppressSave.current) saveDraft(rows); }, 800);
     return ()=>clearTimeout(t);
     /* eslint-disable-next-line */
   },[rows]);
@@ -3320,6 +3324,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
 
   // Save the current calculation as a DRAFT (period state='open', payments status='draft').
   async function saveDraft(currentRows){
+    if(suppressSave.current) return;   // paused during a delete — don't re-add removed rows
     try{
       const {data:pp}=await client.from("pay_periods")
         .upsert({company_id:companyId,period_start:start,period_end:end,pay_date:payDate,state:"open"},
@@ -3534,6 +3539,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     if(!window.confirm(`Delete ${name}'s pay statement for ${start} → ${end}?\n\n`+
       `Removes their row from this period's saved statements. No money is affected `+
       `(this period isn't paid). You can re-add them by recalculating.`)) return;
+    suppressSave.current=true;   // block any debounced saveDraft from re-adding it
     setBusy(true); setMsg("");
     try{
       if(pp?.id){
@@ -3546,7 +3552,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
         entity:`${name} · ${start} → ${end}`,detail:{scope:"contractor"}});
       setMsg(`Deleted ${name}'s statement for this period.`);
     }catch(ex){ setMsg("Couldn't delete statement: "+(ex.message||ex)); }
-    finally{ setBusy(false); }
+    finally{ setBusy(false); setTimeout(()=>{suppressSave.current=false;},1200); }
   }
 
   // Delete ALL saved pay statements for this period (the whole batch). Open
@@ -3564,6 +3570,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       `No money is affected (not paid).\n\nType DELETE to confirm:`);
     if(typed==null) return;
     if(typed.trim().toUpperCase()!=="DELETE"){ setMsg("Not deleted — confirmation text didn't match."); return; }
+    suppressSave.current=true;   // block any debounced saveDraft from re-adding rows
     setBusy(true); setMsg("");
     try{
       if(pp?.id){
@@ -3575,7 +3582,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       setRows([]);
       setMsg(`Deleted the batch — ${n} statement(s) for this period. Recalculate to rebuild.`);
     }catch(ex){ setMsg("Couldn't delete statements: "+(ex.message||ex)); }
-    finally{ setBusy(false); }
+    finally{ setBusy(false); setTimeout(()=>{suppressSave.current=false;},1200); }
   }
 
   async function lockAndSave(){
