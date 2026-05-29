@@ -3646,25 +3646,36 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // periods are excluded — they're done and live in Process & Pay.
   async function loadBatches(){
     if(!client||!companyId||consolidated){ setBatches(null); return; }
-    const {data:te}=await client.from("time_entries")
-      .select("worker_id,source_name,work_date,tracked_seconds,pto_seconds")
-      .eq("company_id",companyId).eq("approval","approved");
+    // Paginate — there can be thousands of approved entries (one busy period
+    // alone is hundreds of rows), and Supabase caps a single response at 1000.
+    // Without paging, periods beyond the first page would silently go missing.
     const g={};
-    (te||[]).forEach(t=>{
-      const p=periodFor(t.work_date); const key=`${p.start}|${p.end}`;
-      const b=g[key]||(g[key]={start:p.start,end:p.end,payDate:p.payDate,workers:new Set(),sec:0});
-      b.workers.add(t.worker_id||t.source_name);
-      b.sec+=(Number(t.tracked_seconds||0))+(Number(t.pto_seconds||0));
-    });
+    const PAGE=1000;
+    for(let from=0; from<50000; from+=PAGE){
+      const {data:te,error}=await client.from("time_entries")
+        .select("worker_id,source_name,work_date,tracked_seconds,pto_seconds")
+        .eq("company_id",companyId).eq("approval","approved")
+        .order("work_date",{ascending:true})
+        .range(from,from+PAGE-1);
+      if(error||!te||!te.length) break;
+      te.forEach(t=>{
+        const p=periodFor(t.work_date); const key=`${p.start}|${p.end}`;
+        const b=g[key]||(g[key]={start:p.start,end:p.end,payDate:p.payDate,workers:new Set(),sec:0});
+        b.workers.add(t.worker_id||t.source_name);
+        b.sec+=(Number(t.tracked_seconds||0))+(Number(t.pto_seconds||0));
+      });
+      if(te.length<PAGE) break;
+    }
     const {data:pp}=await client.from("pay_periods")
       .select("period_start,period_end,state").eq("company_id",companyId);
     const stateBy={}; (pp||[]).forEach(p=>{ stateBy[`${p.period_start}|${p.period_end}`]=p.state; });
+    // Show EVERY period that has approved time (mirrors the Time Approval list).
+    // Paid/locked are labeled and have limited actions; nothing silently hides.
     const list=Object.values(g).map(b=>({
       start:b.start, end:b.end, payDate:b.payDate,
       contractors:b.workers.size, hours:+(b.sec/3600).toFixed(2),
       state: stateBy[`${b.start}|${b.end}`]||"uncalculated",
-    })).filter(b=>b.state!=="paid")     // paid batches are finished (Process & Pay)
-       .sort((a,b)=>b.start.localeCompare(a.start));
+    })).sort((a,b)=>b.start.localeCompare(a.start));
     setBatches(list);
   }
   useEffect(()=>{ loadBatches(); /* eslint-disable-next-line */ },[client,companyId,consolidated]);
@@ -3675,6 +3686,12 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     if(!gate("Calculate")) return;
     setAutoDates(false); pendingCalc.current=true; applyStart(b.start);
     setMsg(`Calculating ${b.start} → ${b.end}…`);
+  }
+  // Just load a period (no recalc) — used to review/inspect a locked or paid
+  // batch in place (where you can Unlock it). loadSaved fires off the date change.
+  function openBatch(b){
+    setAutoDates(false); pendingCalc.current=false; applyStart(b.start);
+    setMsg(`Loaded ${b.start} → ${b.end}.`);
   }
 
   // Delete a whole approved-time batch (the period's approved entries, plus any
@@ -3779,19 +3796,22 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       {!consolidated && companyId && batches && batches.length>0 && (
         <div className="card">
           <h2>Approved time — by pay period</h2>
-          <p className="sub">Each row is approved time waiting to be calculated. <b>Calculate</b> a period to
-            build its pay statements (review below, then Lock to send it to Process &amp; Pay), or <b>Delete</b>
-            the batch. Paid periods aren't shown here — they're in Process &amp; Pay.</p>
+          <p className="sub">Every period with approved time. <b>Calculate</b> builds a period's pay statements
+            (review below, then Lock to send it to Process &amp; Pay); <b>Delete</b> removes the batch.
+            <b> Locked</b>/<b>paid</b> periods are read-only here — Open one to review or unlock it; paid ones live in Process &amp; Pay.</p>
           <div className="table-scroll"><table>
             <thead><tr><th>Pay period</th><th>Contractors</th><th>Total hours</th><th>Status</th><th></th></tr></thead>
             <tbody>
               {batches.map((b,i)=>{
                 const isCur = start===b.start && end===b.end;
-                const badge = b.state==="locked"
-                  ? <span className="pill" style={{background:"#eef2ff",color:"#3730a3"}}>locked · ready to pay</span>
-                  : b.state==="draft"
-                    ? <span className="pill" style={{background:"#fef9c3",color:"#854d0e"}}>calculated (draft)</span>
-                    : <span className="pill" style={{background:"#f3f4f6",color:"var(--muted)"}}>not calculated</span>;
+                const badge = b.state==="paid"
+                  ? <span className="pill" style={{background:"#dcfce7",color:"#166534"}}>paid</span>
+                  : b.state==="locked"
+                    ? <span className="pill" style={{background:"#eef2ff",color:"#3730a3"}}>locked · ready to pay</span>
+                    : b.state==="draft"
+                      ? <span className="pill" style={{background:"#fef9c3",color:"#854d0e"}}>calculated (draft)</span>
+                      : <span className="pill" style={{background:"#f3f4f6",color:"var(--muted)"}}>not calculated</span>;
+                const finished = b.state==="locked" || b.state==="paid";
                 return (
                   <tr key={i} style={isCur?{background:"#eff6ff"}:{}}>
                     <td><b>{b.start} → {b.end}</b></td>
@@ -3799,12 +3819,17 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
                     <td>{b.hours.toLocaleString(undefined,{minimumFractionDigits:2})}</td>
                     <td>{badge}</td>
                     <td style={{textAlign:"right",whiteSpace:"nowrap"}}>
-                      <button className="btn sm" disabled={busy} onClick={()=>calcBatch(b)}>
-                        {b.state==="uncalculated"?"Calculate":"Recalculate"}</button>{" "}
-                      <button className="btn ghost sm" disabled={busy||b.state==="locked"}
-                        title={b.state==="locked"?"Locked — unlock it below first":"Delete this approved-time batch"}
-                        style={b.state==="locked"?{}:{borderColor:"var(--bad)",color:"var(--bad)"}}
-                        onClick={()=>deleteBatch(b)}>Delete</button>
+                      {finished
+                        ? <button className="btn ghost sm" disabled={busy} onClick={()=>openBatch(b)}
+                            title={b.state==="paid"?"Review this paid period (pay it in Process & Pay)":"Open to review / unlock below"}>Open</button>
+                        : <>
+                            <button className="btn sm" disabled={busy} onClick={()=>calcBatch(b)}>
+                              {b.state==="uncalculated"?"Calculate":"Recalculate"}</button>{" "}
+                            <button className="btn ghost sm" disabled={busy}
+                              title="Delete this approved-time batch"
+                              style={{borderColor:"var(--bad)",color:"var(--bad)"}}
+                              onClick={()=>deleteBatch(b)}>Delete</button>
+                          </>}
                     </td>
                   </tr>
                 );
