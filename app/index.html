@@ -2209,6 +2209,24 @@ function DeleteImports({client,companyId,consolidated,onDeleted}){
       return;
     }
     setBusy(true);setMsg("");setMsgTone(null);
+    // GUARD: block deleting an import whose dates fall in a saved/locked pay
+    // period (lock writes a pay statement off this time — deleting it would
+    // strand the payment). Range delete already does this; batch delete must
+    // too. Unlock the period on the Calculate tab first if you really need to.
+    if(b.min && b.max){
+      const {data:locked}=await client.from("pay_periods")
+        .select("period_start,period_end,state")
+        .eq("company_id",companyId).in("state",["locked","paid"])
+        .lte("period_start",b.max).gte("period_end",b.min);
+      const hit=(locked||[]).filter(p=>p.period_start<=b.max && p.period_end>=b.min);
+      if(hit.length){
+        setBusy(false);
+        setErr(`Can't delete this import — its dates (${b.min} → ${b.max}) fall in a saved/locked `+
+          `pay period: ${hit.map(p=>`${p.period_start}→${p.period_end} (${p.state})`).join(", ")}. `+
+          `Unlock that period on the Calculate tab first.`);
+        return;
+      }
+    }
     let q=client.from("time_entries").delete().eq("import_batch_id",b.id);
     if(companyId)q=q.eq("company_id",companyId);
     const {error}=await q;
@@ -2600,6 +2618,26 @@ function TimeApproval({client,companyId,consolidated}){
     try{
       // snapshot the full rows first so Undo can restore them verbatim
       const {data:snap}=await client.from("time_entries").select("*").in("id",ids);
+      // GUARD: only allow deletion while the time is NOT yet saved & locked.
+      // "Saved & locked" = a locked/paid pay_period covers any of these dates
+      // (lock writes payments, not time_entries.pay_period_id, so we check the
+      // period state by date overlap — same rule as the Imports tab).
+      const dts=(snap||[]).map(s=>s.work_date).filter(Boolean).sort();
+      if(dts.length){
+        const lo=dts[0], hi=dts[dts.length-1];
+        const {data:locked}=await client.from("pay_periods")
+          .select("period_start,period_end,state")
+          .eq("company_id",companyId).in("state",["locked","paid"])
+          .lte("period_start",hi).gte("period_end",lo);
+        const hit=(locked||[]).filter(p=>p.period_start<=hi && p.period_end>=lo);
+        if(hit.length){
+          const lbl=hit.map(p=>`${p.period_start}→${p.period_end} (${p.state})`).join(", ");
+          setMsg(`Can't delete ${name}'s time — it falls in a saved/locked pay period: ${lbl}. `+
+            `Unlock that period on the Calculate tab first (it has a saved pay statement), then delete.`);
+          setBusy(false);
+          return;
+        }
+      }
       const {error}=await client.from("time_entries").delete().in("id",ids);
       if(error)throw error;
       logEvent(client,{company_id:companyId,action:"delete_import",
