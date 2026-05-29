@@ -2026,11 +2026,16 @@ function TimeImport({client,companyId,consolidated}){
               <button className="btn ghost sm" disabled={loadingOrgs} onClick={listOrgs}>
                 {loadingOrgs?"Loading…":(orgs?"↻ Orgs":"List my orgs")}</button>
               <div><label style={{fontSize:10,color:"var(--muted)"}}>Start</label><br/>
-                <input type="date" value={syncStart} onChange={e=>setSyncStart(e.target.value)}/></div>
-              <div><label style={{fontSize:10,color:"var(--muted)"}}>Stop</label><br/>
+                <input type="date" value={syncStart} onChange={e=>{
+                  const v=e.target.value; setSyncStart(v);
+                  // Auto-fill Stop to the semi-monthly period end for the chosen
+                  // start (15th or month-end) — still editable.
+                  if(v){ try{ setSyncStop(periodFor(v).end); }catch(_e){} }
+                }}/></div>
+              <div><label style={{fontSize:10,color:"var(--muted)"}}>Stop <span style={{fontWeight:400}}>(auto)</span></label><br/>
                 <input type="date" value={syncStop} onChange={e=>setSyncStop(e.target.value)}/></div>
               <button className="btn" disabled={syncing||consolidated} onClick={syncFromHubstaff}>
-                {syncing?"Syncing…":"Sync"}</button>
+                {syncing?"Importing…":"Import Time"}</button>
             </div>
           </div>
         </div>
