@@ -281,6 +281,345 @@ function CompanySwitcher({ client, companyId, setCompanyId, consolidated, setCon
   );
 }
 
+// ============================ BULK CONTRACTOR IMPORT =========================
+// Paste (TSV from Sheets) or upload (CSV) a roster of contractors; match each to
+// an existing record — WISE IDENTIFIERS FIRST, per the ID-first convention — and
+// UPDATE it, or create a new one. Single company (rate + company link are
+// per-company). Two stages: parse → preview (CREATE/UPDATE/SKIP per row) → commit.
+// Header alias (normalized: lowercased, non-alphanumerics stripped) -> field.
+const BULK_COLMAP={
+  name:"name", fullname:"name", contractor:"name", contractorname:"name", employee:"name",
+  firstname:"first_name", first:"first_name", givenname:"first_name",
+  middlename:"middle_name", middle:"middle_name",
+  lastname:"last_name", last:"last_name", surname:"last_name", familyname:"last_name",
+  email:"email", emailaddress:"email", wiseemail:"email",
+  mobile:"mobile", phone:"mobile", contactnumber:"mobile", cell:"mobile",
+  wiserecipientid:"wise_recipient_id", wiseid:"wise_recipient_id", recipientid:"wise_recipient_id", wiserecipient:"wise_recipient_id",
+  wiserecipientuuid:"wise_recipient_uuid", wiseuuid:"wise_recipient_uuid", recipientuuid:"wise_recipient_uuid", uuid:"wise_recipient_uuid", wisetaguuid:"wise_recipient_uuid",
+  payoutmethod:"payout_method", payout:"payout_method", method:"payout_method", channel:"payout_method", paymentmethod:"payout_method",
+  rate:"rate", amount:"rate", amountphp:"rate", salary:"rate", payrate:"rate", ratephp:"rate",
+  rateeffective:"rate_effective", effective:"rate_effective", effectivestart:"rate_effective", effectivedate:"rate_effective", ratedate:"rate_effective",
+  role:"role", position:"role", title:"role", jobtitle:"role",
+  contract:"contract", contracttype:"contract", employmenttype:"contract",
+  hubstaffuserid:"hubstaff_user_id", hubstaffid:"hubstaff_user_id",
+  hubstaffname:"hubstaff_name",
+  hiredate:"hire_date", started:"hire_date", startdate:"hire_date", startedon:"hire_date", engagementstart:"hire_date",
+  dateofbirth:"date_of_birth", dob:"date_of_birth", birthdate:"date_of_birth", birthday:"date_of_birth",
+  phaddress:"ph_address", address:"ph_address", homeaddress:"ph_address",
+  gcash:"gcash", paymaya:"paymaya", maya:"paymaya", paypal:"paypal",
+  healthallowance:"health_allowance_eligible", haeligible:"health_allowance_eligible", ha:"health_allowance_eligible",
+  thirteenthmonth:"thirteenth_month_eligible", thirteenth:"thirteenth_month_eligible", "13thmonth":"thirteenth_month_eligible", "13th":"thirteenth_month_eligible", thirteenmonth:"thirteenth_month_eligible",
+};
+const BULK_PAYOUT={wise:"wise",bpi:"bpi",gcash:"gcash",paymaya:"paymaya",maya:"paymaya",paypal:"paypal"};
+const normHdr=h=>String(h||"").toLowerCase().replace(/[^a-z0-9]/g,"");
+function parseBool(v){
+  const s=String(v||"").trim().toLowerCase();
+  if(["y","yes","true","1","eligible","x","✓"].includes(s)) return true;
+  if(["n","no","false","0","not eligible","ineligible"].includes(s)) return false;
+  return undefined;   // unrecognized -> leave field unset (don't overwrite)
+}
+function BulkImport({ client, companyId, consolidated, onClose, onDone }){
+  const [text,setText]=useState("");
+  const [stage,setStage]=useState("input");   // input | preview | done
+  const [parseErr,setParseErr]=useState("");
+  const [preview,setPreview]=useState([]);     // [{row,action,errors[],notes[],name,existing,worker_payload,link,rate,recips}]
+  const [busy,setBusy]=useState(false);
+  const [progress,setProgress]=useState("");
+  const [result,setResult]=useState(null);     // {created,updated,skipped,errors[]}
+
+  // Delimiter-aware CSV/TSV parse (same state machine as parseCSV, parameterized).
+  function parseDelimited(t,delim){
+    const rows=[]; let i=0,field="",row=[],q=false;
+    while(i<t.length){ const ch=t[i];
+      if(q){ if(ch==='"'){ if(t[i+1]==='"'){field+='"';i++;} else q=false; } else field+=ch; }
+      else{ if(ch==='"')q=true;
+        else if(ch===delim){row.push(field);field="";}
+        else if(ch==="\n"||ch==="\r"){ if(ch==="\r"&&t[i+1]==="\n")i++; row.push(field);field=""; if(row.some(c=>c.trim()!==""))rows.push(row); row=[]; }
+        else field+=ch; }
+      i++; }
+    if(field!==""||row.length){ row.push(field); if(row.some(c=>c.trim()!==""))rows.push(row); }
+    return rows;
+  }
+  function readFile(f){
+    if(!f)return; const rd=new FileReader();
+    rd.onload=()=>setText(String(rd.result||"")); rd.readAsText(f);
+  }
+
+  // ---- stage 1: parse text into normalized records ----
+  function toRecords(){
+    const t=(text||"").trim();
+    if(!t) return {error:"Nothing to parse — paste rows or choose a CSV file."};
+    const firstLine=t.split(/\r?\n/)[0]||"";
+    const delim = firstLine.includes("\t") ? "\t" : ",";
+    const grid=parseDelimited(t,delim);
+    if(grid.length<2) return {error:"Need a header row plus at least one data row."};
+    const fields=grid[0].map(h=>BULK_COLMAP[normHdr(h)]||null);
+    if(!fields.some(Boolean)) return {error:'No recognizable columns. Include at least a "Name" (or "Wise recipient id") column. See the accepted headers below.'};
+    const recs=grid.slice(1).map((cells,idx)=>{
+      const o={_row:idx+2};
+      fields.forEach((f,ci)=>{ if(f){ const v=(cells[ci]??"").trim(); if(v!=="" && o[f]==null) o[f]=v; }});
+      return o;
+    });
+    return {recs, mapped:fields.filter(Boolean)};
+  }
+
+  async function buildPreview(){
+    setParseErr(""); setBusy(true); setProgress("Parsing…");
+    try{
+      if(consolidated||!companyId){ setParseErr("Pick a single company first (top-left switcher)."); return; }
+      const {error,recs}=toRecords();
+      if(error){ setParseErr(error); return; }
+      // pull existing roster once (workers + this company's link) for matching
+      setProgress("Loading existing contractors…");
+      const {data:allW,error:qe}=await client.from("workers")
+        .select("id,first_name,middle_name,last_name,status,email,mobile,ph_address,hire_date,date_of_birth,"+
+          "payout_method,wise_recipient_id,wise_recipient_uuid,wise_recipients,gcash,paymaya,paypal,"+
+          "health_allowance_eligible,thirteenth_month_eligible,"+
+          "worker_companies(company_id,hubstaff_name,hubstaff_user_id,role,contract)");
+      if(qe){ setParseErr("Couldn't load contractors: "+qe.message); return; }
+      const roster=(allW||[]).map(x=>{
+        const link=(x.worker_companies||[]).find(l=>l.company_id===companyId);
+        return {w:x, link, names:[ `${x.first_name||""} ${x.middle_name||""} ${x.last_name||""}`, link?.hubstaff_name ].filter(Boolean)};
+      });
+      const rows=recs.map(rec=>buildRow(rec,roster));
+      setPreview(rows); setStage("preview");
+    } finally { setBusy(false); setProgress(""); }
+  }
+
+  // Derive names, coerce types, find a match (Wise-first), and diff vs existing.
+  function buildRow(rec,roster){
+    const errors=[], notes=[];
+    // names: explicit first/last win; else split a single "name" field.
+    let first=rec.first_name, last=rec.last_name, mid=rec.middle_name||null;
+    if((!first||!last) && rec.name){
+      const toks=rec.name.trim().split(/\s+/);
+      if(!first) first=toks[0]||"";
+      if(!last)  last=toks.length>1?toks[toks.length-1]:(last||"");
+      if(!mid && toks.length>2) mid=toks.slice(1,-1).join(" ");
+    }
+    const wid = rec.wise_recipient_id!=null && /^\d+$/.test(String(rec.wise_recipient_id).replace(/\D/g,""))
+      ? Number(String(rec.wise_recipient_id).replace(/\D/g,"")) : null;
+    if(rec.wise_recipient_id!=null && wid==null) notes.push("Wise id not numeric — ignored");
+    const uuid = rec.wise_recipient_uuid||null;
+    const huid = rec.hubstaff_user_id!=null && /^\d+$/.test(String(rec.hubstaff_user_id)) ? Number(rec.hubstaff_user_id) : null;
+    let method=null;
+    if(rec.payout_method){ method=BULK_PAYOUT[normHdr(rec.payout_method)]||null; if(!method) notes.push(`payout "${rec.payout_method}" unknown — skipped`); }
+    let contract=null;
+    if(rec.contract){ const c=normHdr(rec.contract); contract = (c==="pt"||c==="parttime")?"PT":(c==="ft"||c==="fulltime")?"FT":null; if(!contract) notes.push(`contract "${rec.contract}" unknown — skipped`); }
+    const ha=parseBool(rec.health_allowance_eligible), thir=parseBool(rec.thirteenth_month_eligible);
+    const rate = rec.rate!=null ? Number(String(rec.rate).replace(/[^0-9.]/g,"")) : null;
+    if(rec.rate!=null && !(rate>0)) notes.push("rate not a positive number — skipped");
+
+    // ---- MATCH: Wise id -> Wise uuid -> Hubstaff id -> strict name -> loose name
+    let hit=null, via="";
+    if(wid!=null){ hit=roster.find(r=>Number(r.w.wise_recipient_id)===wid); if(hit)via="Wise id"; }
+    if(!hit && uuid){ hit=roster.find(r=>r.w.wise_recipient_uuid && r.w.wise_recipient_uuid===uuid); if(hit)via="Wise UUID"; }
+    if(!hit && huid!=null){ hit=roster.find(r=>r.link&&Number(r.link.hubstaff_user_id)===huid); if(hit)via="Hubstaff id"; }
+    const fullForKey=`${first||""} ${mid||""} ${last||""}`.trim();
+    if(!hit && fullForKey){ const sk=nameKey(fullForKey); hit=roster.find(r=>r.names.some(n=>nameKey(n)===sk)); if(hit)via="name"; }
+    if(!hit && fullForKey){ const lk=looseKey(fullForKey); hit=roster.find(r=>r.names.some(n=>looseKey(n)===lk)); if(hit)via="name (loose)"; }
+
+    // worker fields present in this row (don't overwrite with blanks)
+    const wp={};
+    if(first) wp.first_name=first;
+    if(last!=null && last!=="") wp.last_name=last;
+    if(mid) wp.middle_name=mid;
+    if(rec.email) wp.email=rec.email;
+    if(rec.mobile) wp.mobile=rec.mobile;
+    if(rec.ph_address) wp.ph_address=rec.ph_address;
+    if(rec.hire_date) wp.hire_date=rec.hire_date;
+    if(rec.date_of_birth) wp.date_of_birth=rec.date_of_birth;
+    if(rec.gcash) wp.gcash=rec.gcash;
+    if(rec.paymaya) wp.paymaya=rec.paymaya;
+    if(rec.paypal) wp.paypal=rec.paypal;
+    if(method) wp.payout_method=method;
+    if(wid!=null) wp.wise_recipient_id=wid;
+    if(uuid) wp.wise_recipient_uuid=uuid;
+    if(ha!==undefined) wp.health_allowance_eligible=ha;
+    if(thir!==undefined) wp.thirteenth_month_eligible=thir;
+
+    const link={};
+    if(contract) link.contract=contract;
+    if(rec.role) link.role=rec.role;
+    if(rec.hubstaff_name) link.hubstaff_name=rec.hubstaff_name;
+    if(huid!=null) link.hubstaff_user_id=huid;
+
+    let action, existing=null, changes={};
+    if(hit){
+      action="update"; existing=hit;
+      if(!hit.link) notes.push("matched but not in this company — will be linked");
+      // diff worker fields (Wise fields always shown as the priority columns)
+      Object.keys(wp).forEach(k=>{ const a=hit.w[k]??null, b=wp[k]; if(String(a===null?"":a)!==String(b===null?"":b)) changes[k]={from:a,to:b}; });
+      Object.keys(link).forEach(k=>{ const a=hit.link?.[k]??null, b=link[k]; if(String(a===null?"":a)!==String(b===null?"":b)) changes[k]={from:a,to:b}; });
+    }else{
+      action="create";
+      if(!first || !fullForKey){ errors.push("No name — can't create. Provide Name, or a Wise id/UUID matching an existing contractor."); action="error"; }
+    }
+    return { row:rec._row, action, via, errors, notes,
+      name:`${first||""} ${last||""}`.trim()||"(no name)",
+      existing, wp, link, rate, rate_eff:rec.rate_effective||null, ha, thir, wid, uuid, changes };
+  }
+
+  // ---- stage 2: commit ----
+  const todayISO=()=>new Date().toISOString().slice(0,10);
+  async function upsertRate(worker_id, amount, effRaw){
+    const eff = (effRaw && /^\d{4}-\d{2}-\d{2}$/.test(effRaw)) ? effRaw : todayISO();
+    const {data:same}=await client.from("rates").select("id")
+      .eq("worker_id",worker_id).eq("company_id",companyId).eq("effective_start",eff).limit(1);
+    if(same&&same[0]){ await client.from("rates").update({amount_php:amount,period_basis:"semi_monthly",effective_end:null}).eq("id",same[0].id); return; }
+    await client.from("rates").update({effective_end:eff})
+      .eq("worker_id",worker_id).eq("company_id",companyId).is("effective_end",null).lt("effective_start",eff);
+    await client.from("rates").insert({worker_id,company_id:companyId,amount_php:amount,period_basis:"semi_monthly",effective_start:eff});
+  }
+  function mergeRecips(existingList, wid, uuid){
+    const list=Array.isArray(existingList)?[...existingList]:[];
+    if(wid==null) return list;
+    if(!list.some(x=>Number(x.id)===wid)) list.push({id:wid, uuid:uuid||null, label:"imported"});
+    else if(uuid){ const i=list.findIndex(x=>Number(x.id)===wid); if(!list[i].uuid) list[i]={...list[i],uuid}; }
+    return list;
+  }
+  async function commit(){
+    setBusy(true); setProgress("Importing…");
+    const out={created:0,updated:0,skipped:0,errors:[]};
+    const rows=preview.filter(r=>r.action!=="error");
+    out.skipped = preview.length - rows.length;
+    for(let i=0;i<rows.length;i++){
+      const r=rows[i]; setProgress(`Importing ${i+1}/${rows.length} — ${r.name}…`);
+      try{
+        if(r.action==="update"){
+          const wp={...r.wp};
+          if(r.wid!=null) wp.wise_recipients=mergeRecips(r.existing.w.wise_recipients, r.wid, r.uuid);
+          if(Object.keys(wp).length){ const {error}=await client.from("workers").update(wp).eq("id",r.existing.w.id); if(error)throw error; }
+          if(!r.existing.link){
+            // matched (e.g. by Wise id) but not yet in this company — create the link
+            const {error:le}=await client.from("worker_companies")
+              .insert({worker_id:r.existing.w.id,company_id:companyId,status:"active",contract:r.link.contract||"FT",role:r.link.role||null,hubstaff_name:r.link.hubstaff_name||null,...(r.link.hubstaff_user_id!=null?{hubstaff_user_id:r.link.hubstaff_user_id}:{})});
+            if(le)throw le;
+          }else if(Object.keys(r.link).length){
+            // already linked — update only the provided link fields; don't touch status
+            const {error:le}=await client.from("worker_companies")
+              .update(r.link).eq("worker_id",r.existing.w.id).eq("company_id",companyId);
+            if(le)throw le;
+          }
+          if(r.rate>0) await upsertRate(r.existing.w.id, r.rate, r.rate_eff);
+          logEvent(client,{company_id:companyId,action:"edit_contractor",entity:r.name,detail:{from:"bulk import",via:r.via,changed:r.changes}});
+          out.updated++;
+        }else{
+          // CREATE — match-before-create already done; build full insert
+          const base={first_name:r.wp.first_name||"New", last_name:r.wp.last_name||"Contractor", status:"active",
+            health_allowance_eligible:r.ha!==undefined?r.ha:true, thirteenth_month_eligible:r.thir!==undefined?r.thir:true, ...r.wp};
+          if(r.wid!=null) base.wise_recipients=mergeRecips([], r.wid, r.uuid);
+          let {data:nw,error:e1}=await client.from("workers").insert(base).select().single();
+          if(e1 && /payout_method/i.test(e1.message)) ({data:nw,error:e1}=await client.from("workers").insert({...base,payout_method:base.payout_method||"wise"}).select().single());
+          if(e1)throw e1;
+          const {error:e2}=await client.from("worker_companies")
+            .insert({worker_id:nw.id,company_id:companyId,status:"active",contract:r.link.contract||"FT",role:r.link.role||null,hubstaff_name:r.link.hubstaff_name||null,...(r.link.hubstaff_user_id!=null?{hubstaff_user_id:r.link.hubstaff_user_id}:{})});
+          if(e2){
+            // race / unique on (company,hubstaff_user_id): reuse the winner, drop orphan
+            if(/duplicate|unique|23505/i.test(e2.message||"") && r.link.hubstaff_user_id!=null){
+              const {data:win}=await client.from("worker_companies").select("worker_id").eq("company_id",companyId).eq("hubstaff_user_id",r.link.hubstaff_user_id).maybeSingle();
+              if(win?.worker_id){ await client.from("workers").delete().eq("id",nw.id); nw={id:win.worker_id}; }
+              else throw e2;
+            } else throw e2;
+          }
+          if(r.rate>0) await upsertRate(nw.id, r.rate, r.rate_eff);
+          logEvent(client,{company_id:companyId,action:"add_contractor",entity:r.name,detail:{from:"bulk import"}});
+          out.created++;
+        }
+      }catch(ex){ out.errors.push({row:r.row,name:r.name,msg:ex.message||String(ex)}); }
+    }
+    setResult(out); setStage("done"); setBusy(false); setProgress("");
+  }
+
+  const counts=preview.reduce((a,r)=>{a[r.action]=(a[r.action]||0)+1;return a;},{});
+  const chg=c=>Object.keys(c).slice(0,4).map(k=>`${k}: ${c[k].from??"∅"}→${c[k].to}`).join(", ")+(Object.keys(c).length>4?` +${Object.keys(c).length-4} more`:"");
+
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:980}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
+          <div><h2 style={{margin:0}}>Bulk import contractors</h2>
+            <p className="sub" style={{margin:"4px 0 0"}}>Paste from a spreadsheet or upload a CSV. Existing contractors are
+              matched <b>by Wise recipient id/UUID first</b>, then Hubstaff id, then name — and <b>updated in place</b>. Single company.</p></div>
+          <button className="btn ghost sm" onClick={onClose}>Close</button>
+        </div>
+
+        {(consolidated||!companyId) &&
+          <div className="banner" style={{marginTop:12,background:"var(--warn-soft)",borderColor:"#fcd34d",color:"#92400e"}}>
+            Pick a single company in the top-left switcher first — rate and company assignment are per-company.</div>}
+
+        {stage==="input" && <>
+          <div style={{marginTop:12}}>
+            <textarea value={text} onChange={e=>setText(e.target.value)} spellCheck={false}
+              placeholder={"Paste rows here (header row required). e.g.\nName\tWise recipient id\tWise UUID\tRate\tEmail\nManuella Gamboa\t79bf2801\t33e5...\t18000\tmanuella@x.com"}
+              style={{width:"100%",height:160,fontFamily:"monospace",fontSize:12,padding:8,border:"1px solid var(--line)",borderRadius:8}}/>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:12,marginTop:10,flexWrap:"wrap"}}>
+            <label className="sub">…or upload CSV: <input type="file" accept=".csv,text/csv" onChange={e=>readFile(e.target.files?.[0])}/></label>
+            <span style={{flex:1}}/>
+            <button className="btn" disabled={busy||consolidated||!companyId||!text.trim()} onClick={buildPreview}>{busy?progress||"Working…":"Preview"}</button>
+          </div>
+          <Banner msg={parseErr} tone="error" style={{marginTop:10}} />
+          <details style={{marginTop:12}}>
+            <summary className="sub" style={{cursor:"pointer"}}>Accepted columns (header names are flexible)</summary>
+            <p className="sub" style={{marginTop:6,lineHeight:1.6}}>
+              <b>Name</b> (or First name / Last name) · <b>Wise recipient id</b> · <b>Wise UUID</b> · Payout method (wise/bpi/gcash/paymaya/paypal) ·
+              Rate · Rate effective (YYYY-MM-DD) · Email · Mobile · Role · Contract (FT/PT) · Hubstaff user id · Hubstaff name ·
+              Hire date · Date of birth · PH address · GCash · PayMaya · PayPal · Health allowance (yes/no) · 13th month (yes/no).<br/>
+              Blank cells are left untouched on existing contractors — nothing is wiped by an empty column.
+            </p>
+          </details>
+        </>}
+
+        {stage==="preview" && <>
+          <div style={{display:"flex",gap:10,alignItems:"center",margin:"12px 0",flexWrap:"wrap"}}>
+            <span className="pill" style={{background:"#dcfce7",color:"#166534"}}>{counts.create||0} new</span>
+            <span className="pill" style={{background:"#eef2ff",color:"#3730a3"}}>{counts.update||0} update</span>
+            {counts.error>0 && <span className="pill warn">{counts.error} skipped (error)</span>}
+            <span style={{flex:1}}/>
+            <button className="btn ghost sm" disabled={busy} onClick={()=>setStage("input")}>← Back</button>
+            <button className="btn" disabled={busy||(!counts.create&&!counts.update)} onClick={commit}>{busy?progress||"Importing…":`Import ${ (counts.create||0)+(counts.update||0) } contractor(s)`}</button>
+          </div>
+          <div className="table-scroll" style={{maxHeight:380}}><table style={{fontSize:13}}>
+            <thead><tr><th>#</th><th>Name</th><th>Action</th><th>Matched via</th><th>Wise id / UUID</th><th>Rate</th><th>Changes / notes</th></tr></thead>
+            <tbody>
+              {preview.map((r,i)=>(
+                <tr key={i} style={r.action==="error"?{background:"#fef2f2"}:{}}>
+                  <td className="muted">{r.row}</td>
+                  <td><b>{r.name}</b></td>
+                  <td><span className="pill" style={r.action==="create"?{background:"#dcfce7",color:"#166534"}:r.action==="update"?{background:"#eef2ff",color:"#3730a3"}:{background:"#fee2e2",color:"#991b1b"}}>
+                    {r.action==="error"?"skip":r.action}</span></td>
+                  <td className="muted">{r.via||(r.action==="create"?"—":"")}</td>
+                  <td style={{fontFamily:"monospace",fontSize:11}}>{r.wid??"—"}{r.uuid?` / ${String(r.uuid).slice(0,8)}…`:""}</td>
+                  <td>{r.rate>0?`₱${r.rate.toLocaleString()}`:"—"}</td>
+                  <td className="muted" style={{maxWidth:300}}>
+                    {r.errors.length>0 && <span style={{color:"#991b1b"}}>{r.errors.join("; ")}</span>}
+                    {r.action==="update" && Object.keys(r.changes).length>0 && <span>{chg(r.changes)}</span>}
+                    {r.action==="update" && Object.keys(r.changes).length===0 && <span>no changes</span>}
+                    {r.notes.length>0 && <div style={{color:"#92400e"}}>{r.notes.join("; ")}</div>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        </>}
+
+        {stage==="done" && result && <div style={{marginTop:16}}>
+          <div className="banner success">Import complete — <b>{result.created}</b> created, <b>{result.updated}</b> updated{result.skipped?`, ${result.skipped} skipped`:""}{result.errors.length?`, ${result.errors.length} failed`:""}.</div>
+          {result.errors.length>0 && <div className="table-scroll" style={{maxHeight:200,marginTop:10}}><table style={{fontSize:13}}>
+            <thead><tr><th>Row</th><th>Name</th><th>Error</th></tr></thead>
+            <tbody>{result.errors.map((e,i)=>(<tr key={i}><td>{e.row}</td><td>{e.name}</td><td style={{color:"#991b1b"}}>{e.msg}</td></tr>))}</tbody>
+          </table></div>}
+          <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:14}}>
+            <button className="btn ghost" onClick={()=>{setText("");setPreview([]);setResult(null);setStage("input");}}>Import more</button>
+            <button className="btn" onClick={()=>{onDone&&onDone();onClose();}}>Done</button>
+          </div>
+        </div>}
+      </div>
+    </div>
+  );
+}
+
 // ============================ CONTRACTORS ====================================
 function Contractors({ client, companyId, consolidated, onBillingChange, pendingWorkerId, consumePendingWorker }) {
   const { data, loading, reload } = useQuery(client, c => {
@@ -358,6 +697,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
   // the rest (rate, payout method, etc.). Reuses the proven create + edit flow.
   const [adding,setAdding]=useState(false);
   const [addErr,setAddErr]=useState("");
+  const [showBulk,setShowBulk]=useState(false);
   async function addContractor(){
     if(consolidated||!companyId){setAddErr("Pick a single company first (top-left switcher) to add a contractor.");return;}
     setAdding(true);setAddErr("");
@@ -409,6 +749,9 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
             <input type="checkbox" checked={showInactive} onChange={e=>setShowInactive(e.target.checked)}/>
             Show inactive
           </label>
+          <button className="btn ghost" disabled={consolidated} onClick={()=>setShowBulk(true)}
+            title={consolidated?"Pick a single company first":"Import a roster of contractors (CSV / paste)"}>
+            ⇪ Bulk import</button>
           <button className="btn" disabled={adding||consolidated} onClick={addContractor}
             title={consolidated?"Pick a single company first":"Add a new contractor to this company"}>
             {adding?"Adding…":"+ Add contractor"}</button>
@@ -448,6 +791,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
         </tbody>
       </table></div>}
       {selected && <ProfileModal r={selected} client={client} onClose={()=>{setSelected(null);reload();}} onBillingChange={onBillingChange} onSaved={reload} />}
+      {showBulk && <BulkImport client={client} companyId={companyId} consolidated={consolidated} onClose={()=>setShowBulk(false)} onDone={reload} />}
     </div>
     </div>
   );
