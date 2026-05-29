@@ -2507,10 +2507,19 @@ function TimeApproval({client,companyId,consolidated}){
 
   // the period to write into: the active period if present, else default by dates
   const writePeriod = (pStart && pEnd) ? {start:pStart,end:pEnd} : periodFor(new Date().toISOString().slice(0,10));
+  // Optional manual-entry period override: pick ANY date and we snap to its
+  // semi-monthly period (same periodFor() the payroll engine uses), so you can
+  // add hours into a period other than the active pending one. Empty = use
+  // writePeriod. Drives periodDates() and the manual-add writes/logs.
+  const [mpDate,setMpDate]=useState("");
+  const effPeriod = mpDate ? {start:periodFor(mpDate).start, end:periodFor(mpDate).end} : writePeriod;
 
-  // list every date in the period being approved (writePeriod)
-  function periodDates(){
-    const out=[]; let d=new Date(writePeriod.start+"T00:00:00"); const e=new Date(writePeriod.end+"T00:00:00");
+  // list every date in a period (defaults to the active approval period;
+  // the bottom "add a contractor not listed" path passes effPeriod so it can
+  // target a different, user-chosen period).
+  function periodDates(p){
+    const per=p||writePeriod;
+    const out=[]; let d=new Date(per.start+"T00:00:00"); const e=new Date(per.end+"T00:00:00");
     while(d<=e){out.push(d.toISOString().slice(0,10));d.setDate(d.getDate()+1);}
     return out;
   }
@@ -2578,7 +2587,7 @@ function TimeApproval({client,companyId,consolidated}){
   async function addManualRow(){
     const opt=contractorOpts.find(o=>o.worker_id===addWid);
     if(!opt){setMsg("Pick a contractor.");return;}
-    const dates=periodDates();
+    const dates=periodDates(effPeriod);   // user-chosen period (or active default)
     let rows; let totalForLog;
     if(addBottomMode==="daily"){
       // Validate at least one non-zero day was entered
@@ -2603,8 +2612,8 @@ function TimeApproval({client,companyId,consolidated}){
       const {error}=await client.from("time_entries").upsert(rows,{onConflict:"company_id,source_name,work_date"});
       if(error)throw error;
       logEvent(client,{company_id:companyId,action:"manual_hours",entity:opt.name,
-        detail:{period:`${writePeriod.start} → ${writePeriod.end}`,hours:totalForLog,mode:`add-${addBottomMode}`}});
-      setAddWid("");setAddHrs("");setAddBottomDaily({});setAddBottomMode("total");
+        detail:{period:`${effPeriod.start} → ${effPeriod.end}`,hours:totalForLog,mode:`add-${addBottomMode}`}});
+      setAddWid("");setAddHrs("");setAddBottomDaily({});setAddBottomMode("total");setMpDate("");
       reload();
     }catch(ex){ setMsg("Couldn't add hours: "+(ex.message||ex)); }
     finally{ setBusy(false); }
@@ -2853,6 +2862,12 @@ function TimeApproval({client,companyId,consolidated}){
                 </div>
                 {addWid && (<>
                   <div>
+                    <label style={{fontSize:11,color:"var(--muted)"}}>Pay period</label><br/>
+                    <input type="date" value={mpDate||effPeriod.start}
+                      onChange={e=>setMpDate(e.target.value)} style={{width:150}}
+                      title="Pick any date — it snaps to that date's semi-monthly pay period."/>
+                  </div>
+                  <div>
                     <label style={{fontSize:11,color:"var(--muted)"}}>Entry</label><br/>
                     <select value={addBottomMode} onChange={e=>setAddBottomMode(e.target.value)}>
                       <option value="total">Period total</option>
@@ -2867,7 +2882,7 @@ function TimeApproval({client,companyId,consolidated}){
                       </div>
                     : <div className="table-scroll" style={{maxHeight:200,overflow:"auto",flex:"1 1 320px"}}>
                         <table><thead><tr><th>Date</th><th>Hours</th></tr></thead>
-                          <tbody>{periodDates().map(dt=>(
+                          <tbody>{periodDates(effPeriod).map(dt=>(
                             <tr key={dt}><td>{dt}</td>
                               <td><input type="number" step="0.01" style={{width:90}}
                                 value={addBottomDaily[dt]||""}
@@ -2876,11 +2891,11 @@ function TimeApproval({client,companyId,consolidated}){
                         </table>
                       </div>}
                   <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                    <span className="muted" style={{fontSize:11}}>{writePeriod.start}→{writePeriod.end}</span>
+                    <span className="muted" style={{fontSize:11}}>→ {effPeriod.start} → {effPeriod.end}</span>
                     <button className="btn sm" disabled={busy} onClick={addManualRow}>
                       {busy?"Adding…":"Add → pending"}</button>
                     <button className="btn ghost sm" disabled={busy}
-                      onClick={()=>{setAddWid("");setAddHrs("");setAddBottomDaily({});setAddBottomMode("total");}}>
+                      onClick={()=>{setAddWid("");setAddHrs("");setAddBottomDaily({});setAddBottomMode("total");setMpDate("");}}>
                       Cancel</button>
                   </div>
                 </>)}
