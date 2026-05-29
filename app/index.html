@@ -3516,17 +3516,29 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // allowed while the period is open (not locked/paid) — a locked statement is
   // a record of what was/will be paid; unlock first if you truly need to remove
   // one. Deletes the payments row (if persisted) and drops it from the table.
+  // Resolve this period's pay_period row (id + state) from the DB. `period`
+  // state is only populated by loadSaved/lock/unlock — a fresh Calculate
+  // leaves it null even though saveDraft has persisted a pay_period — so the
+  // delete actions must look it up by company+dates, else they'd no-op the DB.
+  async function resolvePeriod(){
+    if(period?.id) return period;
+    const {data}=await client.from("pay_periods").select("id,state")
+      .eq("company_id",companyId).eq("period_start",start).eq("period_end",end).maybeSingle();
+    return data ? {id:data.id,state:data.state} : null;
+  }
+
   async function deleteStatement(workerId, name){
-    if(period?.state && period.state!=="open"){
-      setMsg(`Period is ${period.state} — unlock it first to delete a statement.`); return; }
+    const pp=await resolvePeriod();
+    if(pp?.state && pp.state!=="open"){
+      setMsg(`Period is ${pp.state} — unlock it first to delete a statement.`); return; }
     if(!window.confirm(`Delete ${name}'s pay statement for ${start} → ${end}?\n\n`+
       `Removes their row from this period's saved statements. No money is affected `+
       `(this period isn't paid). You can re-add them by recalculating.`)) return;
     setBusy(true); setMsg("");
     try{
-      if(period?.id){
+      if(pp?.id){
         const {error}=await client.from("payments").delete()
-          .eq("pay_period_id",period.id).eq("worker_id",workerId);
+          .eq("pay_period_id",pp.id).eq("worker_id",workerId);
         if(error) throw new Error(error.message);
       }
       setRows(prev=>(prev||[]).filter(r=>r.worker_id!==workerId));
@@ -3541,11 +3553,12 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // periods only; requires a typed DELETE since it wipes every row. Leaves the
   // (now-empty) open pay_period so you can recalculate fresh.
   async function deleteAllStatements(){
-    if(period?.state && period.state!=="open"){
-      setMsg(`Period is ${period.state} — unlock it first to delete its statements.`); return; }
+    const pp=await resolvePeriod();
+    if(pp?.state && pp.state!=="open"){
+      setMsg(`Period is ${pp.state} — unlock it first to delete its statements.`); return; }
     const n=(rows||[]).length;
     const typed=window.prompt(
-      `Delete ALL ${n} pay statement(s) for ${start} → ${end}?\n\n`+
+      `Delete the WHOLE batch — all ${n} pay statement(s) for ${start} → ${end}?\n\n`+
       `This wipes every contractor's saved statement for this period (total `+
       `${money(totalNet,"PHP")}). The period stays open so you can recalculate. `+
       `No money is affected (not paid).\n\nType DELETE to confirm:`);
@@ -3553,14 +3566,14 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     if(typed.trim().toUpperCase()!=="DELETE"){ setMsg("Not deleted — confirmation text didn't match."); return; }
     setBusy(true); setMsg("");
     try{
-      if(period?.id){
-        const {error}=await client.from("payments").delete().eq("pay_period_id",period.id);
+      if(pp?.id){
+        const {error}=await client.from("payments").delete().eq("pay_period_id",pp.id);
         if(error) throw new Error(error.message);
       }
       logEvent(client,{company_id:companyId,action:"delete_statement",
         entity:`${start} → ${end}`,detail:{scope:"whole_period",count:n,total_net:totalNet}});
       setRows([]);
-      setMsg(`Deleted all ${n} statement(s) for this period. Recalculate to rebuild.`);
+      setMsg(`Deleted the batch — ${n} statement(s) for this period. Recalculate to rebuild.`);
     }catch(ex){ setMsg("Couldn't delete statements: "+(ex.message||ex)); }
     finally{ setBusy(false); }
   }
@@ -3751,12 +3764,12 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
                   Unlock for editing…
                 </button>
               )}
-              {/* Delete the whole period's statements — open periods only. */}
+              {/* Delete the whole period's statements (the batch) — open periods only. */}
               {(!period?.state || period.state==="open") && (
                 <button className="btn ghost" disabled={busy} onClick={deleteAllStatements}
-                  title="Delete every contractor's saved statement for this period (open periods only; requires typed DELETE)."
+                  title="Delete the whole batch — every contractor's saved statement for this period (open periods only; requires typed DELETE)."
                   style={{borderColor:"var(--bad)",color:"var(--bad)"}}>
-                  Delete all statements
+                  Delete batch
                 </button>
               )}
             </div>
