@@ -16,6 +16,14 @@
 //   { action: "profile" }                          -> { profile_id }
 //   { action: "draft", items: [ { worker_id, name, recipient_id, amount_php } ] }
 //        -> { results: [ { worker_id, transfer_id?, fx_rate?, status, error? } ] }
+//   { action: "fund", transfer_id, payment_id?, actor?, profile_id? }
+//        -> { ok, funded_at?, wise_status?, already_funded?, error?, http_status? }
+//        Real-money action. Calls POST /v3/profiles/{id}/transfers/{tid}/payments
+//        which actually moves money out of the business Wise balance. Sets
+//        payments.funded_at + funded_by on success; stores payments.fund_error
+//        on failure. Idempotent (refuses to refund a row that already has
+//        funded_at). Gated client-side on companies.api_payouts_enabled; the
+//        function itself doesn't enforce policy — only idempotency.
 //   { action: "batch", name, items: [ {worker_id, recipient_id, amount_php} ] }
 //        -> { batch_group_id, results: [...] }   (group created + transfers added;
 //            NOT completed, NOT funded — you complete & fund in Wise)
@@ -157,6 +165,134 @@ Deno.serve(async (req) => {
         catch (e) { results.push({ worker_id: item.worker_id, status: "failed", error: String(e?.message ?? e) }); }
       }
       return json({ profile_id: profileId, results });
+    }
+
+    // FUND a single drafted transfer — calls Wise's funding endpoint
+    // (POST /v3/profiles/{id}/transfers/{transferId}/payments) which is what
+    // actually moves money from the business Wise balance. Independent of
+    // the `draft` action so the UI can fund per-row and surface per-row
+    // outcomes. Gated client-side on companies.api_payouts_enabled; this
+    // function does not enforce the flag (defense-in-depth lives in the
+    // edge function only for idempotency, not policy).
+    //
+    // Body: { action: "fund",
+    //         transfer_id: <string|number>,   // required: Wise transfer id
+    //         payment_id?: <uuid>,            // optional: DB payment row for
+    //                                         //   idempotency check + audit update
+    //         actor?: <string> }              // optional: admin email/id for
+    //                                         //   funded_by column
+    //
+    // Returns:
+    //   ok=true   → { ok: true, funded_at, wise_status, already_funded? }
+    //   ok=false  → { ok: false, error, http_status?, fund_error_stored? }
+    //
+    // The DB write happens via the Supabase REST endpoint using the service
+    // role key (same pattern as the `match` action). On Wise success we set
+    // funded_at + funded_by and clear fund_error. On Wise failure we store
+    // fund_error so the UI can render the reason without a fresh probe.
+    if (body.action === "fund") {
+      const transferId = body.transfer_id;
+      const paymentId  = body.payment_id;
+      const actor      = body.actor ?? null;
+      if (transferId == null || String(transferId).trim() === "") {
+        return json({ ok: false, error: "need transfer_id" }, 400);
+      }
+      const supaUrl = Deno.env.get("SUPABASE_URL");
+      const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+      if (!supaUrl || !serviceKey) {
+        return json({ ok: false, error: "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set on the server" }, 500);
+      }
+      const restHeaders = {
+        "apikey": serviceKey,
+        "Authorization": `Bearer ${serviceKey}`,
+        "Content-Type": "application/json",
+      };
+
+      // 1. Defensive idempotency: if the DB row already has funded_at, refuse
+      //    to call Wise a second time. Wise rejects double-funding too, but
+      //    avoiding the API call entirely is faster and surfaces the prior
+      //    funded_at to the UI without another roundtrip.
+      let priorFundedAt: string | null = null;
+      if (paymentId) {
+        const pq = new URLSearchParams({
+          "select": "funded_at,wise_transfer_id",
+          "id": `eq.${paymentId}`,
+        });
+        const pr = await fetch(`${supaUrl}/rest/v1/payments?${pq}`, { headers: restHeaders });
+        if (pr.ok) {
+          const rows = await pr.json();
+          if (Array.isArray(rows) && rows[0]) {
+            priorFundedAt = rows[0].funded_at ?? null;
+            const dbTransfer = String(rows[0].wise_transfer_id ?? "");
+            if (dbTransfer && dbTransfer !== String(transferId)) {
+              return json({ ok: false, error:
+                `transfer_id mismatch: DB has ${dbTransfer}, request has ${transferId}` }, 400);
+            }
+          }
+        }
+        if (priorFundedAt) {
+          return json({ ok: true, already_funded: true, funded_at: priorFundedAt });
+        }
+      }
+
+      // 2. Call Wise's funding endpoint.
+      const profileId = body.profile_id ?? await getBusinessProfileId(token);
+      const fRes = await fetch(
+        `${BASE}/v3/profiles/${profileId}/transfers/${transferId}/payments`,
+        { method: "POST", headers: authHeaders(token),
+          body: JSON.stringify({ type: "BALANCE" }) }
+      );
+      const fText = await fRes.text();
+      let fJson: any = null;
+      try { fJson = fText ? JSON.parse(fText) : null; } catch { /* ignore */ }
+
+      // 3a. Failure path. Store fund_error so the UI can render the reason.
+      if (!fRes.ok) {
+        const errMsg = (fJson?.errors?.[0]?.message)
+                    ?? (fJson?.message)
+                    ?? fText
+                    ?? `Wise fund ${fRes.status}`;
+        if (paymentId) {
+          await fetch(`${supaUrl}/rest/v1/payments?id=eq.${paymentId}`, {
+            method: "PATCH",
+            headers: { ...restHeaders, "Prefer": "return=minimal" },
+            body: JSON.stringify({ fund_error: String(errMsg).slice(0, 500) }),
+          });
+        }
+        return json({
+          ok: false,
+          error: String(errMsg).slice(0, 500),
+          http_status: fRes.status,
+          fund_error_stored: !!paymentId,
+        }, fRes.status === 422 ? 422 : 500);
+      }
+
+      // 3b. Success path. Store funded_at + funded_by; clear any prior
+      //     fund_error. paid_at is NOT set here — paid_at is "Wise confirmed
+      //     sent", which is set by the Reconcile action when /v1/transfers
+      //     reports outgoing_payment_sent. Funded != sent, so we keep them
+      //     distinct (the lifecycle is: drafted → funded → sent → locked).
+      const fundedAt = new Date().toISOString();
+      let dbWriteOk = true;
+      if (paymentId) {
+        const u = await fetch(`${supaUrl}/rest/v1/payments?id=eq.${paymentId}`, {
+          method: "PATCH",
+          headers: { ...restHeaders, "Prefer": "return=minimal" },
+          body: JSON.stringify({
+            funded_at: fundedAt,
+            funded_by: actor,
+            fund_error: null,
+          }),
+        });
+        dbWriteOk = u.ok;
+      }
+      return json({
+        ok: true,
+        funded_at: fundedAt,
+        wise_status: fJson?.status ?? null,
+        wise_type:   fJson?.type   ?? null,
+        db_write_ok: dbWriteOk,
+      });
     }
 
     if (body.action === "batch") {

@@ -40,6 +40,12 @@ create table companies (
     -- The Hubstaff organization this company's time comes from (one Hubstaff
     -- org may feed one company). Used to map imports -> company.
     hubstaff_org_id  bigint,
+    -- API-based payout flag. When TRUE the Process & Pay tab exposes a
+    -- "Create + Fund batch" affordance that calls Wise's funding endpoint
+    -- directly. When FALSE (the default) the UI only drafts via API; money
+    -- moves via the Manual Wise batch CSV uploaded in Wise's web UI.
+    -- Flip per-company via SQL when ready; never auto-flipped by the app.
+    api_payouts_enabled boolean not null default false,
     created_at    timestamptz not null default now()
 );
 
@@ -212,6 +218,16 @@ create table payments (
     -- non-allowed columns (everything except note / wise_locked_at / wise_dates).
     -- Unlock = clear this column via the per-row Unlock admin action.
     wise_locked_at    timestamptz,
+    -- API-payout audit columns. funded_at is set when the wise-payouts edge
+    -- function's `fund` action successfully calls Wise's funding endpoint
+    -- for wise_transfer_id; funded_by captures the admin who clicked Fund;
+    -- fund_error retains the last failure text from Wise (for UI display
+    -- and retry). These three move together as the API funding tail of
+    -- the draft → fund → confirm lifecycle. Independent of wise_locked_at
+    -- (funding is "money sent"; locking is "Wise confirmed sent").
+    funded_at         timestamptz,
+    funded_by         text,
+    fund_error        text,
     status            payment_status not null default 'draft',
     paid_at           timestamptz,
     note              text,
