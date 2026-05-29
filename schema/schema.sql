@@ -212,6 +212,14 @@ create table payments (
     -- non-allowed columns (everything except note / wise_locked_at / wise_dates).
     -- Unlock = clear this column via the per-row Unlock admin action.
     wise_locked_at    timestamptz,
+    -- Free-form labeled pay add-ons that don't fit a single typed column.
+    -- Each entry: { kind: "other_earns"|"other_hours", label, amount,
+    -- hours?, hourly_rate? }. Sum of amount adds to net_php. Other Hours
+    -- prices labeled hours at the contractor's effective hourly rate
+    -- (rate * 24 / 2080) captured at entry time so historical periods are
+    -- not retroactively repriced when rates change.
+    misc_items        jsonb not null default '[]'::jsonb
+                       check (jsonb_typeof(misc_items) = 'array'),
     status            payment_status not null default 'draft',
     paid_at           timestamptz,
     note              text,

@@ -3116,7 +3116,13 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       const pdd=0;     // PDD Lunch: manual per-period add-on, editable in the table
       const bonus=0;   // performance / other bonus, editable in the table
       const ded=rate==null?0:+(rate-(gross||0)).toFixed(2);
-      const net=gross==null?null:+(gross+ha+t13+pdd+bonus).toFixed(2);
+      // Calculate resets misc_items — they are user-entered adjustments per
+      // pay period, not derivable from rate/hours/dates. The Recalculate
+      // warning already tells users overrides will be wiped; that applies
+      // to misc_items too.
+      const misc_items=[];
+      const miscSum=0;
+      const net=gross==null?null:+(gross+ha+t13+pdd+bonus+miscSum).toFixed(2);
       // Inactive snapshot for Lock & Save warning: a row is "inactive" if the
       // worker_companies link or the worker itself is no longer active. Keeps
       // people who are mid-offboarding visible (so a final period can still be
@@ -3125,6 +3131,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       out.push({worker_id:wid,name:fullName(w)||link.worker_id,
         contract:link.contract,worked:+worked.toFixed(2),expected:exp,ratio:+ratio.toFixed(4),
         rate,gross,computed_gross:gross,ha,t13,computed_t13:t13,pdd,bonus,ded,net,overridden:false,
+        misc_items,
         usd_ref:(net==null||!fx)?null:+(net/fx).toFixed(2),   // reference only; paid in PHP
         inactive,
         // default to the worker's set method, else their LAST-USED channel, else unset
@@ -3153,6 +3160,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
         rate_php:r.rate, gross_php:r.gross, health_allowance_php:r.ha,
         thirteenth_month_php:r.t13, pdd_lunch_php:r.pdd||0, bonus_php:r.bonus||0,
         deduction_php:r.ded, net_php:r.net,
+        misc_items: Array.isArray(r.misc_items)?r.misc_items:[],
         fx_rate:fx, payout_currency:"PHP", payout_amount:r.net,
         payout_method:r.method, status:"draft",
         note:r.overridden?`Gross manually overridden (computed ${r.computed_gross})`:null}));
@@ -3168,6 +3176,30 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // drifted from the snapshot stored in `payments`. Populated by loadSaved().
   // The render shows a banner listing these so the user knows to Recalculate.
   const [staleRows,setStaleRows]=useState([]);
+  // Which row's misc-items popup is currently open. null = closed.
+  const [miscRowId,setMiscRow]=useState(null);
+  // Save the popup's draft back onto the row state. Maps the popup's payload
+  // back into six storage sinks: health_allowance_php (ha), thirteenth_month_php
+  // (t13), pdd_lunch_php (pdd), bonus_php (bonus), and misc_items
+  // (other_earns + other_hours + deduction kinds). The row's `ded` (rate -
+  // gross informational column) is NOT touched — user-input deductions live
+  // in misc_items. 13th-month follows the existing override convention:
+  // payload.t13_blank=true reverts to computed_t13; a numeric value marks
+  // t13_overridden.
+  function saveMiscForRow(workerId, payload){
+    patchRow(workerId, r => ({
+      ...r,
+      ha: numOrZero(payload.ha),
+      t13: payload.t13_blank ? (r.computed_t13||0) : numOrZero(payload.t13),
+      t13_overridden: !payload.t13_blank && payload.t13!==""&&payload.t13!=null,
+      pdd: numOrZero(payload.pdd),
+      bonus: numOrZero(payload.bonus),
+      misc_items: Array.isArray(payload.misc_items)?payload.misc_items:[],
+    }));
+    // saveDraft is auto-debounced by the existing useEffect that watches
+    // rows; nothing else to do here.
+    setMiscRow(null);
+  }
 
   async function loadSaved(){
     if(!companyId||!start||!end)return;
@@ -3177,7 +3209,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     const {data:pays}=await client.from("payments")
       .select("worker_id,expected_hours,worked_hours,performance_ratio,rate_php,gross_php,"+
               "health_allowance_php,thirteenth_month_php,pdd_lunch_php,bonus_php,deduction_php,net_php,fx_rate,"+
-              "payout_method,note,workers(first_name,middle_name,last_name)")
+              "misc_items,payout_method,note,workers(first_name,middle_name,last_name)")
       .eq("pay_period_id",pp.id);
     if(!pays||!pays.length){ setRows(null); setPeriod({id:pp.id,state:pp.state}); setMsg(""); setStaleRows([]); return; }
     setPeriod({id:pp.id,state:pp.state});
@@ -3215,6 +3247,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
         gross:p.gross_php==null?null:Number(p.gross_php), computed_gross:p.gross_php==null?null:Number(p.gross_php),
         ha:Number(p.health_allowance_php||0), t13:Number(p.thirteenth_month_php||0), computed_t13:Number(p.thirteenth_month_php||0),
         pdd:Number(p.pdd_lunch_php||0), bonus:Number(p.bonus_php||0), ded:Number(p.deduction_php||0), net:p.net_php==null?null:Number(p.net_php),
+        misc_items: Array.isArray(p.misc_items) ? p.misc_items : [],
         overridden:!!p.note, usd_ref:(p.net_php==null||!fx)?null:+(Number(p.net_php)/fx).toFixed(2),
         method:p.payout_method||null,
         rate_stale: rateChanged,
@@ -3227,10 +3260,23 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     setMsg(pp.state==="open"?"Loaded saved draft for this period.":`Loaded ${pp.state} period (read-only snapshot).`);
   }
 
-  // recompute net + usd_ref from a row's components (single source of truth)
+  // Sum the misc_items adjustments on a row. other_earns and other_hours add
+  // (positive amounts); deduction kind subtracts (amount is stored positive
+  // and treated as a deduction here). r.ded (the rate-minus-gross
+  // performance shortfall) remains informational and is NOT in net.
+  function miscTotal(items){
+    if(!Array.isArray(items)) return 0;
+    return items.reduce((s,it)=> {
+      const a = Number(it?.amount)||0;
+      return s + (it?.kind === "deduction" ? -a : a);
+    }, 0);
+  }
+
+  // recompute net + usd_ref from a row's components (single source of truth).
+  // Net adds the misc_items sum on top of the existing typed columns.
   function recalcNet(r){
     const net = r.gross==null ? null
-      : +(r.gross + (r.ha||0) + (r.t13||0) + (r.pdd||0) + (r.bonus||0)).toFixed(2);
+      : +(r.gross + (r.ha||0) + (r.t13||0) + (r.pdd||0) + (r.bonus||0) + miscTotal(r.misc_items)).toFixed(2);
     return {...r, net, usd_ref:(net==null||!fx)?null:+(net/fx).toFixed(2)};
   }
   function patchRow(wid, fn){ setRows(prev=>prev.map(r=> r.worker_id===wid ? recalcNet(fn(r)) : r)); }
@@ -3331,6 +3377,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       expected_hours:r.expected, worked_hours:r.worked, performance_ratio:r.ratio,
       rate_php:r.rate, gross_php:r.gross, health_allowance_php:r.ha,
       thirteenth_month_php:r.t13, pdd_lunch_php:r.pdd||0, bonus_php:r.bonus||0, deduction_php:r.ded, net_php:r.net,
+      misc_items: Array.isArray(r.misc_items)?r.misc_items:[],
       fx_rate:fx, payout_currency:"PHP", payout_amount:r.net,   // PAID IN PHP; fx_rate is reference only
       payout_method:r.method, status:"draft",
       note:r.overridden?`Gross manually overridden (computed ${r.computed_gross})`:null}));
@@ -3480,10 +3527,26 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
             </div>
           </div>
           <FilterBox q={sfQ} setQ={sfSetQ} placeholder="Filter contractors…" />
+          {(() => {
+            // Decide which optional columns to display: show a column only if
+            // at least one row in the current period has a non-zero value.
+            // misc_items is its own always-visible column with a popup editor.
+            const anyHA    = sfRows.some(r => Number(r.ha)>0);
+            const any13    = sfRows.some(r => Number(r.t13)>0);
+            const anyLunch = sfRows.some(r => Number(r.pdd)>0);
+            const anyBonus = sfRows.some(r => Number(r.bonus)>0);
+            const miscSum = r => miscTotal(r.misc_items);
+            return (
           <div className="table-scroll"><table>
             <thead><tr>
               <SfTh k="name">Contractor</SfTh><SfTh k="worked">Worked h</SfTh><th>Exp</th><SfTh k="ratio">Ratio</SfTh><SfTh k="rate">Rate ₱</SfTh>
-              <th>Gross ₱</th><th>HA ₱</th><th>13th ₱</th><th>PDD Lunch ₱</th><th>Bonus ₱</th><SfTh k="net">Net ₱ (paid)</SfTh><th>≈ USD ref</th><SfTh k="method">Via</SfTh>
+              <th>Gross ₱</th>
+              {anyHA    && <th>HA ₱</th>}
+              {any13    && <th>13th ₱</th>}
+              {anyLunch && <th>Lunch ₱</th>}
+              {anyBonus && <th>Bonus ₱</th>}
+              <th>Misc ₱</th>
+              <SfTh k="net">Net ₱ (paid)</SfTh><th>≈ USD ref</th><SfTh k="method">Via</SfTh>
             </tr></thead>
             <tbody>
               {sfRows.map(r=>(
@@ -3502,21 +3565,31 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
                       style={{marginLeft:4,padding:"2px 6px"}}
                       onClick={()=>overrideGross(r.worker_id,"")}>↺</button>}
                   </td>
-                  <td>{r.ha?r.ha.toLocaleString():"—"}</td>
-                  <td><input type="number" step="0.01" value={r.t13||""}
-                      placeholder="0" title="13th-month for this period (computed; editable)"
-                      onChange={e=>setT13(r.worker_id,e.target.value)}
-                      style={{width:80,padding:"3px 6px",fontSize:13,
-                        border:r.t13_overridden?"1px solid var(--accent)":"1px solid var(--border)",
-                        background:r.t13_overridden?"var(--accent-soft)":"#fff"}}/></td>
-                  <td><input type="number" step="0.01" value={r.pdd||""}
-                      placeholder="0" title="PDD Lunch — manual add-on"
-                      onChange={e=>setPdd(r.worker_id,e.target.value)}
-                      style={{width:80,padding:"3px 6px",fontSize:13,border:"1px solid var(--border)"}}/></td>
-                  <td><input type="number" step="0.01" value={r.bonus||""}
-                      placeholder="0" title="Performance / other bonus"
-                      onChange={e=>setBonus(r.worker_id,e.target.value)}
-                      style={{width:80,padding:"3px 6px",fontSize:13,border:"1px solid var(--border)"}}/></td>
+                  {anyHA    && <td>{r.ha?r.ha.toLocaleString():"—"}</td>}
+                  {any13    && <td>{r.t13?Number(r.t13).toLocaleString():"—"}</td>}
+                  {anyLunch && <td>{r.pdd?Number(r.pdd).toLocaleString():"—"}</td>}
+                  {anyBonus && <td>{r.bonus?Number(r.bonus).toLocaleString():"—"}</td>}
+                  <td style={{whiteSpace:"nowrap"}}>
+                    {(() => {
+                      const m = miscSum(r);
+                      const hasMisc = Math.abs(m) > 0.005;
+                      const itemCount = Array.isArray(r.misc_items)?r.misc_items.length:0;
+                      return (
+                        <span style={{display:"inline-flex",gap:6,alignItems:"center"}}>
+                          {hasMisc
+                            ? <span style={{color:m<0?"#b91c1c":"inherit"}}>
+                                {m<0?"-":""}{Math.abs(m).toLocaleString(undefined,{minimumFractionDigits:2})}
+                              </span>
+                            : <span className="muted">—</span>}
+                          <button className="btn ghost sm" style={{padding:"2px 8px",fontSize:12}}
+                            onClick={()=>setMiscRow(r.worker_id)}
+                            title={itemCount?`Edit ${itemCount} misc item(s)`:"Add Lunch / Other Earns / Other Hours / Bonus / Deductions"}>
+                            {itemCount?`Edit (${itemCount})`:"+ Misc"}
+                          </button>
+                        </span>
+                      );
+                    })()}
+                  </td>
                   <td><b>{r.net==null?"—":r.net.toLocaleString()}</b></td>
                   <td className="muted">{r.usd_ref==null?"—":"$"+r.usd_ref.toLocaleString()}</td>
                   <td>
@@ -3531,6 +3604,8 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
               ))}
             </tbody>
           </table></div>
+            );
+          })()}
           <p className="muted" style={{fontSize:12,marginTop:10}}>
             Contractors are <b>paid in PHP</b> (Net ₱). USD is a reference only (Net ₱ ÷ FX).
             <b> Gross ₱ is editable</b> — override it for any contractor and Net recomputes;
@@ -3538,6 +3613,226 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
             Yellow rows have no effective rate set — fix that before locking.</p>
         </div>
       )}
+      {miscRowId && (() => {
+        const row = (rows||[]).find(r=>r.worker_id===miscRowId);
+        if(!row){ setMiscRow(null); return null; }
+        return <MiscModal row={row}
+          onClose={()=>setMiscRow(null)}
+          onSave={payload=>saveMiscForRow(miscRowId, payload)} />;
+      })()}
+    </div>
+  );
+}
+
+// ============================ MISC MODAL =====================================
+// Per-row popup for the "Misc" cell in Calculate's pay statements table.
+// Edits four storage sinks at once:
+//   1. Lunch       → payments.pdd_lunch_php  (single number)
+//   2. Bonus       → payments.bonus_php      (single number)
+//   3. Other Earns → payments.misc_items[]   (kind=other_earns, label+amount)
+//   4. Other Hours → payments.misc_items[]   (kind=other_hours, label+hours;
+//                     amount = hours * (rate * 24 / 2080), live-computed)
+//   5. Deductions  → payments.misc_items[]   (kind=deduction, label+amount;
+//                     subtracted from Net in miscTotal)
+//
+// All edits are local until "Save" — closing without saving discards. Save
+// hands the assembled payload back to the parent which patches the row and
+// triggers debounced saveDraft via the standard recalcNet pipeline.
+function MiscModal({ row, onClose, onSave }){
+  const rate = Number(row.rate)||0;
+  // Effective hourly rate per the spec: (semi-monthly rate × 24 periods/yr) ÷ 2080 hrs/yr
+  const hourlyRate = rate>0 ? +((rate*24)/2080).toFixed(4) : 0;
+
+  // Local editable state, seeded from the row.
+  const [ha,setHa]=useState(row.ha?String(row.ha):"");
+  // 13th-month: track whether the user cleared it (blank → revert to computed).
+  const [t13,setT13]=useState(row.t13?String(row.t13):"");
+  const [pdd,setPdd]=useState(row.pdd?String(row.pdd):"");
+  const [bonus,setBonus]=useState(row.bonus?String(row.bonus):"");
+  const computedT13 = Number(row.computed_t13)||0;
+  const seedItems = Array.isArray(row.misc_items)?row.misc_items:[];
+  const [earns,setEarns]=useState(()=>seedItems.filter(x=>x.kind==="other_earns").map(x=>({label:x.label||"", amount:String(x.amount||"")})));
+  const [hours,setHours]=useState(()=>seedItems.filter(x=>x.kind==="other_hours").map(x=>({label:x.label||"", hours:String(x.hours||""), hourly_rate:Number(x.hourly_rate||hourlyRate)})));
+  const [deducs,setDeducs]=useState(()=>seedItems.filter(x=>x.kind==="deduction").map(x=>({label:x.label||"", amount:String(x.amount||"")})));
+
+  function setEarn(i, patch){ setEarns(prev=>prev.map((e,j)=>j===i?{...e,...patch}:e)); }
+  function setHr(i, patch){ setHours(prev=>prev.map((e,j)=>j===i?{...e,...patch}:e)); }
+  function setDed(i, patch){ setDeducs(prev=>prev.map((e,j)=>j===i?{...e,...patch}:e)); }
+  const addEarn = ()=>setEarns(prev=>[...prev,{label:"",amount:""}]);
+  const addHr   = ()=>setHours(prev=>[...prev,{label:"",hours:"",hourly_rate:hourlyRate}]);
+  const addDed  = ()=>setDeducs(prev=>[...prev,{label:"",amount:""}]);
+  const rmEarn = i=>setEarns(prev=>prev.filter((_,j)=>j!==i));
+  const rmHr   = i=>setHours(prev=>prev.filter((_,j)=>j!==i));
+  const rmDed  = i=>setDeducs(prev=>prev.filter((_,j)=>j!==i));
+
+  // Compute Other Hours amount inline (hours × hourly_rate) for preview.
+  const hoursAmount = e => +((Number(e.hours)||0) * (Number(e.hourly_rate)||0)).toFixed(2);
+
+  const haNum    = Number(ha)||0;
+  const t13Num   = t13===""||t13==null ? computedT13 : (Number(t13)||0);
+  const pddNum   = Number(pdd)||0;
+  const bonusNum = Number(bonus)||0;
+  const earnsSum = earns.reduce((s,e)=>s+(Number(e.amount)||0),0);
+  const hoursSum = hours.reduce((s,e)=>s+hoursAmount(e),0);
+  const ducsSum  = deducs.reduce((s,e)=>s+(Number(e.amount)||0),0);
+  const netImpact = haNum + t13Num + pddNum + bonusNum + earnsSum + hoursSum - ducsSum;
+
+  function commitSave(){
+    // Reject malformed: label required + amount/hours required & positive.
+    const cleanEarns = earns
+      .map(e=>({label:String(e.label||"").trim(), amount:Number(e.amount)||0}))
+      .filter(e=>e.label && e.amount>0);
+    const cleanHours = hours
+      .map(e=>({label:String(e.label||"").trim(), hours:Number(e.hours)||0,
+                hourly_rate:Number(e.hourly_rate)||hourlyRate}))
+      .filter(e=>e.label && e.hours>0)
+      .map(e=>({...e, amount:+((e.hours)*(e.hourly_rate)).toFixed(2)}));
+    const cleanDeds = deducs
+      .map(e=>({label:String(e.label||"").trim(), amount:Number(e.amount)||0}))
+      .filter(e=>e.label && e.amount>0);
+    const misc_items = [
+      ...cleanEarns.map(e=>({kind:"other_earns", label:e.label, amount:+(e.amount).toFixed(2)})),
+      ...cleanHours.map(e=>({kind:"other_hours", label:e.label, hours:e.hours,
+                              hourly_rate:e.hourly_rate, amount:e.amount})),
+      ...cleanDeds .map(e=>({kind:"deduction",   label:e.label, amount:+(e.amount).toFixed(2)})),
+    ];
+    // t13_blank=true means user emptied the field — parent reverts to computed.
+    const t13_blank = t13===""||t13==null;
+    onSave({ ha:haNum, t13: t13_blank?"":t13Num, t13_blank,
+             pdd:pddNum, bonus:bonusNum, misc_items });
+  }
+
+  const numInp = {width:120,padding:"4px 6px",fontSize:13};
+  const lblInp = {flex:1,padding:"4px 6px",fontSize:13,minWidth:160};
+  const sectionStyle = {borderTop:"1px solid var(--border)",paddingTop:10,marginTop:10};
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
+        <button className="x" onClick={onClose}>×</button>
+        <h2 style={{marginBottom:0}}>Misc · {row.name}</h2>
+        <p className="sub" style={{marginTop:2,fontSize:12}}>
+          Rate ₱{rate.toLocaleString()} · effective hourly ₱{hourlyRate.toLocaleString(undefined,{minimumFractionDigits:2})} (rate×24÷2080)
+        </p>
+
+        {/* HA + 13th + Lunch + Bonus — single-value typed inputs that map to
+            the existing health_allowance_php, thirteenth_month_php,
+            pdd_lunch_php, and bonus_php columns respectively. Clearing the
+            13th-month input reverts to the value Calculate computed
+            (computed_t13); 13th input shows "computed" hint when blank.
+            HA has no auto-revert — empty means 0. */}
+        <div style={{display:"flex",gap:16,marginTop:8,flexWrap:"wrap"}}>
+          <div className="field">
+            <label>Health Allowance (₱)</label>
+            <input type="number" step="0.01" value={ha} onChange={e=>setHa(e.target.value)}
+              placeholder="0" style={numInp}/>
+          </div>
+          <div className="field">
+            <label>13th month (₱) <span className="muted" style={{fontSize:11,fontWeight:400}}>
+              {(t13===""||t13==null)?`(computed: ₱${computedT13.toLocaleString(undefined,{minimumFractionDigits:2})})`:""}
+            </span></label>
+            <input type="number" step="0.01" value={t13} onChange={e=>setT13(e.target.value)}
+              placeholder={`computed ${computedT13.toFixed(2)}`} style={numInp}/>
+          </div>
+          <div className="field">
+            <label>Lunch (₱)</label>
+            <input type="number" step="0.01" value={pdd} onChange={e=>setPdd(e.target.value)}
+              placeholder="0" style={numInp}/>
+          </div>
+          <div className="field">
+            <label>Bonus (₱)</label>
+            <input type="number" step="0.01" value={bonus} onChange={e=>setBonus(e.target.value)}
+              placeholder="0" style={numInp}/>
+          </div>
+        </div>
+
+        {/* Other Earns — labeled lump sums. */}
+        <div style={sectionStyle}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <label style={{fontSize:11,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".03em"}}>
+              Other earns
+            </label>
+            <button className="btn ghost sm" onClick={addEarn}>+ Add earn</button>
+          </div>
+          {earns.length===0
+            ? <p className="muted" style={{fontSize:12,margin:"6px 0 0"}}>None.</p>
+            : earns.map((e,i)=>(
+                <div key={i} style={{display:"flex",gap:6,alignItems:"center",marginTop:6}}>
+                  <input type="text" placeholder="Description (required)" value={e.label}
+                    onChange={ev=>setEarn(i,{label:ev.target.value})} style={lblInp}/>
+                  <input type="number" step="0.01" placeholder="₱ amount" value={e.amount}
+                    onChange={ev=>setEarn(i,{amount:ev.target.value})} style={numInp}/>
+                  <button className="btn ghost sm" onClick={()=>rmEarn(i)}
+                    style={{borderColor:"var(--bad)",color:"var(--bad)"}}>×</button>
+                </div>
+              ))}
+        </div>
+
+        {/* Other Hours — labeled labor hours, priced at the contractor's
+            effective hourly rate. Amount is auto-derived from hours; rate
+            is captured at save time for historical stability. */}
+        <div style={sectionStyle}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <label style={{fontSize:11,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".03em"}}>
+              Other hours <span style={{textTransform:"none"}}>(priced at ₱{hourlyRate.toLocaleString(undefined,{minimumFractionDigits:2})}/h)</span>
+            </label>
+            <button className="btn ghost sm" onClick={addHr} disabled={hourlyRate<=0}
+              title={hourlyRate<=0?"Set a rate on this contractor first":"Add a labeled hours entry"}>
+              + Add hours
+            </button>
+          </div>
+          {hours.length===0
+            ? <p className="muted" style={{fontSize:12,margin:"6px 0 0"}}>None.</p>
+            : hours.map((e,i)=>(
+                <div key={i} style={{display:"flex",gap:6,alignItems:"center",marginTop:6,flexWrap:"wrap"}}>
+                  <input type="text" placeholder="Description (required)" value={e.label}
+                    onChange={ev=>setHr(i,{label:ev.target.value})} style={lblInp}/>
+                  <input type="number" step="0.01" placeholder="hours" value={e.hours}
+                    onChange={ev=>setHr(i,{hours:ev.target.value})} style={{width:90,padding:"4px 6px",fontSize:13}}/>
+                  <span className="muted" style={{fontSize:12}}>
+                    × ₱{Number(e.hourly_rate).toLocaleString(undefined,{minimumFractionDigits:2})}/h
+                    = <b>₱{hoursAmount(e).toLocaleString(undefined,{minimumFractionDigits:2})}</b>
+                  </span>
+                  <button className="btn ghost sm" onClick={()=>rmHr(i)}
+                    style={{borderColor:"var(--bad)",color:"var(--bad)"}}>×</button>
+                </div>
+              ))}
+        </div>
+
+        {/* Deductions — labeled subtractions from Net. */}
+        <div style={sectionStyle}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <label style={{fontSize:11,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".03em"}}>
+              Deductions <span style={{textTransform:"none"}}>(subtracted from Net)</span>
+            </label>
+            <button className="btn ghost sm" onClick={addDed}>+ Add deduction</button>
+          </div>
+          {deducs.length===0
+            ? <p className="muted" style={{fontSize:12,margin:"6px 0 0"}}>None.</p>
+            : deducs.map((e,i)=>(
+                <div key={i} style={{display:"flex",gap:6,alignItems:"center",marginTop:6}}>
+                  <input type="text" placeholder="Reason (required)" value={e.label}
+                    onChange={ev=>setDed(i,{label:ev.target.value})} style={lblInp}/>
+                  <input type="number" step="0.01" placeholder="₱ amount" value={e.amount}
+                    onChange={ev=>setDed(i,{amount:ev.target.value})} style={numInp}/>
+                  <button className="btn ghost sm" onClick={()=>rmDed(i)}
+                    style={{borderColor:"var(--bad)",color:"var(--bad)"}}>×</button>
+                </div>
+              ))}
+        </div>
+
+        <div style={{...sectionStyle, display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div style={{fontSize:13}}>
+            Net impact: <b style={{color:netImpact<0?"#b91c1c":"#166534"}}>
+              {netImpact<0?"-":"+"}₱{Math.abs(netImpact).toLocaleString(undefined,{minimumFractionDigits:2})}
+            </b>
+          </div>
+          <div>
+            <button className="btn ghost" onClick={onClose}>Cancel</button>
+            {" "}
+            <button className="btn" onClick={commitSave}>Save</button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
