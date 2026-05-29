@@ -4055,7 +4055,7 @@ function Reports({client,companyId,consolidated}){
   const {data,loading}=useQuery(client,c=>{
     let q=c.from("payments").select(
       "company_id,worked_hours,rate_php,gross_php,health_allowance_php,pdd_lunch_php,"+
-      "bonus_php,thirteenth_month_php,deduction_php,net_php,payout_amount,payout_currency,"+
+      "bonus_php,thirteenth_month_php,deduction_php,misc_items,net_php,payout_amount,payout_currency,"+
       "fx_rate,status,payout_method,worker_id,"+
       "pay_periods(period_start,period_end,pay_date,state),"+
       "companies(name),workers(first_name,middle_name,last_name)");
@@ -4074,11 +4074,20 @@ function Reports({client,companyId,consolidated}){
     g.count++; g.net+=Number(p.net_php||0);
     g.usdRef+=p.fx_rate?Number(p.net_php||0)/Number(p.fx_rate):0;
     if(p.status!=="sent" && p.status!=="reconciled") g.unpaid+=Number(p.net_php||0);
+    // Real (user-entered) deductions live in misc_items[kind=deduction] and ARE
+    // subtracted from net. deduction_php is the rate−gross performance shortfall
+    // (informational, NOT subtracted) — shown separately so the two aren't
+    // conflated. misc (earns+hours−deductions) is the net contribution of the
+    // Misc popup; miscDeduct isolates just the deduction portion for display.
+    const items=Array.isArray(p.misc_items)?p.misc_items:[];
+    const miscDeduct=items.filter(x=>x.kind==="deduction").reduce((s,x)=>s+(Number(x.amount)||0),0);
+    const miscEarn=items.filter(x=>x.kind!=="deduction").reduce((s,x)=>s+(Number(x.amount)||0),0);
     g.rows.push({
       name:fullName(p.workers)||"(unknown)",
       hours:p.worked_hours, rate:p.rate_php, gross:p.gross_php, ha:p.health_allowance_php,
       lunch:p.pdd_lunch_php, bonus:p.bonus_php, t13:p.thirteenth_month_php,
-      ded:p.deduction_php, net:p.net_php, method:p.payout_method, status:p.status});
+      perfShort:p.deduction_php, miscEarn, miscDeduct,
+      net:p.net_php, method:p.payout_method, status:p.status});
   });
   const periods=Object.values(byPeriod).sort((a,b)=>(b.start||"").localeCompare(a.start||""));
   const grandNet=periods.reduce((s,p)=>s+p.net,0);
@@ -4138,7 +4147,12 @@ function Reports({client,companyId,consolidated}){
                         <thead><tr>
                           <th>Contractor</th><th>Hours</th><th>Rate ₱</th><th>Gross ₱</th>
                           <th>Health ₱</th><th>13th ₱</th><th>Lunch ₱</th><th>Bonus ₱</th>
-                          <th>Deduction ₱</th><th>Net ₱</th><th>Method</th><th>Status</th>
+                          <th>Misc earn ₱</th>
+                          <th><span className="tip-wrap" tabIndex={0} style={{cursor:"help"}}>Deductions ₱
+                            <span className="tip-body">User-entered deductions (Misc popup) — actually subtracted from Net.</span></span></th>
+                          <th><span className="tip-wrap" tabIndex={0} style={{cursor:"help"}}>Perf. short ₱
+                            <span className="tip-body">Performance shortfall = rate − gross when hours were under expectation. Informational only — NOT subtracted from Net.</span></span></th>
+                          <th>Net ₱</th><th>Method</th><th>Status</th>
                         </tr></thead>
                         <tbody>
                           {[...p.rows].sort((a,b)=>a.name.localeCompare(b.name)).map((r,j)=>(
@@ -4151,7 +4165,9 @@ function Reports({client,companyId,consolidated}){
                               <td>{money(r.t13,"PHP")}</td>
                               <td>{money(r.lunch,"PHP")}</td>
                               <td>{money(r.bonus,"PHP")}</td>
-                              <td>{money(r.ded,"PHP")}</td>
+                              <td>{r.miscEarn?money(r.miscEarn,"PHP"):"—"}</td>
+                              <td style={r.miscDeduct?{color:"#b91c1c"}:{}}>{r.miscDeduct?("-"+money(r.miscDeduct,"PHP")):"—"}</td>
+                              <td className="muted">{r.perfShort?money(r.perfShort,"PHP"):"—"}</td>
                               <td><b>{money(r.net,"PHP")}</b></td>
                               <td>{methodLabel(r.method)||"—"}</td>
                               <td><span className="pill" style={paid(r.status)
@@ -4236,8 +4252,11 @@ function PerContractorSummary({client,companyId,consolidated}){
   const totNet=rows.reduce((s,r)=>s+r.net,0);
 
   function exportCsv(){
+    // "Misc PHP" already nets user deductions (earns+hours−deductions). The
+    // deduction_php column is the rate−gross performance shortfall — labeled
+    // "Perf short PHP" so it isn't read as an actual withholding.
     const header=["Contractor",...(consolidated?["Company"]:[]),"Periods","Hours","Gross PHP",
-      "Health PHP","13th PHP","Lunch PHP","Bonus PHP","Misc PHP","Deduction PHP","Net PHP","Paid PHP"];
+      "Health PHP","13th PHP","Lunch PHP","Bonus PHP","Misc PHP (net)","Perf short PHP","Net PHP","Paid PHP"];
     const body=rows.map(r=>[r.name,...(consolidated?[r.company]:[]),r.periods,
       r.hours.toFixed(2),r.gross.toFixed(2),r.ha.toFixed(2),r.t13.toFixed(2),r.lunch.toFixed(2),
       r.bonus.toFixed(2),r.misc.toFixed(2),r.ded.toFixed(2),r.net.toFixed(2),r.paid.toFixed(2)]);
