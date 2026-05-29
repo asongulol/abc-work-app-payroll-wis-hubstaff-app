@@ -303,12 +303,15 @@ const BULK_COLMAP={
   contract:"contract", contracttype:"contract", employmenttype:"contract",
   hubstaffuserid:"hubstaff_user_id", hubstaffid:"hubstaff_user_id",
   hubstaffname:"hubstaff_name",
-  hiredate:"hire_date", started:"hire_date", startdate:"hire_date", startedon:"hire_date", engagementstart:"hire_date",
+  hiredate:"hire_date", hire:"hire_date", startdate:"hire_date", engagementstart:"hire_date",
   dateofbirth:"date_of_birth", dob:"date_of_birth", birthdate:"date_of_birth", birthday:"date_of_birth",
   phaddress:"ph_address", address:"ph_address", homeaddress:"ph_address",
   gcash:"gcash", paymaya:"paymaya", maya:"paymaya", paypal:"paypal",
   healthallowance:"health_allowance_eligible", haeligible:"health_allowance_eligible", ha:"health_allowance_eligible",
   thirteenthmonth:"thirteenth_month_eligible", thirteenth:"thirteenth_month_eligible", "13thmonth":"thirteenth_month_eligible", "13th":"thirteenth_month_eligible", thirteenmonth:"thirteenth_month_eligible",
+  status:"status", workerstatus:"status", state:"status", active:"status",
+  startedon:"started_on", started:"started_on", companystart:"started_on", linkstart:"started_on", joinedon:"started_on",
+  endedon:"ended_on", ended:"ended_on", enddate:"ended_on", terminationdate:"ended_on", resigned:"ended_on", separationdate:"ended_on",
 };
 const BULK_PAYOUT={wise:"wise",bpi:"bpi",gcash:"gcash",paymaya:"paymaya",maya:"paymaya",paypal:"paypal"};
 const normHdr=h=>String(h||"").toLowerCase().replace(/[^a-z0-9]/g,"");
@@ -326,6 +329,7 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
   const [busy,setBusy]=useState(false);
   const [progress,setProgress]=useState("");
   const [result,setResult]=useState(null);     // {created,updated,skipped,errors[]}
+  const [preferWise,setPreferWise]=useState(true);   // pull the contractor name from Wise for rows with a recipient id
 
   // Delimiter-aware CSV/TSV parse (same state machine as parseCSV, parameterized).
   function parseDelimited(t,delim){
@@ -382,8 +386,49 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
         return {w:x, link, names:[ `${x.first_name||""} ${x.middle_name||""} ${x.last_name||""}`, link?.hubstaff_name ].filter(Boolean)};
       });
       const rows=recs.map(rec=>buildRow(rec,roster));
+      // ---- name prefer Wise: for rows with a numeric recipient id, fetch the
+      // Wise account-holder name and use it as the contractor's name (so the DB
+      // name matches what payouts/reconciliation see). Falls back to the sheet
+      // name when Wise can't return one (Wisetag/balance recipients 403).
+      if(preferWise){
+        const idRows=rows.filter(r=>r.wid!=null);
+        for(let i=0;i<idRows.length;i++){
+          const r=idRows[i]; setProgress(`Fetching Wise name ${i+1}/${idRows.length}…`);
+          try{
+            const {data,error}=await client.functions.invoke("wise-payouts",{body:{action:"get_recipient",recipient_id:r.wid}});
+            const wn = (!error && !data?.error) ? (data?.recipient?.name||"").trim() : "";
+            if(wn) applyWiseName(r,wn);
+            else r.notes.push("Wise name unavailable (Wisetag/balance) — kept sheet name");
+          }catch(ex){ r.notes.push("Wise name fetch failed — kept sheet name"); }
+        }
+      }
       setPreview(rows); setStage("preview");
     } finally { setBusy(false); setProgress(""); }
+  }
+  // Override a row's name from the Wise account name; re-derive first/middle/last,
+  // re-diff name fields for updates, and rescue create rows that lacked a name.
+  function applyWiseName(r, wn){
+    const t=wn.split(/\s+/).filter(Boolean);
+    const first=t[0]||r.wp.first_name, last=t.length>1?t[t.length-1]:(r.wp.last_name||""), mid=t.length>2?t.slice(1,-1).join(" "):null;
+    if(first) r.wp.first_name=first;
+    if(last) r.wp.last_name=last;
+    if(mid) r.wp.middle_name=mid;
+    r.wiseName=wn; r.name=`${first||""} ${last||""}`.trim()||wn;
+    r.notes.push("name from Wise");
+    if(r.action==="update" && r.existing){
+      ["first_name","middle_name","last_name"].forEach(k=>{
+        const b=r.wp[k]; if(b==null){ delete r.changes[k]; return; }
+        const a=r.existing.w[k]??null;
+        if(String(a===null?"":a)!==String(b)) r.changes[k]={from:a,to:b}; else delete r.changes[k];
+      });
+    }
+    // a row that couldn't be created for lack of a name now has one from Wise
+    if(r.action==="error" && r.wp.first_name){ r.action="create"; r.errors=r.errors.filter(e=>!/No name/.test(e)); }
+  }
+  function downloadTemplate(){
+    const headers=["First name","Last name","Email","Mobile","Wise recipient id","Wise UUID","Payout method","Rate","Rate effective","Role","Contract","Hubstaff user id","Hubstaff name","Hire date","Date of birth","PH address","GCash","PayMaya","PayPal","Health allowance","13th month","Status","Started on","Ended on"];
+    const example=["Manuella","Gamboa","manuella@example.com","+639170000000","12345678","33e5a1b2-c4d5-6789-...","wise","18000","2026-01-01","Billing Associate","FT","2030586","Manuella Gamboa","2025-06-01","1995-03-12","Quezon City, PH","","","","yes","yes","active","2025-06-01",""];
+    downloadCSV("contractor-import-template.csv",[headers,example]);
   }
 
   // Derive names, coerce types, find a match (Wise-first), and diff vs existing.
@@ -409,6 +454,15 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
     const ha=parseBool(rec.health_allowance_eligible), thir=parseBool(rec.thirteenth_month_eligible);
     const rate = rec.rate!=null ? Number(String(rec.rate).replace(/[^0-9.]/g,"")) : null;
     if(rec.rate!=null && !(rate>0)) notes.push("rate not a positive number — skipped");
+    let status=null;
+    if(rec.status){ const s=normHdr(rec.status);
+      status = (s==="active"||s==="a"||s==="current") ? "active"
+        : (["ended","inactive","terminated","resigned","former","past","done","separated","n"].includes(s) ? "ended" : null);
+      if(!status) notes.push(`status "${rec.status}" unknown — skipped`); }
+    let startedOn=null;
+    if(rec.started_on){ if(/^\d{4}-\d{2}-\d{2}$/.test(rec.started_on)) startedOn=rec.started_on; else notes.push("started on not YYYY-MM-DD — skipped"); }
+    let endedOn=null;
+    if(rec.ended_on){ if(/^\d{4}-\d{2}-\d{2}$/.test(rec.ended_on)) endedOn=rec.ended_on; else notes.push("ended on not YYYY-MM-DD — skipped"); }
 
     // ---- MATCH: Wise id -> Wise uuid -> Hubstaff id -> strict name -> loose name
     let hit=null, via="";
@@ -437,12 +491,19 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
     if(uuid) wp.wise_recipient_uuid=uuid;
     if(ha!==undefined) wp.health_allowance_eligible=ha;
     if(thir!==undefined) wp.thirteenth_month_eligible=thir;
+    if(status) wp.status=status;   // worker-level status mirrors the link below
 
     const link={};
     if(contract) link.contract=contract;
     if(rec.role) link.role=rec.role;
     if(rec.hubstaff_name) link.hubstaff_name=rec.hubstaff_name;
     if(huid!=null) link.hubstaff_user_id=huid;
+    if(status) link.status=status;
+    // ended_on follows status (today if ending without an explicit date; cleared on reactivate)
+    if(status==="ended") link.ended_on = endedOn || todayISO();
+    else if(status==="active") link.ended_on = null;
+    else if(endedOn) link.ended_on = endedOn;
+    if(startedOn) link.started_on = startedOn;
 
     let action, existing=null, changes={};
     if(hit){
@@ -493,7 +554,7 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
           if(!r.existing.link){
             // matched (e.g. by Wise id) but not yet in this company — create the link
             const {error:le}=await client.from("worker_companies")
-              .insert({worker_id:r.existing.w.id,company_id:companyId,status:"active",contract:r.link.contract||"FT",role:r.link.role||null,hubstaff_name:r.link.hubstaff_name||null,...(r.link.hubstaff_user_id!=null?{hubstaff_user_id:r.link.hubstaff_user_id}:{})});
+              .insert({worker_id:r.existing.w.id,company_id:companyId,contract:"FT",status:"active",role:null,hubstaff_name:null,...r.link});
             if(le)throw le;
           }else if(Object.keys(r.link).length){
             // already linked — update only the provided link fields; don't touch status
@@ -513,7 +574,7 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
           if(e1 && /payout_method/i.test(e1.message)) ({data:nw,error:e1}=await client.from("workers").insert({...base,payout_method:base.payout_method||"wise"}).select().single());
           if(e1)throw e1;
           const {error:e2}=await client.from("worker_companies")
-            .insert({worker_id:nw.id,company_id:companyId,status:"active",contract:r.link.contract||"FT",role:r.link.role||null,hubstaff_name:r.link.hubstaff_name||null,...(r.link.hubstaff_user_id!=null?{hubstaff_user_id:r.link.hubstaff_user_id}:{})});
+            .insert({worker_id:nw.id,company_id:companyId,contract:"FT",status:"active",role:null,hubstaff_name:null,...r.link});
           if(e2){
             // race / unique on (company,hubstaff_user_id): reuse the winner, drop orphan
             if(/duplicate|unique|23505/i.test(e2.message||"") && r.link.hubstaff_user_id!=null){
@@ -556,17 +617,24 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
           </div>
           <div style={{display:"flex",alignItems:"center",gap:12,marginTop:10,flexWrap:"wrap"}}>
             <label className="sub">…or upload CSV: <input type="file" accept=".csv,text/csv" onChange={e=>readFile(e.target.files?.[0])}/></label>
+            <button className="btn ghost sm" onClick={downloadTemplate}>⬇ Download CSV template</button>
             <span style={{flex:1}}/>
             <button className="btn" disabled={busy||consolidated||!companyId||!text.trim()} onClick={buildPreview}>{busy?progress||"Working…":"Preview"}</button>
           </div>
+          <label className="sub" style={{display:"flex",alignItems:"center",gap:6,marginTop:10}}>
+            <input type="checkbox" checked={preferWise} onChange={e=>setPreferWise(e.target.checked)}/>
+            <span>Prefer the <b>Wise account name</b> for rows with a Wise recipient id (fetched from Wise so the DB name matches payouts). Falls back to the sheet name when Wise can't return one.</span>
+          </label>
           <Banner msg={parseErr} tone="error" style={{marginTop:10}} />
           <details style={{marginTop:12}}>
             <summary className="sub" style={{cursor:"pointer"}}>Accepted columns (header names are flexible)</summary>
             <p className="sub" style={{marginTop:6,lineHeight:1.6}}>
               <b>Name</b> (or First name / Last name) · <b>Wise recipient id</b> · <b>Wise UUID</b> · Payout method (wise/bpi/gcash/paymaya/paypal) ·
               Rate · Rate effective (YYYY-MM-DD) · Email · Mobile · Role · Contract (FT/PT) · Hubstaff user id · Hubstaff name ·
-              Hire date · Date of birth · PH address · GCash · PayMaya · PayPal · Health allowance (yes/no) · 13th month (yes/no).<br/>
+              Hire date · Date of birth · PH address · GCash · PayMaya · PayPal · Health allowance (yes/no) · 13th month (yes/no) ·
+              Status (active/ended) · Started on (YYYY-MM-DD) · Ended on (YYYY-MM-DD).<br/>
               Blank cells are left untouched on existing contractors — nothing is wiped by an empty column.
+              <code>payout_account</code> (bank details) is intentionally excluded — the app never stores raw bank details, only Wise recipient references.
             </p>
           </details>
         </>}
@@ -586,7 +654,7 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
               {preview.map((r,i)=>(
                 <tr key={i} style={r.action==="error"?{background:"#fef2f2"}:{}}>
                   <td className="muted">{r.row}</td>
-                  <td><b>{r.name}</b></td>
+                  <td><b>{r.name}</b>{r.wiseName && <span className="pill" style={{marginLeft:6,background:"#ecfeff",color:"#155e75",fontSize:10}}>Wise</span>}</td>
                   <td><span className="pill" style={r.action==="create"?{background:"#dcfce7",color:"#166534"}:r.action==="update"?{background:"#eef2ff",color:"#3730a3"}:{background:"#fee2e2",color:"#991b1b"}}>
                     {r.action==="error"?"skip":r.action}</span></td>
                   <td className="muted">{r.via||(r.action==="create"?"—":"")}</td>
