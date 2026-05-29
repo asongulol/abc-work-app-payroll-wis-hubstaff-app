@@ -3129,6 +3129,11 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // Approved time that Calculate dropped (unmatched name / not linked to this
   // company), surfaced as a banner so it never silently vanishes.
   const [dropped,setDropped]=useState([]);
+  // Approved-time batches grouped by pay period (the list on this tab).
+  const [batches,setBatches]=useState(null);
+  // Set true by "Calculate this batch" so the date-change loadSaved effect
+  // defers to calculate() instead of loading the old draft (avoids a race).
+  const pendingCalc=React.useRef(false);
   const [showHol,setShowHol]=useState(false);
   const [holTick,setHolTick]=useState(0);     // bump to re-read holidays after edits
   const [undo,setUndo]=useState(null);        // {label,fn} — rollback after a destructive recalculation
@@ -3163,8 +3168,14 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
 
   // On mount / when company+period settle, restore any saved draft or locked
   // snapshot so a calculated payroll survives tab-switches and refreshes.
-  useEffect(()=>{ if(client&&companyId&&start&&end) loadSaved(); /* eslint-disable-next-line */
+  useEffect(()=>{ if(client&&companyId&&start&&end){ if(pendingCalc.current) return; loadSaved(); } /* eslint-disable-next-line */
   },[client,companyId,start,end]);
+
+  // "Calculate this batch" sets the period dates then flips pendingCalc; once
+  // the new dates have settled, run calculate() (which rebuilds + saves the
+  // draft). loadSaved skips this render so it doesn't clobber the result.
+  useEffect(()=>{ if(pendingCalc.current){ pendingCalc.current=false; calculate(); } /* eslint-disable-next-line */
+  },[start,end]);
 
   // Auto-save edits (gross override, PDD, recipient/method) back to the draft,
   // debounced, so manual changes also survive navigation. Skip locked periods.
@@ -3626,7 +3637,75 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       setRows([]);
       setMsg(`Deleted the batch — ${n} statement(s) for this period. Recalculate to rebuild.`);
     }catch(ex){ setMsg("Couldn't delete statements: "+(ex.message||ex)); }
-    finally{ setBusy(false); setTimeout(()=>{suppressSave.current=false;},1200); }
+    finally{ setBusy(false); setTimeout(()=>{suppressSave.current=false;},1200); loadBatches(); }
+  }
+
+  // Build the list of approved-time batches grouped by semi-monthly pay period
+  // (the navigable list on this tab). Each batch carries its contractor count,
+  // total hours, and current state (uncalculated / draft / locked). Paid
+  // periods are excluded — they're done and live in Process & Pay.
+  async function loadBatches(){
+    if(!client||!companyId||consolidated){ setBatches(null); return; }
+    const {data:te}=await client.from("time_entries")
+      .select("worker_id,source_name,work_date,tracked_seconds,pto_seconds")
+      .eq("company_id",companyId).eq("approval","approved");
+    const g={};
+    (te||[]).forEach(t=>{
+      const p=periodFor(t.work_date); const key=`${p.start}|${p.end}`;
+      const b=g[key]||(g[key]={start:p.start,end:p.end,payDate:p.payDate,workers:new Set(),sec:0});
+      b.workers.add(t.worker_id||t.source_name);
+      b.sec+=(Number(t.tracked_seconds||0))+(Number(t.pto_seconds||0));
+    });
+    const {data:pp}=await client.from("pay_periods")
+      .select("period_start,period_end,state").eq("company_id",companyId);
+    const stateBy={}; (pp||[]).forEach(p=>{ stateBy[`${p.period_start}|${p.period_end}`]=p.state; });
+    const list=Object.values(g).map(b=>({
+      start:b.start, end:b.end, payDate:b.payDate,
+      contractors:b.workers.size, hours:+(b.sec/3600).toFixed(2),
+      state: stateBy[`${b.start}|${b.end}`]||"uncalculated",
+    })).filter(b=>b.state!=="paid")     // paid batches are finished (Process & Pay)
+       .sort((a,b)=>b.start.localeCompare(a.start));
+    setBatches(list);
+  }
+  useEffect(()=>{ loadBatches(); /* eslint-disable-next-line */ },[client,companyId,consolidated]);
+
+  // Calculate one batch: set the period dates and let the settle-effect run
+  // calculate(). Scrolls the run card into view so the result is visible.
+  function calcBatch(b){
+    if(!gate("Calculate")) return;
+    setAutoDates(false); pendingCalc.current=true; applyStart(b.start);
+    setMsg(`Calculating ${b.start} → ${b.end}…`);
+  }
+
+  // Delete a whole approved-time batch (the period's approved entries, plus any
+  // open draft statements). Blocked for locked/paid periods — unlock first.
+  async function deleteBatch(b){
+    if(b.state==="locked"||b.state==="paid"){
+      setMsg(`Period ${b.start} → ${b.end} is ${b.state} — unlock it first.`); return; }
+    if(!window.confirm(`Delete the approved-time batch for ${b.start} → ${b.end}?\n\n`+
+      `${b.contractors} contractor(s) · ${b.hours}h.\nRemoves the approved time entries`+
+      (b.state==="draft"?" and the draft pay statements":"")+` for this period. `+
+      `Not reversible here (re-import/re-add the time to restore).`)) return;
+    setBusy(true); setMsg("");
+    try{
+      const {data:ppRow}=await client.from("pay_periods").select("id,state")
+        .eq("company_id",companyId).eq("period_start",b.start).eq("period_end",b.end).maybeSingle();
+      if(ppRow && ppRow.state==="open"){
+        await client.from("payments").delete().eq("pay_period_id",ppRow.id);
+      }
+      const {error}=await client.from("time_entries").delete()
+        .eq("company_id",companyId).gte("work_date",b.start).lte("work_date",b.end)
+        .eq("approval","approved");
+      if(error) throw new Error(error.message);
+      logEvent(client,{company_id:companyId,action:"delete_import",
+        entity:`${b.start} → ${b.end}`,
+        detail:{scope:"approved_batch",contractors:b.contractors,hours:b.hours}});
+      setMsg(`Deleted approved batch ${b.start} → ${b.end}.`);
+      // if the currently-loaded period is the one we deleted, clear the table
+      if(start===b.start && end===b.end){ setRows([]); setPeriod(null); }
+      loadBatches();
+    }catch(ex){ setMsg("Couldn't delete batch: "+(ex.message||ex)); }
+    finally{ setBusy(false); }
   }
 
   async function lockAndSave(){
@@ -3687,6 +3766,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       detail:{contractors:pays.length, total_net:pays.reduce((s,p)=>s+(p.net_php||0),0),
         overrides: overrides.length?overrides:undefined}});
     setMsg(`Locked & saved ${pays.length} pay statements. Next: go to the Process Payroll tab to pay contractors.`);
+    loadBatches();   // reflect the new locked state in the batch list
   }
 
   const totalNet=rows?rows.reduce((s,r)=>s+(r.net||0),0):0;
@@ -3694,6 +3774,45 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
 
   return (
     <div>
+      {/* Approved-time batches by pay period — the navigable list. Pick one to
+          Calculate (it flows to Process & Pay once locked) or Delete. */}
+      {!consolidated && companyId && batches && batches.length>0 && (
+        <div className="card">
+          <h2>Approved time — by pay period</h2>
+          <p className="sub">Each row is approved time waiting to be calculated. <b>Calculate</b> a period to
+            build its pay statements (review below, then Lock to send it to Process &amp; Pay), or <b>Delete</b>
+            the batch. Paid periods aren't shown here — they're in Process &amp; Pay.</p>
+          <div className="table-scroll"><table>
+            <thead><tr><th>Pay period</th><th>Contractors</th><th>Total hours</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+              {batches.map((b,i)=>{
+                const isCur = start===b.start && end===b.end;
+                const badge = b.state==="locked"
+                  ? <span className="pill" style={{background:"#eef2ff",color:"#3730a3"}}>locked · ready to pay</span>
+                  : b.state==="draft"
+                    ? <span className="pill" style={{background:"#fef9c3",color:"#854d0e"}}>calculated (draft)</span>
+                    : <span className="pill" style={{background:"#f3f4f6",color:"var(--muted)"}}>not calculated</span>;
+                return (
+                  <tr key={i} style={isCur?{background:"#eff6ff"}:{}}>
+                    <td><b>{b.start} → {b.end}</b></td>
+                    <td>{b.contractors}</td>
+                    <td>{b.hours.toLocaleString(undefined,{minimumFractionDigits:2})}</td>
+                    <td>{badge}</td>
+                    <td style={{textAlign:"right",whiteSpace:"nowrap"}}>
+                      <button className="btn sm" disabled={busy} onClick={()=>calcBatch(b)}>
+                        {b.state==="uncalculated"?"Calculate":"Recalculate"}</button>{" "}
+                      <button className="btn ghost sm" disabled={busy||b.state==="locked"}
+                        title={b.state==="locked"?"Locked — unlock it below first":"Delete this approved-time batch"}
+                        style={b.state==="locked"?{}:{borderColor:"var(--bad)",color:"var(--bad)"}}
+                        onClick={()=>deleteBatch(b)}>Delete</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table></div>
+        </div>
+      )}
       <div className="card">
         <h2>Payroll run</h2>
         <p className="sub">Pick a company + period, calculate from approved hours and the
