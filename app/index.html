@@ -6849,6 +6849,94 @@ function WiseApiDialog({ rows, total, period, onClose }){
   );
 }
 
+// ============================ REVIEW · BATCHES ===============================
+// Every submitted batch (pay_period) across all states, with totals and an
+// expandable per-contractor breakdown. Read-only review hub; "Open in
+// Process & Pay" jumps to paying a locked/paid batch.
+function ReviewBatches({client,companyId,consolidated,active,goTab}){
+  const [openKey,setOpenKey]=useState(null);
+  const {data,loading,reload}=useQuery(client,c=>{
+    let q=c.from("payments").select(
+      "company_id,net_php,status,worker_id,fx_rate,"+
+      "pay_periods(id,period_start,period_end,pay_date,state),"+
+      "companies(name),workers(first_name,middle_name,last_name)");
+    if(!consolidated&&companyId)q=q.eq("company_id",companyId);
+    return q;
+  },[client,companyId,consolidated]);
+  // re-pull when the tab becomes active so newly-locked batches show
+  useEffect(()=>{ if(active) reload(); /* eslint-disable-next-line */ },[active]);
+
+  const pays=data||[];
+  const byPeriod={};
+  pays.forEach(p=>{
+    const pp=p.pay_periods||{}; const key=`${p.companies?.name||"?"}|${pp.period_start}|${pp.period_end}`;
+    const g=byPeriod[key]||(byPeriod[key]={key,company:p.companies?.name,start:pp.period_start,end:pp.period_end,
+      pay_date:pp.pay_date,state:pp.state||"open",count:0,net:0,paid:0,rows:[]});
+    g.count++; g.net+=Number(p.net_php||0);
+    if(p.status==="sent"||p.status==="reconciled") g.paid+=Number(p.net_php||0);
+    g.rows.push({name:fullName(p.workers)||"(unknown)", net:Number(p.net_php||0), status:p.status});
+  });
+  const periods=Object.values(byPeriod).sort((a,b)=>(b.start||"").localeCompare(a.start||""));
+  const badge=st=> st==="paid"?{t:"paid",bg:"#dcfce7",c:"#166534"}
+    : st==="locked"?{t:"locked · ready to pay",bg:"#eef2ff",c:"#3730a3"}
+    : {t:"open (draft)",bg:"#f3f4f6",c:"var(--muted)"};
+
+  return (
+    <div className="card">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
+        <div><h2>Batches</h2>
+          <p className="sub">Every submitted batch (pay period) and where it is in the lifecycle. Click to inspect
+            the per-contractor breakdown. {consolidated?"All companies.":"This company."}</p></div>
+        <button className="btn ghost sm" onClick={reload}>Refresh</button>
+      </div>
+      {loading?<div className="empty">Loading…</div>:
+       periods.length===0?<div className="empty">No batches yet. Lock a pay batch on the Calculate tab.</div>:
+      <div className="table-scroll"><table>
+        <thead><tr><th style={{width:24}}></th>{consolidated&&<th>Company</th>}
+          <th>Pay period</th><th>Pay date</th><th>Contractors</th><th>Net ₱</th><th>Paid ₱</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          {periods.map(p=>{
+            const open=openKey===p.key; const b=badge(p.state);
+            return (
+            <React.Fragment key={p.key}>
+              <tr className="clickable" style={{cursor:"pointer",background:open?"#f1f5f9":undefined}}
+                  onClick={()=>setOpenKey(open?null:p.key)}>
+                <td style={{color:"var(--muted)"}}>{open?"▾":"▸"}</td>
+                {consolidated&&<td>{p.company||"—"}</td>}
+                <td><b>{p.start} → {p.end}</b></td>
+                <td>{p.pay_date||"—"}</td>
+                <td>{p.count}</td>
+                <td>{money(p.net,"PHP")}</td>
+                <td style={p.paid<p.net?{color:"var(--warn)"}:{color:"var(--good)"}}>{money(p.paid,"PHP")}</td>
+                <td><span className="pill" style={{background:b.bg,color:b.c}}>{b.t}</span></td>
+                <td style={{textAlign:"right"}}>
+                  {(p.state==="locked"||p.state==="paid") && goTab &&
+                    <button className="btn ghost sm" onClick={e=>{e.stopPropagation();goTab("process");}}>Open in Process &amp; Pay</button>}
+                </td>
+              </tr>
+              {open && (
+                <tr><td colSpan={consolidated?9:8} style={{background:"#f8fafc",padding:"8px 10px"}}>
+                  <div style={{maxHeight:300,overflow:"auto"}}>
+                    <table style={{fontSize:13}}>
+                      <thead><tr><th>Contractor</th><th>Net ₱</th><th>Status</th></tr></thead>
+                      <tbody>{[...p.rows].sort((a,b)=>a.name.localeCompare(b.name)).map((r,i)=>(
+                        <tr key={i}><td>{r.name}</td><td>{money(r.net,"PHP")}</td>
+                          <td><span className="pill" style={(r.status==="sent"||r.status==="reconciled")
+                            ?{background:"#dcfce7",color:"#065f46"}:{background:"#f3f4f6",color:"var(--muted)"}}>
+                            {(r.status==="sent"||r.status==="reconciled")?"paid":(r.status||"draft")}</span></td></tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                </td></tr>
+              )}
+            </React.Fragment>
+          );})}
+        </tbody>
+      </table></div>}
+    </div>
+  );
+}
+
 // ============================ AUDIT LOG ======================================
 const AUDIT_LABELS={import:"Import",delete_import:"Delete import",approve:"Approve time",
   reject:"Reject time",lock:"Lock period",unlock_period:"Unlock period",delete_statement:"Delete pay statement",mark_paid:"Mark paid",mark_unpaid:"Mark unpaid",manual_hours:"Manual hours",
@@ -7028,7 +7116,7 @@ function App() {
   const tabGroups = [
     ["Setup",   [["contractors","Contractors"],["documents","Documents"]]],
     ["Run payroll", [["time","Time & Approval"],["payroll","Calculate"],["process","Process and Pay"]]],
-    ["Review",  [["reports","Reports"],["audit","Audit Log"],["imports","Imports"]]],
+    ["Review",  [["batches","Batches"],["reports","Reports"],["audit","Audit Log"],["imports","Imports"]]],
   ];
   function go(id){ setTab(id); const w=document.querySelector(".wrap"); if(w) w.scrollIntoView({block:"start"}); window.scrollTo(0,0); }
   return (
@@ -7061,6 +7149,7 @@ function App() {
         <div style={{display:tab==="payroll"?"block":"none"}}><Payroll {...{client:sb.client,companyId,consolidated,confirmBillingDirty,openContractor,goTab:go}} /></div>
         <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="process",confirmBillingDirty,openContractor}} /></div>
         <div style={{display:tab==="documents"?"block":"none"}}><Documents {...{client:sb.client,companyId,consolidated}} /></div>
+        <div style={{display:tab==="batches"?"block":"none"}}><ReviewBatches {...{client:sb.client,companyId,consolidated,active:tab==="batches",goTab:go}} /></div>
         <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId,consolidated}} /></div>
       </div>
