@@ -394,6 +394,9 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
   // unmounting the modal and resetting all inputs.
   if (loading && !data) return <div className="empty">Loading…</div>;
   return (
+    <div>
+      {!consolidated && companyId &&
+        <PullRecipients client={client} companyId={companyId} consolidated={consolidated} />}
     <div className="card">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
         <div>
@@ -445,6 +448,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
         </tbody>
       </table></div>}
       {selected && <ProfileModal r={selected} client={client} onClose={()=>{setSelected(null);reload();}} onBillingChange={onBillingChange} onSaved={reload} />}
+    </div>
     </div>
   );
 }
@@ -5090,23 +5094,14 @@ function UtilizationReport({client,companyId,consolidated}){
 // ============================ WISE PAYOUTS ===================================
 // Drafts Wise transfers for a LOCKED period and writes back transfer id + FX.
 // It NEVER funds (moves money) — you fund the batch in Wise directly.
-function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillingDirty,openContractor}){
-  const gate = (label)=> typeof confirmBillingDirty==="function" ? confirmBillingDirty(label) : true;
-  const [periods,setPeriods]=useState([]);
-  const [periodId,setPeriodId]=useState("");
-  const [rows,setRows]=useState(null);     // editable per-contractor rows
-  const [busy,setBusy]=useState(false);
-  const [armed,setArmed]=useState(false);
-  const [msg,setMsg]=useState("");
-  const [batchId,setBatchId]=useState(null);
-  // --- Pull recipients from Wise + match to contractors (ID-first convention) ---
-  const [recSync,setRecSync]=useState(null);  // {preview:[{recipient_id,name,currency,account,worker_id,worker_name,matched,already}], msg}
+// Pull saved recipients from Wise and match them to contractors (ID-first).
+// Lives in the Contractors tab (recipient identity is a contractor attribute,
+// not a per-payout action). Read-only against Wise; writes the matched
+// recipient id onto the worker. Extracted from WisePayouts.
+function PullRecipients({client,companyId,consolidated}){
+  const [recSync,setRecSync]=useState(null);
   const [recBusy,setRecBusy]=useState(false);
-
-  // Fetch the saved recipient list from Wise (read-only) and match each to an
-  // existing contractor. MATCH ORDER (per the standing convention):
-  //   1) stable Wise recipient id already stored on a worker (immune to renames),
-  //   2) strict normalized name, 3) loose first+last name.
+  const [msg,setMsg]=useState("");
   async function pullWiseRecipients(){
     if(consolidated||!companyId){setMsg("Pick a single company first.");return;}
     setRecBusy(true);setMsg("");
@@ -5115,7 +5110,6 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
       if(error)throw new Error(error.message||"Edge function error");
       if(data&&data.error)throw new Error(data.error);
       const recipients=data.recipients||[];
-      // load this company's workers + their stored wise ids/names for matching
       const {data:wcs}=await client.from("worker_companies")
         .select("worker_id,workers(first_name,middle_name,last_name,wise_recipient_id,wise_recipients)")
         .eq("company_id",companyId);
@@ -5131,7 +5125,7 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
       });
       const preview=recipients.map(rec=>{
         const hit=byWiseId[rec.id] || byStrict[nameKey(rec.name)] || byLoose[looseKey(rec.name)] || null;
-        const already=!!byWiseId[rec.id];   // this recipient id is already stored on someone
+        const already=!!byWiseId[rec.id];
         return {recipient_id:rec.id, name:rec.name, currency:rec.currency, account:rec.account,
                 worker_id:hit?hit.worker_id:null, worker_name:hit?hit.worker_name:null,
                 matched:!!hit, already};
@@ -5144,9 +5138,6 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
         " — check the wise-payouts function is deployed and WISE_API_TOKEN is set.");
     }finally{ setRecBusy(false); }
   }
-
-  // Store the matched Wise recipient id onto each matched worker (only where it
-  // isn't already their stored id), and add it to their wise_recipients list.
   async function saveMatchedRecipients(){
     if(!recSync)return;
     setRecBusy(true);setMsg("");
@@ -5154,7 +5145,6 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
       const toSave=recSync.preview.filter(p=>p.matched && !p.already);
       let saved=0;
       for(const p of toSave){
-        // read current list so we can append without clobbering
         const {data:w}=await client.from("workers")
           .select("wise_recipients,wise_recipient_id").eq("id",p.worker_id).single();
         const list=Array.isArray(w?.wise_recipients)?w.wise_recipients:[];
@@ -5171,6 +5161,62 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
     }catch(ex){ setMsg("Couldn't save recipient ids: "+ex.message); }
     finally{ setRecBusy(false); }
   }
+  if(consolidated) return null;
+  return (
+    <div className="card" style={{background:"var(--accent-soft)",borderColor:"#bcd"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+        <div>
+          <h3 style={{margin:0}}>Pull recipients from Wise</h3>
+          <p className="sub" style={{margin:"2px 0 0"}}>Read-only. Lists your saved Wise recipients and matches each to a
+            contractor (by stored Wise ID first, then name). No money moves.</p>
+        </div>
+        <button className="btn" disabled={recBusy||!companyId} onClick={pullWiseRecipients}>
+          {recBusy?"Pulling…":"Pull from Wise"}</button>
+      </div>
+      {recSync && (()=>{ const toSave=recSync.preview.filter(p=>p.matched&&!p.already);
+        return (
+        <div style={{marginTop:12}}>
+          <div className="table-scroll"><table>
+            <thead><tr><th>Wise recipient</th><th>Currency</th><th>Account</th><th>Matched contractor</th><th>Status</th></tr></thead>
+            <tbody>
+              {recSync.preview.map(p=>(
+                <tr key={p.recipient_id}>
+                  <td><b>{p.name||"(no name)"}</b> <span className="muted">#{p.recipient_id}</span></td>
+                  <td>{p.currency||"—"}</td>
+                  <td className="muted">{p.account||"—"}</td>
+                  <td>{p.matched?p.worker_name:<span className="muted">— no match —</span>}</td>
+                  <td>{p.already
+                    ? <span className="pill active">already linked</span>
+                    : p.matched
+                      ? <span className="pill info">will link</span>
+                      : <span className="pill warn">unmatched</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+          <div style={{marginTop:10,display:"flex",gap:8,alignItems:"center"}}>
+            <button className="btn" disabled={recBusy||!toSave.length} onClick={saveMatchedRecipients}>
+              {toSave.length?`Save ${toSave.length} matched ID(s)`:"Nothing new to save"}</button>
+            <button className="btn ghost" disabled={recBusy} onClick={()=>setRecSync(null)}>Dismiss</button>
+            <span className="muted" style={{fontSize:12}}>Unmatched recipients are left untouched — set the Wise recipient on the contractor's profile.</span>
+          </div>
+        </div>);})()}
+      <Banner msg={msg} style={{marginTop:10}} />
+    </div>
+  );
+}
+
+function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillingDirty,openContractor}){
+  const gate = (label)=> typeof confirmBillingDirty==="function" ? confirmBillingDirty(label) : true;
+  const [periods,setPeriods]=useState([]);
+  const [periodId,setPeriodId]=useState("");
+  const [rows,setRows]=useState(null);     // editable per-contractor rows
+  const [busy,setBusy]=useState(false);
+  const [armed,setArmed]=useState(false);
+  const [msg,setMsg]=useState("");
+  const [batchId,setBatchId]=useState(null);
+  // (Pull-recipients-from-Wise moved to the Contractors tab — see the
+  //  PullRecipients component.)
 
   useEffect(()=>{
     if(!client||!companyId){setPeriods([]);return;}
@@ -5263,47 +5309,7 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
         and transfer IDs but <b>does not send money</b> — you complete and fund the batch in Wise yourself.</p>
       {consolidated && <div className="banner">Pick a single company.</div>}
 
-      {/* --- Pull recipients from Wise + match to contractors (ID-first) --- */}
-      {!consolidated && companyId &&
-      <div className="card" style={{background:"var(--accent-soft)",borderColor:"#bcd",marginBottom:14}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
-          <div>
-            <h3 style={{margin:0}}>Pull recipients from Wise</h3>
-            <p className="sub" style={{margin:"2px 0 0"}}>Read-only. Lists your saved Wise recipients and matches each to a
-              contractor (by stored Wise ID first, then name). No money moves.</p>
-          </div>
-          <button className="btn" disabled={recBusy} onClick={pullWiseRecipients}>
-            {recBusy?"Pulling…":"Pull from Wise"}</button>
-        </div>
-        {recSync && (()=>{ const toSave=recSync.preview.filter(p=>p.matched&&!p.already);
-          return (
-          <div style={{marginTop:12}}>
-            <div className="table-scroll"><table>
-              <thead><tr><th>Wise recipient</th><th>Currency</th><th>Account</th><th>Matched contractor</th><th>Status</th></tr></thead>
-              <tbody>
-                {recSync.preview.map(p=>(
-                  <tr key={p.recipient_id}>
-                    <td><b>{p.name||"(no name)"}</b> <span className="muted">#{p.recipient_id}</span></td>
-                    <td>{p.currency||"—"}</td>
-                    <td className="muted">{p.account||"—"}</td>
-                    <td>{p.matched?p.worker_name:<span className="muted">— no match —</span>}</td>
-                    <td>{p.already
-                      ? <span className="pill active">already linked</span>
-                      : p.matched
-                        ? <span className="pill info">will link</span>
-                        : <span className="pill warn">unmatched</span>}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table></div>
-            <div style={{marginTop:10,display:"flex",gap:8,alignItems:"center"}}>
-              <button className="btn" disabled={recBusy||!toSave.length} onClick={saveMatchedRecipients}>
-                {toSave.length?`Save ${toSave.length} matched ID(s)`:"Nothing new to save"}</button>
-              <button className="btn ghost" disabled={recBusy} onClick={()=>setRecSync(null)}>Dismiss</button>
-              <span className="muted" style={{fontSize:12}}>Unmatched recipients are left untouched — match those by setting the Wise recipient on the contractor's profile.</span>
-            </div>
-          </div>);})()}
-      </div>}
+      {/* Pull recipients from Wise moved to the Contractors tab. */}
 
       {!presetPeriodId &&
       <div className="row" style={{alignItems:"flex-end"}}>
