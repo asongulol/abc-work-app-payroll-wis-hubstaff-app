@@ -5403,7 +5403,7 @@ function downloadCSV(filename, rowsOfArrays){
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
-function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirty,openContractor,reconcileOnly}){
+function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirty,openContractor,reconcileOnly,goTab}){
   const gate = (label)=> typeof confirmBillingDirty==="function" ? confirmBillingDirty(label) : true;
   const [periods,setPeriods]=useState([]);
   const [periodId,setPeriodId]=useState("");
@@ -5434,6 +5434,21 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
       .eq("company_id",companyId).in("state",["locked","paid"])
       .order("period_start",{ascending:false}).then(({data})=>setPeriods(data||[]));
   },[client,companyId,active]);
+
+  // Background check for the Process & Pay empty state: are there batches
+  // waiting upstream? (open pay_periods = drafts to lock in Calculate, and
+  // pending time_entries to approve in Time & Approval.) Drives the prompt.
+  const [prep,setPrep]=useState({drafts:0,pending:0});
+  useEffect(()=>{
+    if(reconcileOnly||!client||!companyId||consolidated){return;}
+    (async()=>{
+      const {count:drafts}=await client.from("pay_periods")
+        .select("id",{count:"exact",head:true}).eq("company_id",companyId).eq("state","open");
+      const {count:pending}=await client.from("time_entries")
+        .select("id",{count:"exact",head:true}).eq("company_id",companyId).eq("approval","pending");
+      setPrep({drafts:drafts||0,pending:pending||0});
+    })();
+  },[client,companyId,consolidated,active,reconcileOnly]);
 
   const [busy,setBusy]=useState(false);
   async function load(pid){
@@ -6126,14 +6141,59 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
           ? "Pick a locked/paid period, then import the processed Wise CSV to backfill transfer IDs, poll status, and flag variances. Idempotent — safe to re-run."
           : <>After a period is locked, pay people here. Choose a locked period, then use a manual Wise batch file, individual payment files, or the automatic Wise API draft below. <b>Contractors are paid in PHP.</b></>}</p>
         {consolidated && <div className="banner">Pick a single company.</div>}
-        <div className="row" style={{alignItems:"flex-end"}}>
-          <div className="field"><label>Locked pay period</label>
-            <select value={periodId} onChange={e=>load(e.target.value)}>
-              <option value="">Select…</option>
-              {periods.map(p=><option key={p.id} value={p.id}>{p.period_start} → {p.period_end} ({p.state})</option>)}
-            </select></div>
-        </div>
-        {periods.length===0 && !consolidated && <p className="muted" style={{fontSize:12}}>No locked periods yet — lock a payroll run on the Payroll tab first.</p>}
+        {reconcileOnly
+          ? (/* Review & Recon: dropdown across ALL locked + paid batches. */
+            <>
+              <div className="row" style={{alignItems:"flex-end"}}>
+                <div className="field"><label>Batch (locked or paid)</label>
+                  <select value={periodId} onChange={e=>load(e.target.value)}>
+                    <option value="">Select…</option>
+                    {periods.map(p=><option key={p.id} value={p.id}>{p.period_start} → {p.period_end} ({p.state})</option>)}
+                  </select></div>
+              </div>
+              {periods.length===0 && !consolidated && <p className="muted" style={{fontSize:12}}>No locked or paid batches yet — lock a batch on the Calculate tab first.</p>}
+            </>)
+          : (/* Process & Pay: a LIST of locked-but-not-yet-paid batches. */
+            (()=>{ const ready=periods.filter(p=>p.state==="locked");
+              if(ready.length===0){
+                return (
+                  <div className="empty" style={{textAlign:"left"}}>
+                    <p style={{margin:"0 0 8px"}}><b>No payrolls ready to process and pay.</b> Go to
+                      {" "}<b>Time &amp; Approval</b> to import time, or review approved batches in the
+                      {" "}<b>Calculate</b> tab.</p>
+                    {(prep.pending>0 || prep.drafts>0) && (
+                      <div className="banner" style={{background:"#eff6ff",borderColor:"#bfdbfe",color:"#1e3a8a",display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
+                        <span>Waiting upstream:
+                          {prep.drafts>0 && <> <b>{prep.drafts}</b> batch(es) not yet locked in Calculate</>}
+                          {prep.drafts>0 && prep.pending>0 && " · "}
+                          {prep.pending>0 && <> <b>{prep.pending}</b> pending time entr(ies) in Time &amp; Approval</>}.
+                        </span>
+                        {goTab && prep.drafts>0 && <button className="btn sm" onClick={()=>goTab("payroll")}>Go to Calculate</button>}
+                        {goTab && prep.pending>0 && <button className="btn ghost sm" onClick={()=>goTab("time")}>Go to Time &amp; Approval</button>}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+              return (
+                <div className="table-scroll" style={{marginTop:4}}><table>
+                  <thead><tr><th>Pay period</th><th>Pay date</th><th>Status</th><th></th></tr></thead>
+                  <tbody>
+                    {ready.map(p=>(
+                      <tr key={p.id} style={periodId===p.id?{background:"#eff6ff"}:{}}>
+                        <td><b>{p.period_start} → {p.period_end}</b></td>
+                        <td>{p.pay_date||"—"}</td>
+                        <td><span className="pill" style={{background:"#eef2ff",color:"#3730a3"}}>locked · ready to pay</span></td>
+                        <td style={{textAlign:"right"}}>
+                          <button className="btn sm" disabled={busy} onClick={()=>load(p.id)}>
+                            {periodId===p.id?"Loaded":"Open & pay"}</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table></div>
+              );
+            })())}
         {/* Undo toast — status only, never moves money. Stays until clicked/dismissed. */}
         {undo && <div className="banner" style={{display:"flex",justifyContent:"space-between",alignItems:"center",
             gap:12,background:"#eef2ff",borderColor:"#c7d2fe",color:"#3730a3"}}>
@@ -7160,7 +7220,7 @@ function App() {
   const tabGroups = [
     ["Setup",   [["contractors","Contractors"],["documents","Documents"]]],
     ["Run payroll", [["time","Time & Approval"],["payroll","Calculate"],["process","Process and Pay"]]],
-    ["Review",  [["batches","Batches"],["reconcile","Reconcile"],["reports","Reports"],["imports","Imports"],["audit","Audit Log"]]],
+    ["Review",  [["batches","Review & Recon Batches"],["reports","Reports"],["imports","Imports"],["audit","Audit Log"]]],
   ];
   function go(id){ setTab(id); const w=document.querySelector(".wrap"); if(w) w.scrollIntoView({block:"start"}); window.scrollTo(0,0); }
   return (
@@ -7191,10 +7251,9 @@ function App() {
         <div style={{display:tab==="time"?"block":"none"}}><TimeImport {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="imports"?"block":"none"}}><DeleteImports {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="payroll"?"block":"none"}}><Payroll {...{client:sb.client,companyId,consolidated,confirmBillingDirty,openContractor,goTab:go}} /></div>
-        <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="process",confirmBillingDirty,openContractor}} /></div>
+        <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="process",confirmBillingDirty,openContractor,goTab:go}} /></div>
         <div style={{display:tab==="documents"?"block":"none"}}><Documents {...{client:sb.client,companyId,consolidated}} /></div>
-        <div style={{display:tab==="batches"?"block":"none"}}><ReviewBatches {...{client:sb.client,companyId,consolidated,active:tab==="batches",goTab:go}} /></div>
-        <div style={{display:tab==="reconcile"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="reconcile",confirmBillingDirty,openContractor,reconcileOnly:true}} /></div>
+        <div style={{display:tab==="batches"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="batches",confirmBillingDirty,openContractor,reconcileOnly:true}} /></div>
         <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId,consolidated}} /></div>
       </div>
