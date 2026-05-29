@@ -2225,6 +2225,20 @@ function DeleteImports({client,companyId,consolidated,onDeleted}){
   const batchList=Object.values(batches).slice(0,12);
 
   // actual deletes (called only after the inline 2nd-click confirm)
+  // Deleting imported time should also remove the pay batch built from it,
+  // so a calculated draft doesn't linger with no underlying hours. Scoped to
+  // OPEN periods overlapping the range (locked/paid statements are records of
+  // what was/will be paid — those require the period-level unlock + delete on
+  // the Calculate tab). Returns the number of open periods whose payments were
+  // cleared.
+  async function clearOpenBatchPayments(lo,hi){
+    if(!companyId||!lo||!hi) return 0;
+    const {data:pps}=await client.from("pay_periods").select("id,period_start,period_end")
+      .eq("company_id",companyId).eq("state","open").lte("period_start",hi).gte("period_end",lo);
+    const open=(pps||[]).filter(p=>p.period_start<=hi && p.period_end>=lo);
+    for(const p of open){ await client.from("payments").delete().eq("pay_period_id",p.id); }
+    return open.length;
+  }
   async function doDeleteBatch(b){
     setArmed(null);
     if(!b.id){
@@ -2254,18 +2268,22 @@ function DeleteImports({client,companyId,consolidated,onDeleted}){
     let q=client.from("time_entries").delete().eq("import_batch_id",b.id);
     if(companyId)q=q.eq("company_id",companyId);
     const {error}=await q;
+    if(error){setBusy(false);setErr(error.message);return;}
+    const clearedBatches=await clearOpenBatchPayments(b.min,b.max);
     setBusy(false);
-    if(error){setErr(error.message);return;}
-    setOk(`Deleted import (${b.rows} rows).`); reload(); onDeleted&&onDeleted();
+    setOk(`Deleted import (${b.rows} rows)`+(clearedBatches?` and its draft pay batch`:"")+`.`);
+    reload(); onDeleted&&onDeleted();
   }
   async function doDeleteRange(){
     setArmed(null); setConfirmText("");
     setBusy(true);setMsg("");setMsgTone(null);
     const {error,count}=await client.from("time_entries").delete({count:"exact"})
       .eq("company_id",companyId).gte("work_date",delStart).lte("work_date",delStop);
+    if(error){setBusy(false);setErr(error.message);return;}
+    const clearedBatches=await clearOpenBatchPayments(delStart,delStop);
     setBusy(false);
-    if(error){setErr(error.message);return;}
-    setOk(`Deleted ${count??"?"} time entries in ${delStart} → ${delStop}.`);
+    setOk(`Deleted ${count??"?"} time entries in ${delStart} → ${delStop}`+
+      (clearedBatches?` and ${clearedBatches} draft pay batch(es)`:"")+`.`);
     reload(); onDeleted&&onDeleted();
   }
   // arm the date-range delete: validate + count + check paid-period overlap,
