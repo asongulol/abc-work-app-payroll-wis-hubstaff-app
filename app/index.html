@@ -3512,6 +3512,59 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     finally{ setBusy(false); }
   }
 
+  // Delete a single contractor's saved pay statement for this period. Only
+  // allowed while the period is open (not locked/paid) — a locked statement is
+  // a record of what was/will be paid; unlock first if you truly need to remove
+  // one. Deletes the payments row (if persisted) and drops it from the table.
+  async function deleteStatement(workerId, name){
+    if(period?.state && period.state!=="open"){
+      setMsg(`Period is ${period.state} — unlock it first to delete a statement.`); return; }
+    if(!window.confirm(`Delete ${name}'s pay statement for ${start} → ${end}?\n\n`+
+      `Removes their row from this period's saved statements. No money is affected `+
+      `(this period isn't paid). You can re-add them by recalculating.`)) return;
+    setBusy(true); setMsg("");
+    try{
+      if(period?.id){
+        const {error}=await client.from("payments").delete()
+          .eq("pay_period_id",period.id).eq("worker_id",workerId);
+        if(error) throw new Error(error.message);
+      }
+      setRows(prev=>(prev||[]).filter(r=>r.worker_id!==workerId));
+      logEvent(client,{company_id:companyId,action:"delete_statement",
+        entity:`${name} · ${start} → ${end}`,detail:{scope:"contractor"}});
+      setMsg(`Deleted ${name}'s statement for this period.`);
+    }catch(ex){ setMsg("Couldn't delete statement: "+(ex.message||ex)); }
+    finally{ setBusy(false); }
+  }
+
+  // Delete ALL saved pay statements for this period (the whole batch). Open
+  // periods only; requires a typed DELETE since it wipes every row. Leaves the
+  // (now-empty) open pay_period so you can recalculate fresh.
+  async function deleteAllStatements(){
+    if(period?.state && period.state!=="open"){
+      setMsg(`Period is ${period.state} — unlock it first to delete its statements.`); return; }
+    const n=(rows||[]).length;
+    const typed=window.prompt(
+      `Delete ALL ${n} pay statement(s) for ${start} → ${end}?\n\n`+
+      `This wipes every contractor's saved statement for this period (total `+
+      `${money(totalNet,"PHP")}). The period stays open so you can recalculate. `+
+      `No money is affected (not paid).\n\nType DELETE to confirm:`);
+    if(typed==null) return;
+    if(typed.trim().toUpperCase()!=="DELETE"){ setMsg("Not deleted — confirmation text didn't match."); return; }
+    setBusy(true); setMsg("");
+    try{
+      if(period?.id){
+        const {error}=await client.from("payments").delete().eq("pay_period_id",period.id);
+        if(error) throw new Error(error.message);
+      }
+      logEvent(client,{company_id:companyId,action:"delete_statement",
+        entity:`${start} → ${end}`,detail:{scope:"whole_period",count:n,total_net:totalNet}});
+      setRows([]);
+      setMsg(`Deleted all ${n} statement(s) for this period. Recalculate to rebuild.`);
+    }catch(ex){ setMsg("Couldn't delete statements: "+(ex.message||ex)); }
+    finally{ setBusy(false); }
+  }
+
   async function lockAndSave(){
     if(!rows||!rows.length){setMsg("Calculate first.");return;}
     if(!gate("Lock & save pay statements")) return;
@@ -3698,6 +3751,14 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
                   Unlock for editing…
                 </button>
               )}
+              {/* Delete the whole period's statements — open periods only. */}
+              {(!period?.state || period.state==="open") && (
+                <button className="btn ghost" disabled={busy} onClick={deleteAllStatements}
+                  title="Delete every contractor's saved statement for this period (open periods only; requires typed DELETE)."
+                  style={{borderColor:"var(--bad)",color:"var(--bad)"}}>
+                  Delete all statements
+                </button>
+              )}
             </div>
           </div>
           <FilterBox q={sfQ} setQ={sfSetQ} placeholder="Filter contractors…" />
@@ -3721,6 +3782,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
               {anyBonus && <th>Bonus ₱</th>}
               <th>Misc ₱</th>
               <SfTh k="net">Net ₱ (paid)</SfTh><th>≈ USD ref</th><SfTh k="method">Via</SfTh>
+              {(!period?.state || period.state==="open") && <th></th>}
             </tr></thead>
             <tbody>
               {sfRows.map(r=>(
@@ -3782,6 +3844,14 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
                       <option value="">— set —</option>
                       {PAYOUT_CHANNELS.map(ch=><option key={ch} value={ch}>{methodLabel(ch)}</option>)}
                     </select></td>
+                  {(!period?.state || period.state==="open") && (
+                    <td style={{textAlign:"right"}}>
+                      <button className="btn ghost sm" disabled={busy}
+                        title={`Delete ${r.name}'s statement for this period`}
+                        style={{borderColor:"var(--bad)",color:"var(--bad)",padding:"2px 8px"}}
+                        onClick={()=>deleteStatement(r.worker_id, r.name)}>Delete</button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -6422,7 +6492,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
 
 // ============================ AUDIT LOG ======================================
 const AUDIT_LABELS={import:"Import",delete_import:"Delete import",approve:"Approve time",
-  reject:"Reject time",lock:"Lock period",unlock_period:"Unlock period",mark_paid:"Mark paid",mark_unpaid:"Mark unpaid",manual_hours:"Manual hours",
+  reject:"Reject time",lock:"Lock period",unlock_period:"Unlock period",delete_statement:"Delete pay statement",mark_paid:"Mark paid",mark_unpaid:"Mark unpaid",manual_hours:"Manual hours",
   wise_recipient_sync:"Wise recipient sync",
   wise_lock_release:"Unlock Wise-locked row",
   wise_lock_warning:"Edit attempted on locked row",
