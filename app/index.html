@@ -3131,6 +3131,9 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   const [dropped,setDropped]=useState([]);
   // Approved-time batches grouped by pay period (the list on this tab).
   const [batches,setBatches]=useState(null);
+  // Default the batch list to the actionable ones (not-calculated + draft);
+  // locked/paid are hidden behind a toggle so they don't bury the to-do items.
+  const [showFinishedBatches,setShowFinishedBatches]=useState(false);
   // Set true by "Calculate this batch" so the date-change loadSaved effect
   // defers to calculate() instead of loading the old draft (avoids a race).
   const pendingCalc=React.useRef(false);
@@ -3793,16 +3796,28 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     <div>
       {/* Approved-time batches by pay period — the navigable list. Pick one to
           Calculate (it flows to Process & Pay once locked) or Delete. */}
-      {!consolidated && companyId && batches && batches.length>0 && (
+      {!consolidated && companyId && batches && batches.length>0 && (() => {
+        const finishedCount = batches.filter(b=>b.state==="locked"||b.state==="paid").length;
+        const shown = showFinishedBatches ? batches : batches.filter(b=>b.state!=="locked"&&b.state!=="paid");
+        return (
         <div className="card">
-          <h2>Approved time — by pay period</h2>
-          <p className="sub">Every period with approved time. <b>Calculate</b> builds a period's pay statements
-            (review below, then Lock to send it to Process &amp; Pay); <b>Delete</b> removes the batch.
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
+            <h2 style={{margin:0}}>Approved time — by pay period</h2>
+            {finishedCount>0 && (
+              <button className="btn ghost sm" onClick={()=>setShowFinishedBatches(s=>!s)}>
+                {showFinishedBatches ? `Hide locked/paid (${finishedCount})` : `Show locked/paid (${finishedCount})`}
+              </button>
+            )}
+          </div>
+          <p className="sub">{showFinishedBatches?"Every period with approved time.":"Periods that still need action (not yet calculated or still a draft)."}
+            {" "}<b>Calculate</b> builds a period's pay statements (review below, then Lock to send it to Process &amp; Pay); <b>Delete</b> removes the batch.
             <b> Locked</b>/<b>paid</b> periods are read-only here — Open one to review or unlock it; paid ones live in Process &amp; Pay.</p>
-          <div className="table-scroll"><table>
+          {shown.length===0
+            ? <div className="empty">Nothing waiting — all approved periods are locked or paid. {finishedCount>0 && "Use “Show locked/paid” to review them."}</div>
+            : <div className="table-scroll"><table>
             <thead><tr><th>Pay period</th><th>Contractors</th><th>Total hours</th><th>Status</th><th></th></tr></thead>
             <tbody>
-              {batches.map((b,i)=>{
+              {shown.map((b,i)=>{
                 const isCur = start===b.start && end===b.end;
                 const badge = b.state==="paid"
                   ? <span className="pill" style={{background:"#dcfce7",color:"#166534"}}>paid</span>
@@ -3835,9 +3850,9 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
                 );
               })}
             </tbody>
-          </table></div>
+          </table></div>}
         </div>
-      )}
+        ); })()}
       <div className="card">
         <h2>Payroll run</h2>
         <p className="sub">Pick a company + period, calculate from approved hours and the
