@@ -5438,15 +5438,27 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
   // Background check for the Process & Pay empty state: are there batches
   // waiting upstream? (open pay_periods = drafts to lock in Calculate, and
   // pending time_entries to approve in Time & Approval.) Drives the prompt.
-  const [prep,setPrep]=useState({drafts:0,pending:0});
+  const [prep,setPrep]=useState({drafts:[],pending:0});
   useEffect(()=>{
     if(reconcileOnly||!client||!companyId||consolidated){return;}
     (async()=>{
-      const {count:drafts}=await client.from("pay_periods")
-        .select("id",{count:"exact",head:true}).eq("company_id",companyId).eq("state","open");
+      // "Not yet locked" = an OPEN pay_period that actually has payment rows
+      // (a real calculated draft). Empty open periods (e.g. left behind after a
+      // batch delete) are NOT counted — they're not waiting on anything.
+      const {data:open}=await client.from("pay_periods").select("id,period_start,period_end")
+        .eq("company_id",companyId).eq("state","open");
+      let drafts=[];
+      if(open && open.length){
+        const ids=open.map(p=>p.id);
+        const {data:pays}=await client.from("payments").select("pay_period_id").in("pay_period_id",ids);
+        const withPay=new Set((pays||[]).map(p=>p.pay_period_id));
+        drafts=open.filter(p=>withPay.has(p.id))
+          .map(p=>({start:p.period_start,end:p.period_end}))
+          .sort((a,b)=>(b.start||"").localeCompare(a.start||""));
+      }
       const {count:pending}=await client.from("time_entries")
         .select("id",{count:"exact",head:true}).eq("company_id",companyId).eq("approval","pending");
-      setPrep({drafts:drafts||0,pending:pending||0});
+      setPrep({drafts, pending:pending||0});
     })();
   },[client,companyId,consolidated,active,reconcileOnly]);
 
@@ -6161,14 +6173,15 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
                     <p style={{margin:"0 0 8px"}}><b>No payrolls ready to process and pay.</b> Go to
                       {" "}<b>Time &amp; Approval</b> to import time, or review approved batches in the
                       {" "}<b>Calculate</b> tab.</p>
-                    {(prep.pending>0 || prep.drafts>0) && (
+                    {(prep.pending>0 || prep.drafts.length>0) && (
                       <div className="banner" style={{background:"#eff6ff",borderColor:"#bfdbfe",color:"#1e3a8a",display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
                         <span>Waiting upstream:
-                          {prep.drafts>0 && <> <b>{prep.drafts}</b> batch(es) not yet locked in Calculate</>}
-                          {prep.drafts>0 && prep.pending>0 && " · "}
+                          {prep.drafts.length>0 && <> <b>{prep.drafts.length}</b> calculated draft(s) not yet locked
+                            {" "}({prep.drafts.slice(0,3).map(d=>`${d.start}→${d.end}`).join(", ")}{prep.drafts.length>3?", …":""})</>}
+                          {prep.drafts.length>0 && prep.pending>0 && " · "}
                           {prep.pending>0 && <> <b>{prep.pending}</b> pending time entr(ies) in Time &amp; Approval</>}.
                         </span>
-                        {goTab && prep.drafts>0 && <button className="btn sm" onClick={()=>goTab("payroll")}>Go to Calculate</button>}
+                        {goTab && prep.drafts.length>0 && <button className="btn sm" onClick={()=>goTab("payroll")}>Go to Calculate</button>}
                         {goTab && prep.pending>0 && <button className="btn ghost sm" onClick={()=>goTab("time")}>Go to Time &amp; Approval</button>}
                       </div>
                     )}
