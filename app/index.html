@@ -1644,6 +1644,10 @@ function TimeImport({client,companyId,consolidated}){
   const [committing,setCommitting]=useState(false);
   const [done,setDone]=useState(null);
   const [notice,setNotice]=useState(null);   // {ok, text, unmatched:[names]}
+  // Time Approval (the review grid) stays hidden until the user imports + opts
+  // to review, or clicks "Review & approve time" — so the tab opens on the
+  // import step, not a wall of rows.
+  const [revealApproval,setRevealApproval]=useState(false);
 
   // load this company's hubstaff_name -> worker_id map (incl. inactive, so we can
   // still import a final period for a removed contractor — but we warn).
@@ -1979,6 +1983,14 @@ function TimeImport({client,companyId,consolidated}){
              (mode==="skip"?" — new rows only.":mode==="overwrite"?" — overwrote existing.":"."),
         unmatched});
     }
+    // Import succeeded — offer to go straight to Review & Approve (reveals the
+    // approval grid). Cancel leaves the user on the import screen.
+    if(typeof window!=="undefined" && window.confirm(
+      `Time imported (${P.dates[0]} → ${P.dates[P.dates.length-1]}, ${ppl} contractor(s)).\n\n`+
+      `Go to Review & Approve now? Choose Cancel to stay on the import screen.`)){
+      setRevealApproval(true);
+      setTimeout(()=>{ document.getElementById("time-approval-anchor")?.scrollIntoView({behavior:"smooth",block:"start"}); },100);
+    }
   }
 
   // #1: delete the import that was just committed
@@ -2154,7 +2166,14 @@ function TimeImport({client,companyId,consolidated}){
         </div>
       )}
 
-      <TimeApproval client={client} companyId={companyId} consolidated={consolidated} key={done?done.count:"a"}/>
+      <div id="time-approval-anchor" />
+      {revealApproval
+        ? <TimeApproval client={client} companyId={companyId} consolidated={consolidated} key={done?done.count:"a"}/>
+        : <div className="card" style={{textAlign:"center"}}>
+            <p className="sub" style={{margin:"0 0 8px"}}>Imported time is staged as <b>pending</b>. Open the review
+              grid to approve it (or it opens automatically after an import).</p>
+            <button className="btn" onClick={()=>setRevealApproval(true)}>Review &amp; approve time</button>
+          </div>}
     </div>
   );
 }
