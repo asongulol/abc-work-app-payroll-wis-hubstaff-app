@@ -70,6 +70,58 @@ function authHeaders(token: string) {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 }
 
+// --- Wise SCA (Strong Customer Authentication / "2FA") ----------------------
+// Sensitive endpoints — funding a transfer from balance — require SCA. The
+// first call returns HTTP 403 with an `x-2fa-approval` one-time token (OTT);
+// we sign that token with our registered private key (RSA, SHA-256, PKCS#1
+// v1.5) and retry the SAME request with `x-2fa-approval` + `X-Signature`.
+// Key setup (generate keypair, register the PUBLIC key in Wise, set the
+// PRIVATE key as WISE_PRIVATE_KEY): see WISE_SCA_SETUP.md.
+function pemToDer(pem: string): Uint8Array {
+  const b64 = pem.replace(/-----BEGIN [^-]+-----/g, "")
+                 .replace(/-----END [^-]+-----/g, "")
+                 .replace(/\s+/g, "");
+  const bin = atob(b64);
+  const der = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) der[i] = bin.charCodeAt(i);
+  return der;
+}
+let _scaKey: CryptoKey | null = null;
+async function getScaKey(): Promise<CryptoKey | null> {
+  if (_scaKey) return _scaKey;
+  const pem = Deno.env.get("WISE_PRIVATE_KEY");
+  if (!pem) return null;
+  _scaKey = await crypto.subtle.importKey(
+    "pkcs8", pemToDer(pem),
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false, ["sign"],
+  );
+  return _scaKey;
+}
+async function signOtt(ott: string): Promise<string> {
+  const key = await getScaKey();
+  if (!key) throw new Error("WISE_PRIVATE_KEY not set — required to fund via API (Wise SCA). See WISE_SCA_SETUP.md");
+  const sig = await crypto.subtle.sign(
+    { name: "RSASSA-PKCS1-v1_5" }, key, new TextEncoder().encode(ott));
+  let bin = ""; const bytes = new Uint8Array(sig);
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);   // base64 signature for the X-Signature header
+}
+// Perform a request that may require SCA. On 403 + x-2fa-approval, sign the OTT
+// and retry once with the approval + signature headers. Anything else passes
+// through unchanged (no-op when SCA isn't required, e.g. non-EEA accounts).
+async function fetchWithSca(url: string, init: RequestInit, _token: string): Promise<Response> {
+  const res = await fetch(url, init);
+  const ott = res.headers.get("x-2fa-approval");
+  if (res.status === 403 && ott) {
+    const signature = await signOtt(ott);
+    const headers = { ...(init.headers as Record<string, string>),
+      "x-2fa-approval": ott, "X-Signature": signature };
+    return await fetch(url, { ...init, headers });
+  }
+  return res;
+}
+
 async function getBusinessProfileId(token: string): Promise<number> {
   const r = await fetch(`${BASE}/v2/profiles`, { headers: authHeaders(token) });
   if (!r.ok) throw new Error(`profiles ${r.status}: ${await r.text()}`);
@@ -252,13 +304,30 @@ Deno.serve(async (req) => {
         }
       }
 
-      // 2. Call Wise's funding endpoint.
+      // 2. Call Wise's funding endpoint. This is SCA-protected: fetchWithSca
+      //    transparently signs the x-2fa-approval challenge and retries. If
+      //    SCA is required but WISE_PRIVATE_KEY isn't configured, signing
+      //    throws — surface it as a normal ok:false (and store fund_error) so
+      //    the UI shows a clear reason instead of a 500.
       const profileId = body.profile_id ?? await getBusinessProfileId(token);
-      const fRes = await fetch(
-        `${BASE}/v3/profiles/${profileId}/transfers/${transferId}/payments`,
-        { method: "POST", headers: authHeaders(token),
-          body: JSON.stringify({ type: "BALANCE" }) }
-      );
+      let fRes: Response;
+      try {
+        fRes = await fetchWithSca(
+          `${BASE}/v3/profiles/${profileId}/transfers/${transferId}/payments`,
+          { method: "POST", headers: authHeaders(token), body: JSON.stringify({ type: "BALANCE" }) },
+          token,
+        );
+      } catch (scaErr) {
+        const errMsg = String((scaErr as any)?.message ?? scaErr);
+        if (paymentId) {
+          await fetch(`${supaUrl}/rest/v1/payments?id=eq.${paymentId}`, {
+            method: "PATCH",
+            headers: { ...restHeaders, "Prefer": "return=minimal" },
+            body: JSON.stringify({ fund_error: errMsg.slice(0, 500) }),
+          });
+        }
+        return json({ ok: false, error: errMsg.slice(0, 500), fund_error_stored: !!paymentId }, 500);
+      }
       const fText = await fRes.text();
       let fJson: any = null;
       try { fJson = fText ? JSON.parse(fText) : null; } catch { /* ignore */ }
