@@ -5402,7 +5402,7 @@ function downloadCSV(filename, rowsOfArrays){
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
-function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirty,openContractor}){
+function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirty,openContractor,reconcileOnly}){
   const gate = (label)=> typeof confirmBillingDirty==="function" ? confirmBillingDirty(label) : true;
   const [periods,setPeriods]=useState([]);
   const [periodId,setPeriodId]=useState("");
@@ -6120,10 +6120,10 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
   return (
     <div>
       <div className="card">
-        <h2>Process payroll</h2>
-        <p className="sub">After a period is locked, pay people here. Choose a locked period, then use
-          a manual Wise batch file, individual payment files, or the automatic Wise API draft below.
-          <b> Contractors are paid in PHP.</b></p>
+        <h2>{reconcileOnly?"Reconcile with Wise":"Process payroll"}</h2>
+        <p className="sub">{reconcileOnly
+          ? "Pick a locked/paid period, then import the processed Wise CSV to backfill transfer IDs, poll status, and flag variances. Idempotent — safe to re-run."
+          : <>After a period is locked, pay people here. Choose a locked period, then use a manual Wise batch file, individual payment files, or the automatic Wise API draft below. <b>Contractors are paid in PHP.</b></>}</p>
         {consolidated && <div className="banner">Pick a single company.</div>}
         <div className="row" style={{alignItems:"flex-end"}}>
           <div className="field"><label>Locked pay period</label>
@@ -6146,7 +6146,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
       </div>
 
       {rows && rows.length>0 && <>
-        <div className="card">
+        {!reconcileOnly && <div className="card">
           <h3 style={{margin:"0 0 4px"}}>Summary · pay date {pers?.pay_date||"—"}</h3>
           <p className="sub">{rows.length} contractor(s) · total <b>{money(total,"PHP")}</b>
             {" · "}Wise {wiseRows.length} ({money(wiseTotal,"PHP")}) · BPI {bpiRows.length} ({money(bpiTotal,"PHP")})
@@ -6156,13 +6156,13 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
             <div className="banner">{otherRows.filter(r=>!r.method).length} contractor(s) have <b>no payout method</b>
               ({otherRows.filter(r=>!r.method).map(r=>r.name).join(", ")}). They appear in the pay list below
               but not in the Wise/BPI exports — set their method on their profile.</div>}
-        </div>
+        </div>}
 
         {/* Reconcile with Wise — import processed batch + status + variance.
-            Sits between Summary and the Pay list because reconciling is the
-            after-batch step that turns "I uploaded a file to Wise" into
-            "the DB reflects what actually happened." */}
-        <div className="card no-print">
+            Lives under Review (reconcileOnly) — hidden in the Process & Pay
+            view. Reconciling turns "I uploaded a file to Wise" into "the DB
+            reflects what actually happened." */}
+        {reconcileOnly && <div className="card no-print">
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
             <div>
               <h3 style={{margin:"0 0 4px"}}>Reconcile with Wise</h3>
@@ -6463,7 +6463,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
               )}
             </div>
           )}
-        </div>
+        </div>}
 
         {/* Printable pay list + mark-paid, with channel tabs (Wise | BPI | All).
             Per CLAUDE.md guidance, grouping by transfer channel makes the list
@@ -6471,6 +6471,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
             rows in alphabetical order. Each tab shows its own subtotal in the
             tab header; the All tab shows the grand total. Print uses All view
             so the printed statement always shows everything. */}
+        {!reconcileOnly && (<>
         <div className="card" id="paylist-print">
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
             <div>
@@ -6755,6 +6756,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
             Lets you edit recipients/amounts per person and create one batch.</p>
           <WisePayouts client={client} companyId={companyId} consolidated={consolidated} presetPeriodId={periodId} confirmBillingDirty={confirmBillingDirty} openContractor={openContractor}/>
         </div>
+        </>)}
       </>}
       {wiseDialog && <WiseApiDialog
         rows={wiseRows} total={wiseRows.reduce((s,r)=>s+(r.net||0),0)}
@@ -7116,7 +7118,7 @@ function App() {
   const tabGroups = [
     ["Setup",   [["contractors","Contractors"],["documents","Documents"]]],
     ["Run payroll", [["time","Time & Approval"],["payroll","Calculate"],["process","Process and Pay"]]],
-    ["Review",  [["batches","Batches"],["reports","Reports"],["audit","Audit Log"],["imports","Imports"]]],
+    ["Review",  [["batches","Batches"],["reconcile","Reconcile"],["reports","Reports"],["audit","Audit Log"],["imports","Imports"]]],
   ];
   function go(id){ setTab(id); const w=document.querySelector(".wrap"); if(w) w.scrollIntoView({block:"start"}); window.scrollTo(0,0); }
   return (
@@ -7150,6 +7152,7 @@ function App() {
         <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="process",confirmBillingDirty,openContractor}} /></div>
         <div style={{display:tab==="documents"?"block":"none"}}><Documents {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="batches"?"block":"none"}}><ReviewBatches {...{client:sb.client,companyId,consolidated,active:tab==="batches",goTab:go}} /></div>
+        <div style={{display:tab==="reconcile"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="reconcile",confirmBillingDirty,openContractor,reconcileOnly:true}} /></div>
         <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId,consolidated}} /></div>
       </div>
