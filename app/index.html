@@ -2174,9 +2174,9 @@ function TimeImport({client,companyId,consolidated}){
       {revealApproval
         ? <TimeApproval client={client} companyId={companyId} consolidated={consolidated} key={done?done.count:"a"}/>
         : <div className="card" style={{textAlign:"center"}}>
-            <p className="sub" style={{margin:"0 0 8px"}}>Imported time is staged as <b>pending</b>. Open the review
-              grid to approve it (or it opens automatically after an import).</p>
-            <button className="btn" onClick={()=>setRevealApproval(true)}>Review &amp; approve time</button>
+            <p className="sub" style={{margin:"0 0 8px"}}>Imported time opens for review automatically after an import.
+              To add hours by hand for a contractor, open the manual time entry grid.</p>
+            <button className="btn" onClick={()=>setRevealApproval(true)}>Create Manual Time Entry</button>
           </div>}
     </div>
   );
@@ -2747,8 +2747,8 @@ function TimeApproval({client,companyId,consolidated}){
     <div className="card">
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
         <div>
-          <h2>Time approval</h2>
-          <p className="sub">Review staged hours before they become payable.
+          <h2>Enter Manual Time</h2>
+          <p className="sub">Add hours by hand below, or review any staged imports before they become payable.
             {" "}{pendingTotal} pending entr{pendingTotal===1?"y":"ies"}.
             {pStart && <span> · span {pStart} → {pEnd} ({periodDays} days, {workingDays} working).</span>}</p>
         </div>
@@ -2775,9 +2775,6 @@ function TimeApproval({client,companyId,consolidated}){
 
       <Banner msg={msg} style={{marginTop:10}} />
 
-      {people.length===0 && approved.length>0 && !consolidated && companyId &&
-        <div className="banner success">
-          Nothing pending — all imported time is approved. Add manual hours below, or import another period.</div>}
       {(consolidated || !companyId)
         ? <div className="empty">{consolidated
             ? "Time review is per-company — switch to a single company to review and approve time."
