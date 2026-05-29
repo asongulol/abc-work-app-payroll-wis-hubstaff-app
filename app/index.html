@@ -766,6 +766,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
   const [adding,setAdding]=useState(false);
   const [addErr,setAddErr]=useState("");
   const [showBulk,setShowBulk]=useState(false);
+  const [showPull,setShowPull]=useState(false);
   async function addContractor(){
     if(consolidated||!companyId){setAddErr("Pick a single company first (top-left switcher) to add a contractor.");return;}
     setAdding(true);setAddErr("");
@@ -803,8 +804,6 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
   if (loading && !data) return <div className="empty">Loading…</div>;
   return (
     <div>
-      {!consolidated && companyId &&
-        <PullRecipients client={client} companyId={companyId} consolidated={consolidated} />}
     <div className="card">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
         <div>
@@ -817,6 +816,9 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
             <input type="checkbox" checked={showInactive} onChange={e=>setShowInactive(e.target.checked)}/>
             Show inactive
           </label>
+          <button className="btn ghost" disabled={consolidated} onClick={()=>setShowPull(true)}
+            title={consolidated?"Pick a single company first":"Match your saved Wise recipients to contractors and store their recipient IDs"}>
+            ⤓ Pull IDs from Wise</button>
           <button className="btn ghost" disabled={consolidated} onClick={()=>setShowBulk(true)}
             title={consolidated?"Pick a single company first":"Import a roster of contractors (CSV / paste)"}>
             ⇪ Bulk import</button>
@@ -860,6 +862,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
       </table></div>}
       {selected && <ProfileModal r={selected} client={client} onClose={()=>{setSelected(null);reload();}} onBillingChange={onBillingChange} onSaved={reload} />}
       {showBulk && <BulkImport client={client} companyId={companyId} consolidated={consolidated} onClose={()=>setShowBulk(false)} onDone={reload} />}
+      {showPull && <PullRecipients client={client} companyId={companyId} consolidated={consolidated} onClose={()=>{setShowPull(false);reload();}} />}
     </div>
     </div>
   );
@@ -5548,7 +5551,7 @@ function UtilizationReport({client,companyId,consolidated}){
 // Lives in the Contractors tab (recipient identity is a contractor attribute,
 // not a per-payout action). Read-only against Wise; writes the matched
 // recipient id onto the worker. Extracted from WisePayouts.
-function PullRecipients({client,companyId,consolidated}){
+function PullRecipients({client,companyId,consolidated,onClose}){
   const [recSync,setRecSync]=useState(null);
   const [recBusy,setRecBusy]=useState(false);
   const [msg,setMsg]=useState("");
@@ -5613,14 +5616,18 @@ function PullRecipients({client,companyId,consolidated}){
   }
   if(consolidated) return null;
   return (
-    <div className="card" style={{background:"var(--accent-soft)",borderColor:"#bcd"}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:880}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
         <div>
-          <h3 style={{margin:0}}>Pull recipient IDs from Wise</h3>
-          <p className="sub" style={{margin:"2px 0 0"}}>Read-only. Lists your saved Wise recipients and matches each to a
+          <h2 style={{margin:0}}>Pull recipient IDs from Wise</h2>
+          <p className="sub" style={{margin:"4px 0 0"}}>Read-only. Lists your saved Wise recipients and matches each to a
             contractor (by stored Wise ID first, then name), then stores the numeric <b>recipient ID</b> on the
             matched contractor. Doesn't pull bank details or the batch-CSV UUID. No money moves.</p>
         </div>
+        <button className="btn ghost sm" onClick={onClose}>Close</button>
+      </div>
+      <div style={{marginTop:12}}>
         <button className="btn" disabled={recBusy||!companyId} onClick={pullWiseRecipients}>
           {recBusy?"Pulling…":"Pull IDs from Wise"}</button>
       </div>
@@ -5653,6 +5660,7 @@ function PullRecipients({client,companyId,consolidated}){
           </div>
         </div>);})()}
       <Banner msg={msg} style={{marginTop:10}} />
+      </div>
     </div>
   );
 }
