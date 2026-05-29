@@ -6206,7 +6206,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
         <Banner msg={msg} />
       </div>
 
-      {rows && rows.length>0 && <>
+      {((rows && rows.length>0) || (reconcileOnly && periodId)) && <>
         {!reconcileOnly && <div className="card">
           <h3 style={{margin:"0 0 4px"}}>Summary · pay date {pers?.pay_date||"—"}</h3>
           <p className="sub">{rows.length} contractor(s) · total <b>{money(total,"PHP")}</b>
@@ -6529,7 +6529,12 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
         {/* Reconcile view: show the batch being reconciled (read-only) so you
             can see what's there and what changed (transfer linked, marked
             sent, amount overridden to Wise's value). */}
-        {reconcileOnly && (
+        {reconcileOnly && !(rows && rows.length>0) && (
+          <div className="card"><div className="empty">
+            {rows===null ? "Loading this batch…" : "This batch has no pay statements (it may have been deleted). Pick another batch."}
+          </div></div>
+        )}
+        {reconcileOnly && rows && rows.length>0 && (
                 <div className="card">
                   <h3 style={{margin:"0 0 4px"}}>Batch being reconciled · {pers?.period_start} → {pers?.period_end}</h3>
                   <p className="sub">{rows.length} contractor(s) · total {money(total,"PHP")} · {rows.filter(r=>r.status==="sent"||r.status==="reconciled").length} sent.
