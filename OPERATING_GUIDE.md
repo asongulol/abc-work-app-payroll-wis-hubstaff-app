@@ -1,5 +1,8 @@
 # Operating guide — running payroll each period
 
+> Quick per-period routine. For the full reference (every tab and feature),
+> see **[MANUAL.md](MANUAL.md)**.
+
 The routine, start to finish. Each pay period is one pass through these steps.
 Pay schedule is **semi-monthly**: work 1–15 is paid end of that month; work 16–end
 is paid the 15th of the next month. Contractors are **paid in PHP**.
@@ -9,7 +12,7 @@ is paid the 15th of the next month. Contractors are **paid in PHP**.
 ## Each pay period — the 6 steps
 
 ### 1. Pick the company
-Use the **company switcher** (top right). Everything below is scoped to it.
+Use the **company switcher** (top bar). Everything below is scoped to it.
 
 ### 2. Bring in the time — *Time & Approval tab*
 Either:
@@ -25,14 +28,14 @@ Review the staged hours, then **Approve all pending** (or approve/reject per
 person). Only approved time becomes payable. Once approved, the rows clear and
 move to *"previously approved periods"* — the screen is ready for the next import.
 
-### 4. Calculate & lock — *Payroll tab*
+### 4. Calculate & lock — *Calculate tab*
 The period + pay date auto-fill from the imported dates. Check the **Expected
 hours** line (working days minus holidays). Click **Calculate**. Review the pay
 statements — yellow rows have no rate (fix before locking); you can override any
 Gross or add PDD Lunch inline. When it's right, **Lock period & save statements**.
 (The calculation auto-saves as a draft, so you won't lose it if you navigate away.)
 
-### 5. Pay people — *Process Payroll tab*
+### 5. Pay people — *Process and Pay tab*
 Pick the locked period. You get a summary (Wise vs BPI split) and three options:
 - **Wise batch CSV** — download it, upload to Wise → Batch payments, fund it there.
 - **Payments CSV** — full per-contractor list (incl. BPI) for manual payments/records.
@@ -41,7 +44,7 @@ Pick the locked period. You get a summary (Wise vs BPI split) and three options:
 
 A "already downloaded" warning guards against exporting (and paying) a batch twice.
 
-### 6. Mark paid & print — *Process Payroll, the Pay list*
+### 6. Mark paid & print — *Process and Pay, the Pay list*
 After you've sent payments: **Check Wise status** (auto-marks Wise transfers paid
 when Wise reports them sent), and **Mark paid** for BPI/manual ones. Once every
 payment is marked paid, the period auto-advances to **paid**. Hit **Print** for a
@@ -59,9 +62,9 @@ clean record of the pay run.
 - **Rates change**: edit the rate on the contractor — effective-dated, so history
   is preserved.
 - **Health Allowance**: ₱20k/yr, auto-applied in the period containing each
-  person's hire anniversary (6 months after hire to start). Toggle on the Payroll tab.
-- **13th-month**: optional accrual toggle on the Payroll tab.
-- **Holidays**: edit the observed-holiday list via the link on the Payroll tab;
+  person's hire anniversary (6 months after hire to start). Toggle on the Calculate tab.
+- **13th-month**: optional accrual toggle on the Calculate tab.
+- **Holidays**: edit the observed-holiday list via the link on the Calculate tab;
   movable holidays (Good Friday, Thanksgiving, etc.) auto-compute per year.
 - **Fix a bad import**: *Imports tab* — view or delete a specific import batch, or
   delete by date range.

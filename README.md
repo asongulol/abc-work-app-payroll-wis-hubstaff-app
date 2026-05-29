@@ -23,7 +23,8 @@ See the existing docs for the detailed walkthrough — they are the source of tr
 - `SETUP.md` — initial Supabase project setup, schema bootstrap
 - `WISE_SETUP.md` — Wise API token, recipient setup, edge function secrets
 - `FINISH_SETUP.md` — Hubstaff token, deploying edge functions
-- `OPERATING_GUIDE.md` — day-to-day operations (time import, payroll, reconciliation)
+- `MANUAL.md` — full instruction manual (every tab and feature, end to end)
+- `OPERATING_GUIDE.md` — quick per-period routine (time import, payroll, reconciliation)
 - `CLAUDE.md` — conventions for AI-assisted development on this codebase
 - `memory/` — accumulated context and project memory
 
