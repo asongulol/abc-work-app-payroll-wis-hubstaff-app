@@ -1627,6 +1627,25 @@ function TimeImport({client,companyId,consolidated}){
     setErr("");
     let w=null;
 
+    // (0) ID-FIRST (per the standing convention + race safety): if the import
+    //     row carries a Hubstaff user_id, look for an existing link in THIS
+    //     company that already has that stable id. This catches the case where
+    //     another tab / a concurrent sync already added this person (immune to
+    //     name differences), so we reuse instead of creating a duplicate or
+    //     hitting the worker_companies_company_hubstaff_user partial-unique.
+    if(member.user_id!=null){
+      const {data:byId}=await client.from("worker_companies")
+        .select("worker_id").eq("company_id",companyId)
+        .eq("hubstaff_user_id",member.user_id).maybeSingle();
+      if(byId?.worker_id){
+        w={id:byId.worker_id};
+        // keep the visible hubstaff_name label fresh for future name-based matches
+        await client.from("worker_companies")
+          .update({hubstaff_name:member.name,status:"active"})
+          .eq("worker_id",w.id).eq("company_id",companyId);
+      }
+    }
+
     // (1) Look for an existing worker that matches this name. Pull every worker
     //     plus this company's links so we can match by hubstaff_name OR real name,
     //     using the same strict/loose keys the import matcher uses.
@@ -1640,7 +1659,9 @@ function TimeImport({client,companyId,consolidated}){
           .filter(Boolean), linkedHere:!!link};
     });
     const sk=nameKey(member.name), lk=looseKey(member.name);
-    let hit=cand.find(c=>c.keys.some(k=>nameKey(k)===sk))   // strict first
+    // ID-first match (w) wins; otherwise fall back to strict then loose name keys.
+    let hit=(w && {worker_id:w.id, inactive:false})
+          || cand.find(c=>c.keys.some(k=>nameKey(k)===sk))   // strict first
           || cand.find(c=>c.keys.some(k=>looseKey(k)===lk)); // loose fallback
 
     // store the stable Hubstaff id on the link when the import row carries one,
@@ -1673,7 +1694,22 @@ function TimeImport({client,companyId,consolidated}){
       const {error:e2}=await client.from("worker_companies")
         .insert({worker_id:w.id,company_id:companyId,contract:"FT",
           hubstaff_name:member.name,status:"active",...idCol});
-      if(e2){setErr("Link failed: "+e2.message);return;}
+      if(e2){
+        // Race: another tab/sync linked this Hubstaff id to the company between
+        // our ID-first check and this insert (partial-unique on
+        // company_id+hubstaff_user_id). Reuse the winner's worker and drop the
+        // orphan worker we just created so we don't leave a duplicate.
+        const isUnique=/duplicate key|unique|23505/i.test(e2.message||"");
+        if(isUnique && member.user_id!=null){
+          const {data:winner}=await client.from("worker_companies")
+            .select("worker_id").eq("company_id",companyId)
+            .eq("hubstaff_user_id",member.user_id).maybeSingle();
+          if(winner?.worker_id){
+            await client.from("workers").delete().eq("id",w.id);  // remove the orphan
+            w={id:winner.worker_id};
+          }else{ setErr("Link failed: "+e2.message);return; }
+        }else{ setErr("Link failed: "+e2.message);return; }
+      }
     }
 
     // backfill worker_id onto any ALREADY-IMPORTED time rows for this person
@@ -2573,7 +2609,11 @@ function TimeApproval({client,companyId,consolidated}){
   const pendingIds=active.filter(e=>e.approval==="pending").map(e=>e.id);
   const pendingTotal=pendingIds.length;
 
-  if(loading)return <div className="card"><div className="empty">Loading time entries…</div></div>;
+  // Only blank the card on the FIRST load (data still null). On reloads after
+  // approve/delete, `loading` flips true briefly but data is already present —
+  // keep the table rendered so the in-progress add-hours panel and scroll
+  // position survive. (Same guard as the Contractors modal fix.)
+  if(loading && !data)return <div className="card"><div className="empty">Loading time entries…</div></div>;
   return (
     <div className="card">
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
