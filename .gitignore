@@ -23,6 +23,10 @@ diagnose_*.sh
 # Keep these in a private cloud folder (Google Drive / iCloud), not in git.
 payroll_history/
 *_extracted_rows.csv
+# Catch-all for ad-hoc DBeaver / app query exports — they're all underscore-
+# prefixed (_select_*, _All_*, _Step_2_*, etc.). This supersedes the specific
+# patterns below but they're kept for clarity.
+_*.csv
 _select_*.csv
 _All_*.csv
 
