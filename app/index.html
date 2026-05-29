@@ -3111,6 +3111,9 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // delete so a saveDraft timer scheduled BEFORE the delete (e.g. from the
   // initial load) can't fire mid-delete and re-upsert the row we just removed.
   const suppressSave=React.useRef(false);
+  // Approved time that Calculate dropped (unmatched name / not linked to this
+  // company), surfaced as a banner so it never silently vanishes.
+  const [dropped,setDropped]=useState([]);
   const [showHol,setShowHol]=useState(false);
   const [holTick,setHolTick]=useState(0);     // bump to re-read holidays after edits
   const [undo,setUndo]=useState(null);        // {label,fn} — rollback after a destructive recalculation
@@ -3232,7 +3235,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     } else {
       setUndo(null);
     }
-    setBusy(true);setMsg("");setRows(null);
+    setBusy(true);setMsg("");setRows(null);setDropped([]);
     // 1. approved time in range — both tracked AND paid PTO count toward worked_hours
     const {data:te,error:e1}=await client.from("time_entries")
       .select("worker_id,source_name,work_date,tracked_seconds,pto_seconds,approval")
@@ -3270,9 +3273,10 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     // aggregate worked seconds per worker (resolve null worker_id by source_name).
     // worked = tracked + paid-PTO so PTO leave is paid like worked time.
     const secByWorker={}, daysByWorker={};
+    const unattributed=new Set();   // approved rows whose contractor couldn't be resolved
     (te||[]).forEach(t=>{
       const wid = t.worker_id || widByName[t.source_name] || widByName[normName(t.source_name)];
-      if(!wid) return;   // unattributable row (no matching contractor)
+      if(!wid){ unattributed.add(t.source_name||"(no name)"); return; }   // no matching contractor
       const trackedSecs = Number(t.tracked_seconds||0);
       const ptoSecs = Number(t.pto_seconds||0);
       secByWorker[wid]=(secByWorker[wid]||0)+trackedSecs+ptoSecs;
@@ -3281,8 +3285,9 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       }
     });
     const out=[];
+    const noLink=[];   // worker has approved time but no worker_companies link in THIS company
     Object.keys(secByWorker).forEach(wid=>{
-      const link=wcById[wid]; if(!link)return;
+      const link=wcById[wid]; if(!link){ noLink.push(wid); return; }
       const w=link.workers||{};
       const worked=secByWorker[wid]/3600;
       const exp=expectedHours(link.contract, start, end);
@@ -3316,9 +3321,33 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
         method:w.payout_method||lastMethod[wid]||null});
     });
     out.sort((a,b)=>a.name.localeCompare(b.name));
+    // Surface APPROVED time that was dropped so it never silently disappears:
+    //   • unattributed — source_name didn't resolve to any contractor (null
+    //     worker_id + no name match). Usually a manual/CSV row whose name
+    //     doesn't match the roster, or a contractor never linked to this company.
+    //   • noLink — worker_id has approved time but no worker_companies link in
+    //     THIS company (can't compute expected hours without the contract type).
+    let droppedMsg=[];
+    if(unattributed.size){
+      droppedMsg.push(`${unattributed.size} approved entr(ies) couldn't be matched to a contractor in this company: `+
+        [...unattributed].slice(0,8).join(", ")+(unattributed.size>8?` +${unattributed.size-8} more`:"")+
+        ". Add/Link them on the Contractors tab (or fix their Hubstaff name), then recalculate.");
+    }
+    if(noLink.length){
+      const {data:nlw}=await client.from("workers").select("id,first_name,last_name").in("id",noLink);
+      const names=(nlw||[]).map(w=>`${w.first_name} ${w.last_name}`.trim());
+      droppedMsg.push(`${noLink.length} contractor(s) have approved time but aren't linked to this company: `+
+        names.slice(0,8).join(", ")+(names.length>8?` +${names.length-8} more`:"")+
+        ". Link them to this company on the Contractors tab, then recalculate.");
+    }
+    setDropped(droppedMsg);
     setRows(out);
     setBusy(false);
-    if(!out.length){setMsg("No approved time found for this company in that date range. Import & approve hours first.");return;}
+    if(!out.length){
+      setMsg("No approved time found for this company in that date range — check the period dates match the approved time, and that contractors are linked to this company."+
+        (droppedMsg.length?" "+droppedMsg.join(" "):" Import & approve hours first."));
+      return;
+    }
     await saveDraft(out);   // persist so it survives tab-switch / refresh
   }
 
@@ -3678,6 +3707,18 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
           {" "}<a href="#" onClick={e=>{e.preventDefault();setShowHol(s=>!s);}} style={{color:"var(--accent)"}}>
             {showHol?"Hide":"Edit"} holidays</a>
         </div>
+
+        {/* Dropped-time banner: approved entries Calculate couldn't place
+            (unmatched name, or contractor not linked to this company). Shown
+            so manually-added/approved time never silently disappears here. */}
+        {dropped.length>0 && (
+          <div className="banner" style={{background:"#fef2f2",borderColor:"#fecaca",color:"#b91c1c",marginTop:8}}>
+            <b>⚠ Some approved time isn't showing below:</b>
+            <ul style={{margin:"6px 0 0",paddingLeft:18,fontSize:13}}>
+              {dropped.map((m,i)=><li key={i}>{m}</li>)}
+            </ul>
+          </div>
+        )}
 
         {/* Rate drift banner: the Calculate snapshot stores rate_php on each
             payment row. If a rate was edited (in Contractors → Edit) AFTER
