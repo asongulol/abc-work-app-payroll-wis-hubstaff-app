@@ -155,6 +155,36 @@ function fullName(w){
   return parts.join(" ").trim();
 }
 
+// Round contractor photo, or an initials circle when there's no photo.
+function Avatar({src,name,size=36}){
+  const initials=(name||"").trim().split(/\s+/).map(x=>x[0]).filter(Boolean).slice(0,2).join("").toUpperCase()||"?";
+  const base={width:size,height:size,borderRadius:"50%",flex:"0 0 auto"};
+  if(src) return <img src={src} alt={name||""} style={{...base,objectFit:"cover",border:"1px solid var(--border)"}}/>;
+  return <div style={{...base,display:"inline-flex",alignItems:"center",justifyContent:"center",
+    background:"var(--accent-soft)",color:"var(--accent)",fontWeight:700,fontSize:Math.round(size*0.4),userSelect:"none"}}>{initials}</div>;
+}
+// Read an image file, center-crop to a square, scale to `size`px, return a JPEG
+// data URI. Keeps photos tiny (~15-25KB) so they live in a text column with no
+// Storage bucket. Rejects non-images.
+function fileToAvatarDataUri(file, size=256){
+  return new Promise((resolve,reject)=>{
+    if(!file){ reject(new Error("No file")); return; }
+    if(!/^image\//.test(file.type)){ reject(new Error("That's not an image file.")); return; }
+    const url=URL.createObjectURL(file); const img=new Image();
+    img.onload=()=>{
+      try{
+        const s=Math.min(img.width,img.height), sx=(img.width-s)/2, sy=(img.height-s)/2;
+        const c=document.createElement("canvas"); c.width=size; c.height=size;
+        c.getContext("2d").drawImage(img,sx,sy,s,s,0,0,size,size);
+        URL.revokeObjectURL(url);
+        resolve(c.toDataURL("image/jpeg",0.82));
+      }catch(ex){ URL.revokeObjectURL(url); reject(ex); }
+    };
+    img.onerror=()=>{ URL.revokeObjectURL(url); reject(new Error("Couldn't read that image.")); };
+    img.src=url;
+  });
+}
+
 // Audit log: record who/what/when. Best-effort (never blocks the action).
 async function logEvent(client, {company_id, action, entity, detail}){
   try{
@@ -696,7 +726,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
     let q = c.from("worker_companies")
       .select("contract,role,hubstaff_name,hubstaff_user_id,status,company_id,companies(name),"+
               "workers(id,first_name,middle_name,last_name,status,email,mobile,ph_address,hire_date,date_of_birth,"+
-              "payout_method,gcash,paymaya,paypal,wise_recipient_id,wise_recipient_uuid,wise_recipients,health_allowance_eligible,thirteenth_month_eligible)");
+              "payout_method,gcash,paymaya,paypal,wise_recipient_id,wise_recipient_uuid,wise_recipients,photo_url,health_allowance_eligible,thirteenth_month_eligible)");
     if (!consolidated && companyId) q = q.eq("company_id", companyId);
     return q;
   }, [client, companyId, consolidated]);
@@ -841,7 +871,9 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
             const w=r.workers; const active=isActive(r);
             return (
               <tr key={i} style={active?{}:{opacity:.6}}>
-                <td className="clickable" onClick={()=>setSelected({...r,w})}><b>{fullName(w)}</b></td>
+                <td className="clickable" onClick={()=>setSelected({...r,w})}>
+                  <span style={{display:"inline-flex",alignItems:"center",gap:8}}>
+                    <Avatar src={w.photo_url} name={fullName(w)} size={28}/><b>{fullName(w)}</b></span></td>
                 <td>{r.companies?.name||"—"}</td>
                 <td>{r.role||<span className="muted">—</span>}</td>
                 <td><span className={"pill "+(r.contract==="PT"?"pt":"ft")}>{r.contract}</span></td>
@@ -888,10 +920,11 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     if(!w?.id || !client) return;
     const { data, error } = await client.from("workers")
       .select("first_name,middle_name,last_name,email,mobile,ph_address,hire_date,date_of_birth,"+
-        "payout_method,wise_recipient_id,wise_recipient_uuid,wise_recipients,"+
+        "payout_method,wise_recipient_id,wise_recipient_uuid,wise_recipients,photo_url,"+
         "health_allowance_eligible,thirteenth_month_eligible")
       .eq("id", w.id).single();
     if(error || !data) return;
+    setPhoto(data.photo_url||"");
     setF({
       first_name:data.first_name||"", middle_name:data.middle_name||"",
       last_name:data.last_name||"", email:data.email||"",
@@ -936,6 +969,33 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   const [newId,setNewId]=useState(""); const [newLabel,setNewLabel]=useState("");
   const [savedMsg,setSavedMsg]=useState("");
   const [payMethod,setPayMethod]=useState(w.payout_method||"");
+  const [photo,setPhoto]=useState(w.photo_url||"");
+  const [photoBusy,setPhotoBusy]=useState(false);
+  async function onPickPhoto(file){
+    if(!file) return;
+    setPhotoBusy(true); setSavedMsg("");
+    try{
+      const uri=await fileToAvatarDataUri(file,256);
+      const {error}=await client.from("workers").update({photo_url:uri}).eq("id",w.id);
+      if(error) throw error;
+      setPhoto(uri);
+      logEvent(client,{company_id:r.company_id,action:"edit_contractor",entity:fullName(f),
+        detail:{changed:{photo:{from:w.photo_url?"(photo)":null,to:"(photo)"}}}});
+      setSavedMsg("Photo saved.");
+      notifySaved();
+    }catch(ex){ setSavedMsg("Photo error: "+(ex.message||ex)); }
+    finally{ setPhotoBusy(false); }
+  }
+  async function removePhoto(){
+    setPhotoBusy(true); setSavedMsg("");
+    const {error}=await client.from("workers").update({photo_url:null}).eq("id",w.id);
+    if(error){ setSavedMsg("Couldn't remove photo: "+error.message); setPhotoBusy(false); return; }
+    setPhoto("");
+    logEvent(client,{company_id:r.company_id,action:"edit_contractor",entity:fullName(f),
+      detail:{changed:{photo:{from:"(photo)",to:null}}}});
+    setSavedMsg("Photo removed.");
+    notifySaved(); setPhotoBusy(false);
+  }
   // --- editable fields ---
   const [f,setF]=useState({
     first_name:w.first_name||"", middle_name:w.middle_name||"", last_name:w.last_name||"",
@@ -1170,6 +1230,17 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
         <button className="x" onClick={onClose}>×</button>
         <h2>{fullName(f)}</h2>
         <p className="sub">{r.companies?.name} · {w.status}</p>
+        <div style={{display:"flex",alignItems:"center",gap:14,margin:"6px 0 2px"}}>
+          <Avatar src={photo} name={fullName(f)} size={64}/>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <label className="btn ghost sm" style={{cursor:photoBusy?"default":"pointer",opacity:photoBusy?.6:1}}>
+              {photoBusy?"Uploading…":(photo?"Change photo":"Upload photo")}
+              <input type="file" accept="image/*" disabled={photoBusy} style={{display:"none"}}
+                onChange={e=>{const file=e.target.files?.[0]; e.target.value=""; onPickPhoto(file);}}/>
+            </label>
+            {photo && <button className="btn ghost sm" disabled={photoBusy} onClick={removePhoto}>Remove</button>}
+          </div>
+        </div>
         <Banner msg={savedMsg} style={{marginTop:4}} />
 
         {/* --- Details (editable) --- */}

@@ -79,6 +79,9 @@ create table workers (
     -- benefits flags
     health_allowance_eligible  boolean not null default true,
     thirteenth_month_eligible  boolean not null default true,
+    -- optional contractor photo. Stored as a small (256px) center-cropped JPEG
+    -- data URI, so no Storage bucket / RLS is required. NULL = use initials.
+    photo_url       text,
     created_at      timestamptz not null default now()
 );
 create index on workers (match_key);
