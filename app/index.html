@@ -3105,7 +3105,7 @@ function HolidayEditor({year, onChange}){
   );
 }
 
-function Payroll({client,companyId,consolidated,confirmBillingDirty,openContractor}){
+function Payroll({client,companyId,consolidated,confirmBillingDirty,openContractor,goTab}){
   const gate = (label)=> typeof confirmBillingDirty==="function" ? confirmBillingDirty(label) : true;
   const today=new Date();
   const def=periodFor(iso(today));
@@ -3785,8 +3785,14 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       entity:`${start} → ${end}`,
       detail:{contractors:pays.length, total_net:pays.reduce((s,p)=>s+(p.net_php||0),0),
         overrides: overrides.length?overrides:undefined}});
-    setMsg(`Locked & saved ${pays.length} pay statements. Next: go to the Process Payroll tab to pay contractors.`);
+    setMsg(`Locked ${pays.length} statement(s) for ${start} → ${end}.`);
     loadBatches();   // reflect the new locked state in the batch list
+    // Offer to move straight to paying this batch (or stay to review more).
+    if(typeof goTab==="function" && window.confirm(
+      `Locked ${pays.length} statement(s) for ${start} → ${end}.\n\n`+
+      `Proceed to Pay Batch (Process & Pay) now? Choose Cancel to stay here.`)){
+      goTab("process");
+    }
   }
 
   const totalNet=rows?rows.reduce((s,r)=>s+(r.net||0),0):0;
@@ -3802,7 +3808,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
         return (
         <div className="card">
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
-            <h2 style={{margin:0}}>Approved time — by pay period</h2>
+            <h2 style={{margin:0}}>Pay periods ready for calculation</h2>
             {finishedCount>0 && (
               <button className="btn ghost sm" onClick={()=>setShowFinishedBatches(s=>!s)}>
                 {showFinishedBatches ? `Hide locked/paid (${finishedCount})` : `Show locked/paid (${finishedCount})`}
@@ -3839,7 +3845,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
                             title={b.state==="paid"?"Review this paid period (pay it in Process & Pay)":"Open to review / unlock below"}>Open</button>
                         : <>
                             <button className="btn sm" disabled={busy} onClick={()=>calcBatch(b)}>
-                              {b.state==="uncalculated"?"Calculate":"Recalculate"}</button>{" "}
+                              Calculate</button>{" "}
                             <button className="btn ghost sm" disabled={busy}
                               title="Delete this approved-time batch"
                               style={{borderColor:"var(--bad)",color:"var(--bad)"}}
@@ -3874,13 +3880,13 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
         <p className="muted" style={{fontSize:12,marginTop:-4}}>
           Semi-monthly (24/yr). Work 1–15 is paid end of that month; work 16–end is paid the 15th of the next month.
           Dates auto-fill from the imported file — edit the start and the rest follow.</p>
-        <div className="banner" style={{background:"var(--accent-soft)",borderColor:"#bcd",color:"var(--text)",marginTop:8}}>
-          <b>Expected hours this period:</b> full-time <b>{ftExp}h</b>, part-time <b>{ptExp}h</b>
+        <p className="muted" style={{fontSize:12,marginTop:8,marginBottom:0}}>
+          Expected hours this period: full-time <b>{ftExp}h</b>, part-time <b>{ptExp}h</b>
           {" "}— calendar days × day-hours, minus {periodHolidays.length} holiday(s)
           {periodHolidays.length>0 && <span>: {periodHolidays.map(h=>h.name).join(", ")}</span>}.
           {" "}<a href="#" onClick={e=>{e.preventDefault();setShowHol(s=>!s);}} style={{color:"var(--accent)"}}>
             {showHol?"Hide":"Edit"} holidays</a>
-        </div>
+        </p>
 
         {/* Dropped-time banner: approved entries Calculate couldn't place
             (unmatched name, or contractor not linked to this company). Shown
@@ -3957,7 +3963,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       {rows && rows.length>0 && (
         <div className="card">
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12}}>
-            <div><h2>Pay statements · {start} → {end}</h2>
+            <div><h2>Pay batch · {start} → {end}</h2>
               <p className="sub">Pay date <b>{payDate}</b> · {rows.length} contractor(s) ·
                 Payout <b>{money(totalNet,"PHP")}</b>
                 {" "}<span className="muted">(≈ {money(totalUsdRef,"USD")} ref @ {fx} PHP/USD)</span></p></div>
@@ -3972,10 +3978,10 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
               )}
               <button className="btn" disabled={busy} onClick={lockAndSave}>
                 {period?.state==="locked"
-                  ? "Re-lock period (overwrite snapshot)"
+                  ? "Re-lock batch (overwrite)"
                   : period?.state==="paid"
-                    ? "Re-lock (must mark unpaid first)"
-                    : "Lock period & save statements"}
+                    ? "Re-lock (mark unpaid first)"
+                    : "Lock batch for processing"}
               </button>
               {period?.state && period.state!=="open" && (
                 <button className="btn ghost" disabled={busy} onClick={unlockPeriod}
@@ -6934,7 +6940,7 @@ function App() {
         <div style={{display:tab==="contractors"?"block":"none"}}><Contractors {...{client:sb.client,companyId,consolidated,onBillingChange:recordBillingChange,pendingWorkerId,consumePendingWorker}} /></div>
         <div style={{display:tab==="time"?"block":"none"}}><TimeImport {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="imports"?"block":"none"}}><DeleteImports {...{client:sb.client,companyId,consolidated}} /></div>
-        <div style={{display:tab==="payroll"?"block":"none"}}><Payroll {...{client:sb.client,companyId,consolidated,confirmBillingDirty,openContractor}} /></div>
+        <div style={{display:tab==="payroll"?"block":"none"}}><Payroll {...{client:sb.client,companyId,consolidated,confirmBillingDirty,openContractor,goTab:go}} /></div>
         <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="process",confirmBillingDirty,openContractor}} /></div>
         <div style={{display:tab==="documents"?"block":"none"}}><Documents {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>
