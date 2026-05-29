@@ -6557,7 +6557,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
                             <td>{Number(r.net||0).toLocaleString(undefined,{minimumFractionDigits:2})}</td>
                             <td className="muted">{r.transfer_id?<code>{r.transfer_id}</code>:"—"}</td>
                             <td><span className="pill" style={sent?{background:"#dcfce7",color:"#065f46"}:{background:"#f3f4f6",color:"var(--muted)"}}>{sent?"sent":(r.status||"draft")}</span></td>
-                            <td className="muted" style={{whiteSpace:"nowrap"}}>{sentDate?fmtDate(sentDate):"—"}</td>
+                            <td className="muted" style={{whiteSpace:"nowrap"}}>{sentDate?(()=>{try{return new Date(sentDate).toLocaleDateString();}catch(e){return String(sentDate).slice(0,10);}})():"—"}</td>
                             <td style={{fontSize:12}}>{changes.length
                               ? <span style={{color: overrode?"#a16207":"#166534"}}>{changes.join(" · ")}</span>
                               : <span className="muted">no change yet</span>}</td>
