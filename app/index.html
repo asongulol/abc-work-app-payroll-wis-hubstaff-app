@@ -3716,7 +3716,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       if(te.length<PAGE) break;
     }
     const {data:pp}=await client.from("pay_periods")
-      .select("period_start,period_end,state").eq("company_id",companyId);
+      .select("id,period_start,period_end,state").eq("company_id",companyId);
     const stateBy={}; (pp||[]).forEach(p=>{ stateBy[`${p.period_start}|${p.period_end}`]=p.state; });
     // Show EVERY period that has approved time (mirrors the Time Approval list).
     // Paid/locked are labeled and have limited actions; nothing silently hides.
@@ -3726,6 +3726,38 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       state: stateBy[`${b.start}|${b.end}`]||"uncalculated",
     })).sort((a,b)=>b.start.localeCompare(a.start));
     setBatches(list);
+    // Detect PHANTOM empty draft periods: open pay_periods with no payment
+    // rows AND no approved time (left behind after a batch/import delete).
+    // Surfaced with a one-click cleanup so they don't clutter or mislead.
+    const openPP=(pp||[]).filter(p=>p.state==="open");
+    if(openPP.length){
+      const ids=openPP.map(p=>p.id);
+      const {data:pays}=await client.from("payments").select("pay_period_id").in("pay_period_id",ids);
+      const withPay=new Set((pays||[]).map(p=>p.pay_period_id));
+      const hasTime=new Set(Object.keys(g));   // "start|end" keys with approved time
+      const empties=openPP.filter(p=>!withPay.has(p.id) && !hasTime.has(`${p.period_start}|${p.period_end}`))
+        .map(p=>({id:p.id,start:p.period_start,end:p.period_end}));
+      setEmptyDrafts(empties);
+    } else setEmptyDrafts([]);
+  }
+  const [emptyDrafts,setEmptyDrafts]=useState([]);
+  // Delete phantom empty draft periods (open, no payments, no approved time).
+  async function cleanupEmptyDrafts(){
+    if(!emptyDrafts.length) return;
+    if(!window.confirm(`Delete ${emptyDrafts.length} empty draft pay period(s)?\n\n`+
+      emptyDrafts.slice(0,10).map(d=>`• ${d.start} → ${d.end}`).join("\n")+
+      (emptyDrafts.length>10?`\n…and ${emptyDrafts.length-10} more`:"")+
+      `\n\nThese have no statements and no approved time — safe to remove. Recalculating a period recreates it if needed.`)) return;
+    setBusy(true); setMsg("");
+    try{
+      const {error}=await client.from("pay_periods").delete().in("id",emptyDrafts.map(d=>d.id));
+      if(error) throw new Error(error.message);
+      logEvent(client,{company_id:companyId,action:"delete_statement",
+        entity:"empty draft periods",detail:{scope:"cleanup_empty_periods",count:emptyDrafts.length}});
+      setMsg(`Removed ${emptyDrafts.length} empty draft period(s).`);
+      loadBatches();
+    }catch(ex){ setMsg("Cleanup failed: "+(ex.message||ex)); }
+    finally{ setBusy(false); }
   }
   useEffect(()=>{ loadBatches(); /* eslint-disable-next-line */ },[client,companyId,consolidated]);
 
@@ -3848,18 +3880,27 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     <div>
       {/* Approved-time batches by pay period — the navigable list. Pick one to
           Calculate (it flows to Process & Pay once locked) or Delete. */}
-      {!consolidated && companyId && batches && batches.length>0 && (() => {
+      {!consolidated && companyId && ((batches && batches.length>0) || emptyDrafts.length>0) && (() => {
         const finishedCount = batches.filter(b=>b.state==="locked"||b.state==="paid").length;
         const shown = showFinishedBatches ? batches : batches.filter(b=>b.state!=="locked"&&b.state!=="paid");
         return (
         <div className="card">
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
             <h2 style={{margin:0}}>Pay periods ready for calculation</h2>
-            {finishedCount>0 && (
-              <button className="btn ghost sm" onClick={()=>setShowFinishedBatches(s=>!s)}>
-                {showFinishedBatches ? `Hide locked/paid (${finishedCount})` : `Show locked/paid (${finishedCount})`}
-              </button>
-            )}
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              {emptyDrafts.length>0 && (
+                <button className="btn ghost sm" disabled={busy} onClick={cleanupEmptyDrafts}
+                  title="Delete empty draft periods left behind after a batch/import delete (no statements, no approved time)."
+                  style={{borderColor:"var(--bad)",color:"var(--bad)"}}>
+                  Clean up {emptyDrafts.length} empty draft(s)
+                </button>
+              )}
+              {finishedCount>0 && (
+                <button className="btn ghost sm" onClick={()=>setShowFinishedBatches(s=>!s)}>
+                  {showFinishedBatches ? `Hide locked/paid (${finishedCount})` : `Show locked/paid (${finishedCount})`}
+                </button>
+              )}
+            </div>
           </div>
           <p className="sub">{showFinishedBatches?"Every period with approved time.":"Periods that still need action (not yet calculated or still a draft)."}
             {" "}<b>Calculate</b> builds a period's pay statements (review below, then Lock to send it to Process &amp; Pay); <b>Delete</b> removes the batch.
