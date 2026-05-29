@@ -2163,11 +2163,28 @@ function DeleteImports({client,companyId,consolidated,onDeleted}){
     if(consolidated||!companyId){setErr("Pick a single company to delete by date.");return;}
     if(!delStart||!delStop){setErr("Enter both start and stop dates.");return;}
     if(delStart>delStop){setErr("'From' must be on or before 'To'.");return;}
-    // 1. how many time_entries will be deleted?
-    const {count}=await client.from("time_entries")
-      .select("*",{count:"exact",head:true})
+    // 1. fetch the actual rows that will be deleted (not just a count) so we can
+    //    show a per-contractor dry-run preview BEFORE the user confirms. The
+    //    window is one or a few half-month periods, so this is bounded
+    //    (contractors × days) — typically a few hundred rows at most.
+    const {data:rows}=await client.from("time_entries")
+      .select("source_name,work_date,tracked_seconds,pto_seconds")
       .eq("company_id",companyId).gte("work_date",delStart).lte("work_date",delStop);
+    const count=(rows||[]).length;
     if(!count){setInfo("No time entries in that range.");return;}
+    // Group by contractor for the preview: row count, date span, total hours.
+    const byName={};
+    (rows||[]).forEach(r=>{
+      const g=byName[r.source_name]||(byName[r.source_name]={name:r.source_name,rows:0,
+        firstDate:r.work_date,lastDate:r.work_date,sec:0});
+      g.rows++;
+      g.sec+=(r.tracked_seconds||0)+(r.pto_seconds||0);
+      if(r.work_date<g.firstDate) g.firstDate=r.work_date;
+      if(r.work_date>g.lastDate)  g.lastDate=r.work_date;
+    });
+    const preview=Object.values(byName)
+      .map(g=>({...g,hours:+(g.sec/3600).toFixed(2)}))
+      .sort((a,b)=>a.name.localeCompare(b.name));
     // 2. do any locked/paid pay_periods overlap this window? If so, we want
     //    the user to see exactly which ones BEFORE they confirm.
     const {data:pps}=await client.from("pay_periods")
@@ -2178,7 +2195,7 @@ function DeleteImports({client,companyId,consolidated,onDeleted}){
       .gte("period_end",delStart);
     const overlap=(pps||[]).filter(p=>p.period_start<=delStop && p.period_end>=delStart);
     setMsg("");setMsgTone(null);
-    setArmed({type:"range",count,start:delStart,stop:delStop,overlap});
+    setArmed({type:"range",count,start:delStart,stop:delStop,overlap,preview});
   }
 
   return (
@@ -2228,6 +2245,32 @@ function DeleteImports({client,companyId,consolidated,onDeleted}){
             : <button className="btn ghost" style={{borderColor:"var(--bad)",color:"var(--bad)"}}
                 disabled={busy||consolidated} onClick={armRange}>Delete range</button>}
         </div>
+        {/* Dry-run preview: which contractors + how much time would be deleted.
+            Shown whenever a range is armed, so the user sees WHO is affected
+            (not just a row count) before confirming. */}
+        {armed && armed.type==="range" && armed.preview && armed.preview.length>0 && (
+          <div style={{marginTop:8,padding:"8px 10px",background:"#f8fafc",border:"1px solid var(--border)",borderRadius:4}}>
+            <div style={{fontSize:12,fontWeight:600,marginBottom:4}}>
+              Will delete {armed.count} row(s) across {armed.preview.length} contractor(s):
+            </div>
+            <div className="table-scroll" style={{maxHeight:180}}>
+              <table style={{fontSize:12}}>
+                <thead><tr><th>Contractor</th><th>Rows</th><th>Hours</th><th>Date span</th></tr></thead>
+                <tbody>
+                  {armed.preview.slice(0,30).map((g,i)=>(
+                    <tr key={i}>
+                      <td>{g.name}</td>
+                      <td>{g.rows}</td>
+                      <td>{g.hours.toLocaleString(undefined,{minimumFractionDigits:2})}</td>
+                      <td className="muted">{g.firstDate===g.lastDate?g.firstDate:`${g.firstDate} → ${g.lastDate}`}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {armed.preview.length>30 && <p className="muted" style={{fontSize:11,margin:"4px 0 0"}}>…and {armed.preview.length-30} more contractor(s).</p>}
+          </div>
+        )}
         {/* If the range overlaps locked/paid periods, list them so the user
             sees exactly which periods would lose underlying time data. */}
         {armed && armed.type==="range" && armed.overlap && armed.overlap.length>0 && (
@@ -2563,11 +2606,13 @@ function TimeApproval({client,companyId,consolidated}){
 
       <Banner msg={msg} style={{marginTop:10}} />
 
-      {people.length===0 && approved.length>0 &&
+      {people.length===0 && approved.length>0 && !consolidated && companyId &&
         <div className="banner success">
           Nothing pending — all imported time is approved. Add manual hours below, or import another period.</div>}
-      {!companyId
-        ? <div className="empty">Pick a single company to review time.</div>
+      {(consolidated || !companyId)
+        ? <div className="empty">{consolidated
+            ? "Time review is per-company — switch to a single company to review and approve time."
+            : "Pick a single company to review time."}</div>
         : <div className="table-scroll"><table>
         <thead><tr>
           <th>Contractor</th>
@@ -3021,17 +3066,32 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     // and snapshot the prior values so the user can roll back.
     const prevRows = rows;
     const adjusted = (prevRows||[]).filter(r=>
-      r.overridden || (r.ha||0)>0 || (r.pdd||0)>0 || (r.bonus||0)>0 || r.t13_overridden);
+      r.overridden || (r.ha||0)>0 || (r.pdd||0)>0 || (r.bonus||0)>0 || r.t13_overridden ||
+      (Array.isArray(r.misc_items) && r.misc_items.length>0));
     if(adjusted.length){
       const names = adjusted.slice(0,8).map(r=>r.name).join(", ") + (adjusted.length>8?` +${adjusted.length-8} more`:"");
+      // Spell out Misc entries explicitly — they're the easiest to forget since
+      // they live behind a popup, not an inline column.
+      const miscRows = adjusted.filter(r=>Array.isArray(r.misc_items) && r.misc_items.length>0);
+      const miscDetail = miscRows.slice(0,6).map(r=>{
+        const items=r.misc_items.map(it=>{
+          if(it.kind==="other_hours") return `${it.label} ${it.hours}h`;
+          if(it.kind==="deduction")   return `-${it.label} ₱${Number(it.amount).toLocaleString()}`;
+          return `${it.label} ₱${Number(it.amount).toLocaleString()}`;
+        }).join(", ");
+        return `   • ${r.name}: ${items}`;
+      }).join("\n") + (miscRows.length>6?`\n   …and ${miscRows.length-6} more with Misc entries`:"");
       const ok = window.confirm(
         "⚠️  RECALCULATING WILL RESET ALL OVERRIDES AND ADJUSTMENTS\n\n"+
         `This period has ${adjusted.length} contractor(s) with manual overrides or adjustments `+
-        `(gross overrides, Health Allowance, PDD Lunch, 13th-month, or bonus):\n`+
+        `(gross overrides, Health Allowance, 13th-month, Lunch, bonus, or Misc items):\n`+
         `   ${names}\n\n`+
+        (miscRows.length
+          ? `Misc entries that will be WIPED (${miscRows.length} contractor(s)):\n${miscDetail}\n\n`
+          : "")+
         "Recalculating rebuilds every amount from tracked hours only and will OVERWRITE those "+
-        "values (allowances reset to 0, overrides discarded). This is what happened to imported "+
-        "historical amounts.\n\n"+
+        "values (allowances reset to 0, overrides and Misc items discarded). This is what happened "+
+        "to imported historical amounts.\n\n"+
         "An \"Undo recalculation\" button will appear so you can restore the current values.\n\n"+
         "Recalculate and overwrite anyway?");
       if(!ok){ setMsg("Recalculation cancelled — existing overrides and adjustments were kept."); return; }
@@ -4704,9 +4764,9 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
                             {r.recipients.map(rec=><option key={rec.id} value={rec.id}>{rec.label} (#{rec.id})</option>)}
                           </select>
                         : r.recipient_uuid
-                          ? <span className="muted" style={{fontStyle:"italic"}}
-                              title="Paid via Wise Tag (contact recipient). The Wise API draft path requires a bank-account recipient — include this contractor in the Manual Wise batch CSV instead (uses the stored UUID).">
+                          ? <span className="tip-wrap muted" tabIndex={0} style={{fontStyle:"italic",cursor:"help"}}>
                               Wisetag — use Manual CSV
+                              <span className="tip-body">Paid via Wise Tag (contact recipient). The Wise API draft path requires a bank-account recipient — include this contractor in the Manual Wise batch CSV instead (uses the stored UUID).</span>
                             </span>
                           : (openContractor
                               ? <button type="button"
