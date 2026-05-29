@@ -100,6 +100,16 @@
   }
   /* two-column responsive grid used by Time Import options */
   .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  /* Custom hover tooltip — native title= is unreliable on Chrome/macOS for
+     multi-line text; this fires instantly and respects line breaks. */
+  .tip-wrap{position:relative;display:inline-block}
+  .tip-wrap:hover .tip-body,.tip-wrap:focus-within .tip-body{visibility:visible;opacity:1}
+  .tip-body{position:absolute;left:50%;bottom:calc(100% + 6px);transform:translateX(-50%);
+    background:#1f2937;color:#fff;padding:6px 8px;border-radius:4px;font-size:12px;line-height:1.4;
+    white-space:pre-line;min-width:max-content;max-width:300px;z-index:1000;pointer-events:none;
+    visibility:hidden;opacity:0;transition:opacity .1s;text-align:left;font-weight:400}
+  .tip-body::after{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);
+    border:4px solid transparent;border-top-color:#1f2937}
   @media print {
     body{background:#fff}
     .topbar,.tabs,.no-print{display:none !important}
@@ -272,7 +282,7 @@ function CompanySwitcher({ client, companyId, setCompanyId, consolidated, setCon
 }
 
 // ============================ CONTRACTORS ====================================
-function Contractors({ client, companyId, consolidated }) {
+function Contractors({ client, companyId, consolidated, onBillingChange, pendingWorkerId, consumePendingWorker }) {
   const { data, loading, reload } = useQuery(client, c => {
     // workers joined to their company link(s) + current rate
     let q = c.from("worker_companies")
@@ -287,6 +297,28 @@ function Contractors({ client, companyId, consolidated }) {
   const [showInactive, setShowInactive] = useState(false);
   const [busyId, setBusyId] = useState(null);
   const allRows = (data || []).filter(r => r.workers);
+  // Cross-tab profile open: another tab called openContractor(workerId) — find
+  // and select the worker's row so the profile modal opens. Show inactive in
+  // case the target is inactive (otherwise the row would be hidden).
+  useEffect(()=>{
+    if(!pendingWorkerId) return;
+    const hit=allRows.find(r=>String(r.workers?.id)===String(pendingWorkerId));
+    if(hit){
+      // Inline the active check — `isActive` is declared below, can't be used here.
+      const active=(hit.workers?.status==="active")&&(hit.status==="active");
+      if(!active) setShowInactive(true);
+      // ProfileModal expects r.w to be the worker object — the list rows add
+      // it via setSelected({...r,w}). Replicate that shape here, otherwise the
+      // modal reads w.first_name on undefined and crashes the tree.
+      setSelected({...hit, w: hit.workers});
+      consumePendingWorker && consumePendingWorker();
+    }
+    // If !hit and allRows is empty, the query may still be loading — leave
+    // pendingWorkerId set; the effect re-runs when allRows arrives. If the
+    // worker truly isn't in this company's list (filtered out by company_id),
+    // it'll never resolve — user can switch company manually.
+    /* eslint-disable-next-line */
+  },[pendingWorkerId, allRows.length]);
   const isActive = r => (r.workers.status==="active") && (r.status==="active");
   const visible = showInactive ? allRows : allRows.filter(isActive);
   const inactiveCount = allRows.length - allRows.filter(isActive).length;
@@ -309,6 +341,16 @@ function Contractors({ client, companyId, consolidated }) {
       await client.from("worker_companies").update(
         makeActive ? {status:"active", ended_on:null} : {status:"ended", ended_on:new Date().toISOString().slice(0,10)}
       ).eq("worker_id", r.workers.id).eq("company_id", r.company_id);
+    // Status flips affect payroll scope — record so the next Calculate / Lock
+    // / Reconcile / pay action prompts the user to acknowledge before acting on
+    // a roster that just changed.
+    if(typeof onBillingChange === "function"){
+      onBillingChange({
+        workerId: r.workers.id,
+        name: fullName(r.workers),
+        field: `status → ${makeActive?"active":"inactive"}`,
+      });
+    }
     setBusyId(null); reload();
   }
 
@@ -344,7 +386,13 @@ function Contractors({ client, companyId, consolidated }) {
     finally{ setAdding(false); }
   }
 
-  if (loading) return <div className="empty">Loading…</div>;
+  // Only show the Loading placeholder on the FIRST load (when data is still
+  // null). On any subsequent reload (e.g. after a save fires notifySaved →
+  // reload), `loading` flips true again briefly but `data` is already
+  // populated — show the existing table so the modal stays mounted and keeps
+  // its local form state. Previously this returned early on every reload,
+  // unmounting the modal and resetting all inputs.
+  if (loading && !data) return <div className="empty">Loading…</div>;
   return (
     <div className="card">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
@@ -396,7 +444,7 @@ function Contractors({ client, companyId, consolidated }) {
           })}
         </tbody>
       </table></div>}
-      {selected && <ProfileModal r={selected} client={client} onClose={()=>{setSelected(null);reload();}} />}
+      {selected && <ProfileModal r={selected} client={client} onClose={()=>{setSelected(null);reload();}} onBillingChange={onBillingChange} onSaved={reload} />}
     </div>
   );
 }
@@ -405,10 +453,57 @@ function Field({label,children}){return(
   <div className="field"><label>{label}</label><div className="val">{children||<span className="muted">—</span>}</div></div>
 );}
 
-function ProfileModal({ r, onClose, client }) {
+function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
+  // Tiny helper so every billing save point reports a uniform record.
+  const reportBilling = (field)=>{
+    if(typeof onBillingChange==="function"){
+      onBillingChange({ workerId: r?.w?.id, name: fullName(r?.w||{}), field });
+    }
+  };
   const w=r.w;
+  // Re-pull the worker from the DB and sync ALL local state from it. This is
+  // what makes saves and pull-from-Wise actions visible inside the modal
+  // without closing/reopening. Defined after w so it can reference w.id.
+  async function refreshLocal(){
+    if(!w?.id || !client) return;
+    const { data, error } = await client.from("workers")
+      .select("first_name,middle_name,last_name,email,mobile,ph_address,hire_date,date_of_birth,"+
+        "payout_method,wise_recipient_id,wise_recipient_uuid,wise_recipients,"+
+        "health_allowance_eligible,thirteenth_month_eligible")
+      .eq("id", w.id).single();
+    if(error || !data) return;
+    setF({
+      first_name:data.first_name||"", middle_name:data.middle_name||"",
+      last_name:data.last_name||"", email:data.email||"",
+      mobile:data.mobile||"", ph_address:data.ph_address||"",
+      hire_date:data.hire_date||"", date_of_birth:data.date_of_birth||"",
+      health_allowance_eligible:!!data.health_allowance_eligible,
+      thirteenth_month_eligible:!!data.thirteenth_month_eligible,
+    });
+    setPayMethod(data.payout_method||"");
+    const list=Array.isArray(data.wise_recipients)?data.wise_recipients:[];
+    setRecips(list);
+    setDefId(data.wise_recipient_id||null);
+    setDefUuid(data.wise_recipient_uuid||"");
+    setUuidDraft(data.wise_recipient_uuid||"");
+  }
+  // notifySaved: tell parent to refetch the list AND refresh local modal state.
+  // Without the local refresh, the modal still shows the snapshot from the
+  // moment it opened — e.g. typing "s" in middle name then clicking Save shows
+  // the saved DB value (which is "s"), so the field "appears" unchanged but
+  // is actually correct. Same fix unblocks pull-from-Wise reflecting in the
+  // modal without close+reopen.
+  const notifySaved = ()=>{
+    if(typeof onSaved==="function") onSaved();
+    refreshLocal();
+  };
   const [recips,setRecips]=useState(Array.isArray(w.wise_recipients)?w.wise_recipients:[]);
   const [defId,setDefId]=useState(w.wise_recipient_id||null);
+  // The Wise UUID used by the manual Batch Payments CSV (recipientId column).
+  // Not returned by the Wise API — must be pasted from the Wise web UI's
+  // "Download all templates" export. Stored separately from defId/recips.
+  const [defUuid,setDefUuid]=useState(w.wise_recipient_uuid||"");
+  const [uuidDraft,setUuidDraft]=useState(w.wise_recipient_uuid||"");
   const [newId,setNewId]=useState(""); const [newLabel,setNewLabel]=useState("");
   const [savedMsg,setSavedMsg]=useState("");
   const [payMethod,setPayMethod]=useState(w.payout_method||"");
@@ -512,7 +607,10 @@ function ProfileModal({ r, onClose, client }) {
   async function savePayMethod(val){
     setPayMethod(val);
     const {error}=await client.from("workers").update({payout_method: val||null}).eq("id",w.id);
-    setSavedMsg(error?("Error: "+error.message):"Payout method saved.");
+    if(error){ setSavedMsg("Error: "+error.message); return; }
+    setSavedMsg("Payout method saved.");
+    reportBilling(`payout method → ${val||"(none)"}`);
+    notifySaved();
   }
   async function saveDetails(){
     const {error:e1}=await client.from("workers").update({
@@ -530,6 +628,7 @@ function ProfileModal({ r, onClose, client }) {
     logEvent(client,{company_id:r.company_id,action:"edit_contractor",
       entity:`${f.first_name} ${f.last_name}`,detail:{contract,role}});
     setSavedMsg("Details saved.");
+    notifySaved();
   }
   async function saveRate(){
     const amt=parseFloat(rate);
@@ -571,13 +670,18 @@ function ProfileModal({ r, onClose, client }) {
     logEvent(client,{company_id:r.company_id,action:"set_rate",
       entity:`${f.first_name} ${f.last_name}`,detail:{amount_php:amt,effective_start:rateEff}});
     setSavedMsg(`Rate set to ₱${amt.toLocaleString()} from ${rateEff}.`);
+    reportBilling(`rate → ₱${amt.toLocaleString()} from ${rateEff}`);
     loadRateHistory();
+    notifySaved();
   }
 
   async function persist(nextRecips,nextDef){
     const {error}=await client.from("workers")
       .update({wise_recipients:nextRecips, wise_recipient_id:nextDef}).eq("id",w.id);
-    setSavedMsg(error?("Error: "+error.message):"Saved.");
+    if(error){ setSavedMsg("Error: "+error.message); return; }
+    setSavedMsg("Saved.");
+    reportBilling(`Wise recipient (default #${nextDef||"—"})`);
+    notifySaved();
   }
   function addRecip(){
     if(!newId)return;
@@ -593,6 +697,16 @@ function ProfileModal({ r, onClose, client }) {
     setRecips(next);setDefId(nd);persist(next,nd);
   }
   function makeDefault(id){ setDefId(id); persist(recips,id); }
+  async function persistUuid(){
+    const v=(uuidDraft||"").trim()||null;
+    const {error}=await client.from("workers").update({wise_recipient_uuid:v}).eq("id",w.id);
+    if(error){ setSavedMsg("Error: "+error.message); return; }
+    setDefUuid(v||""); setSavedMsg(v?"Saved Wise recipient UUID.":"Cleared Wise recipient UUID.");
+    logEvent(client,{company_id:r.company_id,action:"set_wise_recipient_uuid",
+      entity:`${f.first_name} ${f.last_name}`,detail:{uuid:v}});
+    reportBilling(v?`Wise recipient UUID set`:`Wise recipient UUID cleared`);
+    notifySaved();
+  }
   const inp={width:"100%"};
   return (
     <div className="modal-bg" onClick={onClose}>
@@ -741,10 +855,22 @@ function ProfileModal({ r, onClose, client }) {
               <input style={{width:150}} value={newLabel} onChange={e=>setNewLabel(e.target.value)} placeholder="e.g. BPI peso"/></div>
             <button className="btn sm" onClick={addRecip}>Add</button>
           </div>
+          <div style={{display:"flex",gap:6,alignItems:"flex-end",marginTop:10,borderTop:"1px dashed var(--border)",paddingTop:10}}>
+            <div style={{flex:1}}>
+              <label style={{fontSize:10,color:"var(--muted)"}}>Wise recipient UUID (for manual Batch CSV)</label><br/>
+              <input style={{width:"100%"}} value={uuidDraft} onChange={e=>setUuidDraft(e.target.value)}
+                placeholder="e.g. 33e5a8b1-…  (paste from Wise → Batch payments → Download all templates)"/>
+            </div>
+            <button className="btn sm" disabled={(uuidDraft||"").trim()===(defUuid||"")} onClick={persistUuid}>
+              {((uuidDraft||"").trim()&&!defUuid)?"Save":"Update"}
+            </button>
+          </div>
         </div>
         <p className="muted" style={{fontSize:12,marginTop:6}}>
           These are recipient IDs <b>in your Wise account</b> (identifiers only — never bank details).
           Payouts default to the one marked default; it updates to whichever was last used.
+          {" "}The <b>UUID</b> is separate — the Wise API doesn't return it, so paste it once from the
+          Wise <i>Batch payments → Download all templates</i> CSV; it's what the Manual Wise batch file uses.
         </p>
 
         {/* --- External sources: Wise + Hubstaff drift ---
@@ -754,7 +880,7 @@ function ProfileModal({ r, onClose, client }) {
             button (with required reason) updates the field. Wise side is
             read-only because Wise doesn't allow API edits of existing
             recipients. */}
-        <ExternalSourcesPanel w={w} f={f} r={r} client={client}/>
+        <ExternalSourcesPanel w={w} f={f} r={r} client={client} onBillingChange={onBillingChange} onSaved={notifySaved}/>
 
         <p className="muted" style={{fontSize:12,marginTop:10,borderTop:"1px solid var(--border)",paddingTop:12}}>
           Independent contractor record. No employee-style supervision data is stored,
@@ -769,12 +895,23 @@ function ProfileModal({ r, onClose, client }) {
 // (by w.wise_recipient_id) and Hubstaff user (by r.hubstaff_user_id),
 // compares to DB values, surfaces mismatches with a per-field push button
 // for Hubstaff. Read-only for Wise (API doesn't allow recipient edits).
-function ExternalSourcesPanel({ w, f, r, client }){
+function ExternalSourcesPanel({ w, f, r, client, onBillingChange, onSaved }){
+  const reportBilling = (field)=>{
+    if(typeof onBillingChange==="function"){
+      onBillingChange({ workerId: w?.id, name: fullName(w||f||{}), field });
+    }
+  };
+  const notifySaved = ()=>{ if(typeof onSaved==="function") onSaved(); };
   const [wise,setWise]=useState(null);     // { id, name, email, account, ... } or null
   const [hub,setHub]=useState(null);       // { id, name, email, status, time_zone } or null
   const [loadingWise,setLoadingWise]=useState(false);
   const [loadingHub,setLoadingHub]=useState(false);
   const [wiseErr,setWiseErr]=useState("");
+  // Soft, non-error note for Wise — used when /v1/accounts/{id} returns 403
+  // (which means the stored recipient is a Wisetag/Wise-balance recipient;
+  // Wise's read API doesn't expose those, so there's no drift to check, but
+  // payments still work via /v1/transfers).
+  const [wiseNote,setWiseNote]=useState("");
   const [hubErr,setHubErr]=useState("");
   // State used by the Wise → DB pull flow (and previously by a now-removed
   // Hubstaff push flow). `pushing` doubles as a busy flag keyed by field;
@@ -788,16 +925,46 @@ function ExternalSourcesPanel({ w, f, r, client }){
   const wiseId = w.wise_recipient_id;
   const hubUserId = r?.hubstaff_user_id;
 
+  // Supabase JS v2 wraps a non-2xx edge-function response as FunctionsHttpError
+  // with the unhelpful message "Edge Function returned a non-2xx status code".
+  // The real upstream error (e.g. Wise "404: account not found") is on
+  // err.context as a Response. Read it so the panel surfaces the actual cause.
+  async function fnErrorMessage(err){
+    const fallback = String(err?.message||err||"Edge function error");
+    try{
+      const ctx = err?.context;
+      if(ctx && typeof ctx.text==="function"){
+        const body = await ctx.text();
+        if(body){
+          try{ const j=JSON.parse(body); if(j?.error) return String(j.error); }catch{}
+          return body.length>300 ? body.slice(0,300)+"…" : body;
+        }
+      }
+    }catch{/* fall through */}
+    return fallback;
+  }
+
   async function loadWise(){
     if(!wiseId) return;
-    setLoadingWise(true); setWiseErr("");
+    setLoadingWise(true); setWiseErr(""); setWiseNote("");
     try{
       const { data, error }=await client.functions.invoke("wise-payouts",{
         body:{ action:"get_recipient", recipient_id:wiseId } });
-      if(error) throw new Error(error.message||"Edge function error");
+      if(error) throw new Error(await fnErrorMessage(error));
       if(data?.error) throw new Error(data.error);
       setWise(data?.recipient||null);
-    }catch(ex){ setWiseErr(String(ex.message||ex)); }
+    }catch(ex){
+      const msg=String(ex.message||ex);
+      // 403 unauthorized from /v1/accounts/{id} means the stored recipient is
+      // a Wisetag/Wise-balance recipient — Wise's read API only exposes bank
+      // accounts. Drift check is N/A for these, but payments still work via
+      // the transfer endpoint. Demote to a muted note instead of an error.
+      if(/\b403\b/.test(msg) && /unauthorized/i.test(msg)){
+        setWiseNote("Wisetag / Wise-balance recipient — Wise's read API doesn't expose this type, so drift check isn't available. Payments still work via the API draft.");
+      } else {
+        setWiseErr(msg);
+      }
+    }
     finally{ setLoadingWise(false); }
   }
   async function loadHub(){
@@ -806,7 +973,7 @@ function ExternalSourcesPanel({ w, f, r, client }){
     try{
       const { data, error }=await client.functions.invoke("hubstaff-sync",{
         body:{ action:"get_user", user_id:hubUserId } });
-      if(error) throw new Error(error.message||"Edge function error");
+      if(error) throw new Error(await fnErrorMessage(error));
       if(data?.error) throw new Error(data.error);
       setHub(data?.user||null);
     }catch(ex){ setHubErr(String(ex.message||ex)); }
@@ -972,8 +1139,6 @@ function ExternalSourcesPanel({ w, f, r, client }){
   // Wise is the source of truth for payment-recipient identity, so this is
   // the canonical direction for name/email when there's drift.
   async function pullFromWise(field){
-    const reason=(pushReason[`wise_${field}`]||"").trim();
-    if(!reason){ setPushMsg("A reason is required."); return; }
     if(!wise){ setPushMsg("No Wise data loaded yet."); return; }
     const wiseVal=field==="name"?wise.name:wise.email;
     if(!wiseVal){ setPushMsg(`Wise has no ${field} to pull.`); return; }
@@ -991,9 +1156,13 @@ function ExternalSourcesPanel({ w, f, r, client }){
       }
       const { error }=await client.from("workers").update(updatePayload).eq("id",w.id);
       if(error) throw new Error(error.message);
+      // Audit detail still captures what changed; no user-typed reason since
+      // Wise is the documented source of truth for payment-recipient identity
+      // — pulling its value is the canonical reconciliation action, not a
+      // judgment call that needs justification.
       logEvent(client,{ company_id:r?.company_id, action:"edit_contractor",
         entity:`${fullName(f)} · Wise #${wiseId}`,
-        detail:{ kind:"pull_from_wise", field, new_value:wiseVal, reason } });
+        detail:{ kind:"pull_from_wise", field, new_value:wiseVal } });
       // 2. NOTE: This used to cascade to Hubstaff (update_user) so all three
       //    systems agreed. Hubstaff doesn't expose user-profile writes via
       //    its public REST API (verified 2026-05-28 with 11 endpoint probes),
@@ -1005,8 +1174,10 @@ function ExternalSourcesPanel({ w, f, r, client }){
         ) ? " — Hubstaff still differs; fix it manually in the Hubstaff web UI" : "";
       setPushMsg(`Pulled ${field} from Wise into DB${hubMsg}.`);
       unarmPush(`wise_${field}`);
+      notifySaved();
       // Note: the parent ProfileModal's local `f` state is stale now. The
-      // change is in the DB; closing and re-opening the modal will reflect it.
+      // change is in the DB; the list refetches on notifySaved(), and the
+      // modal will pick up the new value when next opened.
     }catch(ex){ setPushMsg("Pull failed: "+String(ex.message||ex)); }
     finally{ setPushing(null); }
   }
@@ -1046,19 +1217,11 @@ function ExternalSourcesPanel({ w, f, r, client }){
             </span>
           )}
           {canPull && diff && (
-            pullArmed
-              ? <span style={{display:"inline-flex",gap:4,alignItems:"center"}}>
-                  <input type="text" placeholder="Reason…" value={pushReason[pullKey]||""}
-                    onChange={e=>setReason(pullKey,e.target.value)}
-                    style={{fontSize:12,padding:"2px 6px",width:140}}/>
-                  <button className="btn sm" disabled={pushing===pullKey||!pushReason[pullKey]?.trim()}
-                    onClick={()=>pullFromWise(pullField)}>{pushing===pullKey?"…":"Pull"}</button>
-                  <button className="btn ghost sm" disabled={pushing===pullKey}
-                    onClick={()=>unarmPush(pullKey)}>Cancel</button>
-                </span>
-              : <button className="btn sm" disabled={pushing===pullKey}
-                  title={`Use Wise's ${pullField} — overwrites the DB value. Wise is the payment source of truth. (Hubstaff isn't updated — its API doesn't support it; fix Hubstaff separately in their UI if needed.)`}
-                  onClick={()=>armPush(pullKey)}>Use Wise's {pullField}</button>
+            <button className="btn sm" disabled={pushing===pullKey}
+              title={`Use Wise's ${pullField} — overwrites the DB value. Wise is the payment source of truth. (Hubstaff isn't updated — its API doesn't support it; fix Hubstaff separately in their UI if needed.)`}
+              onClick={()=>pullFromWise(pullField)}>
+              {pushing===pullKey?"Pulling…":`Use Wise's ${pullField}`}
+            </button>
           )}
         </td>
       </tr>
@@ -1131,6 +1294,20 @@ function ExternalSourcesPanel({ w, f, r, client }){
     setLookupBusy(true); setLookupErr("");
     try{
       const updates={ wise_recipient_id: lookupPreview.id };
+      // Also append to wise_recipients so the API-draft per-row dropdown in
+      // Process & Pay can render this recipient. Without this, even a freshly
+      // linked Wisetag balance recipient still falls back to the "no bank
+      // recipient" branch and the row can't be drafted from the table.
+      const { data: cur } = await client.from("workers")
+        .select("wise_recipients").eq("id", w.id).single();
+      const list = Array.isArray(cur?.wise_recipients) ? cur.wise_recipients : [];
+      if(!list.some(x=>x.id===lookupPreview.id)){
+        const label = lookupPreview._from_contact
+          ? (lookupPreview.name ? `${lookupPreview.name} (Wisetag)` : "Wisetag balance")
+          : (lookupPreview.name || `Recipient ${lookupPreview.id}`);
+        list.push({ id: lookupPreview.id, label });
+        updates.wise_recipients = list;
+      }
       if(lookupApplyName && lookupPreview.name){
         const parts=parseName(lookupPreview.name);
         updates.first_name = parts.first_name || w.first_name;
@@ -1147,6 +1324,8 @@ function ExternalSourcesPanel({ w, f, r, client }){
         detail:{ kind:"link_wise_recipient", recipient_id:lookupPreview.id,
                  applied_name:lookupApplyName, applied_email:lookupApplyEmail } });
       setPushMsg(`Linked Wise recipient #${lookupPreview.id}. Re-open the profile to see the updated fields.`);
+      reportBilling(`Wise recipient linked → #${lookupPreview.id}`);
+      notifySaved();
       setLookupInput(""); setLookupPreview(null);
     }catch(ex){ setLookupErr(String(ex.message||ex)); }
     finally{ setLookupBusy(false); }
@@ -1177,6 +1356,11 @@ function ExternalSourcesPanel({ w, f, r, client }){
             {loadingWise?"Loading…":"Refresh"}</button>}
         </div>
         {wiseErr && <Banner tone="error" msg={`Wise: ${wiseErr}`} style={{marginBottom:6}}/>}
+        {wiseNote && !wiseErr && (
+          <p className="muted" style={{fontSize:12,margin:"0 0 6px",fontStyle:"italic"}}>
+            {wiseNote}
+          </p>
+        )}
         {wiseId && wise && (
           <table style={{width:"100%",borderCollapse:"collapse"}}>
             <thead><tr style={{textAlign:"left"}}>
@@ -2747,7 +2931,8 @@ function HolidayEditor({year, onChange}){
   );
 }
 
-function Payroll({client,companyId,consolidated}){
+function Payroll({client,companyId,consolidated,confirmBillingDirty,openContractor}){
+  const gate = (label)=> typeof confirmBillingDirty==="function" ? confirmBillingDirty(label) : true;
   const today=new Date();
   const def=periodFor(iso(today));
   const [start,setStart]=useState(def.start);
@@ -2829,6 +3014,7 @@ function Payroll({client,companyId,consolidated}){
 
   async function calculate(){
     if(!companyId){setMsg("Pick a single company first.");return;}
+    if(!gate("Calculate")) return;
     // GUARD: recalculating rebuilds every row purely from tracked hours. That DISCARDS any
     // manual gross overrides AND any adjustments/allowances (Health Allowance, PDD Lunch, 13th,
     // bonus) currently saved for this period — e.g. amounts brought in by an import. Warn loudly
@@ -2877,7 +3063,7 @@ function Payroll({client,companyId,consolidated}){
     if(e1){setMsg(e1.message);setBusy(false);return;}
     // 2. roster (contract, hire) + rates
     const {data:wc}=await client.from("worker_companies")
-      .select("worker_id,contract,hubstaff_name,workers(first_name,middle_name,last_name,hire_date,payout_method,health_allowance_eligible,thirteenth_month_eligible)")
+      .select("worker_id,contract,hubstaff_name,status,ended_on,workers(first_name,middle_name,last_name,hire_date,status,payout_method,health_allowance_eligible,thirteenth_month_eligible)")
       .eq("company_id",companyId);
     // map source_name -> worker_id so time rows with a null worker_id still attribute
     const widByName={};
@@ -2931,10 +3117,16 @@ function Payroll({client,companyId,consolidated}){
       const bonus=0;   // performance / other bonus, editable in the table
       const ded=rate==null?0:+(rate-(gross||0)).toFixed(2);
       const net=gross==null?null:+(gross+ha+t13+pdd+bonus).toFixed(2);
+      // Inactive snapshot for Lock & Save warning: a row is "inactive" if the
+      // worker_companies link or the worker itself is no longer active. Keeps
+      // people who are mid-offboarding visible (so a final period can still be
+      // calculated/locked), but loud-warns at lock time.
+      const inactive=(link.status && link.status!=="active") || (w.status && w.status!=="active");
       out.push({worker_id:wid,name:fullName(w)||link.worker_id,
         contract:link.contract,worked:+worked.toFixed(2),expected:exp,ratio:+ratio.toFixed(4),
         rate,gross,computed_gross:gross,ha,t13,computed_t13:t13,pdd,bonus,ded,net,overridden:false,
         usd_ref:(net==null||!fx)?null:+(net/fx).toFixed(2),   // reference only; paid in PHP
+        inactive,
         // default to the worker's set method, else their LAST-USED channel, else unset
         method:w.payout_method||lastMethod[wid]||null});
     });
@@ -3030,7 +3222,7 @@ function Payroll({client,companyId,consolidated}){
     });
     setRows(mapped);
     setStaleRows(mapped.filter(r=>r.rate_stale).map(r=>({
-      name:r.name, was:r.rate, now:r.live_rate,
+      worker_id:r.worker_id, name:r.name, was:r.rate, now:r.live_rate,
     })));
     setMsg(pp.state==="open"?"Loaded saved draft for this period.":`Loaded ${pp.state} period (read-only snapshot).`);
   }
@@ -3061,8 +3253,48 @@ function Payroll({client,companyId,consolidated}){
       t13_overridden: value!=="" && value!=null}));
   }
 
+  // Period-level UNLOCK — flip pay_periods.state back to 'open' so the user
+  // can edit / recalculate / re-lock. Requires a typed reason (audit trail),
+  // confirms destructive consequences, and refuses to act on a 'paid' period
+  // (the user must mark all unpaid in Process & Pay first, which steps state
+  // back to 'locked' and is then unlockable from here).
+  async function unlockPeriod(){
+    if(!period?.id){ setMsg("No period to unlock."); return; }
+    if(period.state==="paid"){
+      setMsg("This period is marked PAID. Go to Process & Pay → Mark all unpaid first, then come back here to unlock.");
+      return;
+    }
+    if(period.state!=="locked"){ setMsg("This period isn't locked."); return; }
+    const reason=window.prompt(
+      "Unlock this pay period for editing?\n\n"+
+      `Period: ${start} → ${end}\n\n`+
+      "⚠ Consequences:\n"+
+      "• Recalculate will REBUILD net amounts from hours — manual overrides "+
+      "(gross, PDD lunch, 13th, bonus, health allowance adjustments) will be wiped.\n"+
+      "• Any payment rows already drafted/sent in Wise won't be affected here, "+
+      "but DB amounts can drift from what was actually paid.\n"+
+      "• Re-lock when you're done to restore the read-only snapshot.\n\n"+
+      "Enter a reason (recorded in the audit log):"
+    );
+    if(reason==null) return;            // user cancelled the prompt
+    if(!reason.trim()){ setMsg("Unlock requires a reason."); return; }
+    setBusy(true); setMsg("");
+    try{
+      const {error}=await client.from("pay_periods")
+        .update({state:"open", locked_at:null}).eq("id",period.id);
+      if(error) throw new Error(error.message);
+      logEvent(client,{ company_id:companyId, action:"unlock_period",
+        entity:`${start} → ${end}`,
+        detail:{ reason, previous_state:"locked" } });
+      setPeriod({ ...period, state:"open" });
+      setMsg(`Unlocked ${start} → ${end} for editing. Re-lock when done.`);
+    }catch(ex){ setMsg("Unlock failed: "+(ex.message||ex)); }
+    finally{ setBusy(false); }
+  }
+
   async function lockAndSave(){
     if(!rows||!rows.length){setMsg("Calculate first.");return;}
+    if(!gate("Lock & save pay statements")) return;
     // Don't let anyone silently drop out of payout: block lock if a contractor
     // has no rate (net==null) or no payout method set.
     const noRate=rows.filter(r=>r.net==null);
@@ -3075,6 +3307,16 @@ function Payroll({client,companyId,consolidated}){
     if(noMethod.length && !confirm(
       `${noMethod.length} contractor(s) have no payout method set (${noMethod.map(r=>r.name).join(", ")}). `+
       `They'll be saved but won't appear in Wise/BPI exports until you set it. Lock anyway?`)) return;
+    // Inactive warning — uses the snapshot from Calculate. Common cause of
+    // "contractor missing from Wise payouts": locked into a period while
+    // marked inactive on their profile or worker_companies link.
+    const inactiveRows=rows.filter(r=>r.net!=null && r.inactive);
+    if(inactiveRows.length && !confirm(
+      `${inactiveRows.length} contractor(s) are marked INACTIVE (worker or company link is not active):\n\n`+
+      inactiveRows.slice(0,12).map(r=>`• ${r.name}`).join("\n")+
+      (inactiveRows.length>12?`\n…and ${inactiveRows.length-12} more`:"")+
+      `\n\nIf this is a final pay period for them, proceed. Otherwise cancel, set them back to active on the Contractors tab, and recalculate.\n\nLock anyway?`
+    )) return;
     if(!confirm(`Lock this period and save ${rows.length} pay statements? Locked periods are read-only.`))return;
     setBusy(true);setMsg("");
     // upsert pay_period
@@ -3154,7 +3396,17 @@ function Payroll({client,companyId,consolidated}){
             {" "}to apply the current effective rates.
             <ul style={{margin:"6px 0 0",paddingLeft:18,fontSize:12}}>
               {staleRows.slice(0,8).map((s,i)=>(
-                <li key={i}><b>{s.name}</b>:
+                <li key={s.worker_id||i}>
+                  {openContractor && s.worker_id
+                    ? <button type="button"
+                        onClick={()=>openContractor(s.worker_id)}
+                        title="Open this contractor's profile to review or edit the rate"
+                        style={{background:"none",border:"none",padding:0,margin:0,color:"#92400e",
+                          textDecoration:"underline",cursor:"pointer",font:"inherit",fontWeight:700}}>
+                        {s.name}
+                      </button>
+                    : <b>{s.name}</b>}
+                  :
                   {" "}was ₱{Number(s.was).toLocaleString(undefined,{minimumFractionDigits:2})},
                   {" "}now ₱{Number(s.now).toLocaleString(undefined,{minimumFractionDigits:2})}
                 </li>
@@ -3200,7 +3452,32 @@ function Payroll({client,companyId,consolidated}){
               <p className="sub">Pay date <b>{payDate}</b> · {rows.length} contractor(s) ·
                 Payout <b>{money(totalNet,"PHP")}</b>
                 {" "}<span className="muted">(≈ {money(totalUsdRef,"USD")} ref @ {fx} PHP/USD)</span></p></div>
-            <button className="btn" disabled={busy} onClick={lockAndSave}>Lock period &amp; save statements</button>
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              {period?.state && period.state!=="open" && (
+                <span className="pill" style={{
+                  background:period.state==="paid"?"#dcfce7":"#eef2ff",
+                  color:period.state==="paid"?"#166534":"#3730a3",
+                  fontSize:11,padding:"3px 8px"}}>
+                  🔒 {period.state}
+                </span>
+              )}
+              <button className="btn" disabled={busy} onClick={lockAndSave}>
+                {period?.state==="locked"
+                  ? "Re-lock period (overwrite snapshot)"
+                  : period?.state==="paid"
+                    ? "Re-lock (must mark unpaid first)"
+                    : "Lock period & save statements"}
+              </button>
+              {period?.state && period.state!=="open" && (
+                <button className="btn ghost" disabled={busy} onClick={unlockPeriod}
+                  title={period.state==="paid"
+                    ? "Period is marked paid. Mark all unpaid in Process & Pay first."
+                    : "Flip this period back to 'open' so you can edit / recalculate. Requires a reason. Re-lock when done."}
+                  style={{borderColor:"#b91c1c",color:"#b91c1c"}}>
+                  Unlock for editing…
+                </button>
+              )}
+            </div>
           </div>
           <FilterBox q={sfQ} setQ={sfSetQ} placeholder="Filter contractors…" />
           <div className="table-scroll"><table>
@@ -3877,7 +4154,8 @@ function UtilizationReport({client,companyId,consolidated}){
 // ============================ WISE PAYOUTS ===================================
 // Drafts Wise transfers for a LOCKED period and writes back transfer id + FX.
 // It NEVER funds (moves money) — you fund the batch in Wise directly.
-function WisePayouts({client,companyId,consolidated,presetPeriodId}){
+function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillingDirty,openContractor}){
+  const gate = (label)=> typeof confirmBillingDirty==="function" ? confirmBillingDirty(label) : true;
   const [periods,setPeriods]=useState([]);
   const [periodId,setPeriodId]=useState("");
   const [rows,setRows]=useState(null);     // editable per-contractor rows
@@ -3974,12 +4252,17 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId}){
     setPeriodId(pid);setRows(null);setMsg("");setArmed(false);setBatchId(null);
     if(!pid)return;
     const {data,error}=await client.from("payments")
-      .select("worker_id,net_php,payout_amount,wise_transfer_id,fx_rate,status,"+
-              "workers(first_name,middle_name,last_name,wise_recipient_id,wise_recipients,payout_method)")
+      .select("worker_id,net_php,payout_amount,wise_transfer_id,fx_rate,status,payout_method,"+
+              "workers(first_name,middle_name,last_name,wise_recipient_id,wise_recipient_uuid,wise_recipients,payout_method)")
       .eq("pay_period_id",pid);
     if(error){setMsg(error.message);return;}
     setRows((data||[])
-      .filter(p=>p.workers?.payout_method==="wise")
+      // Filter on the PAYMENT row's snapshot of payout_method (frozen at lock
+      // time), not the worker's current value. If a contractor's profile method
+      // changes after lock, the locked statement is still the source of truth —
+      // this is what the Pay list does and the API draft must match it,
+      // otherwise contractors silently disappear from one view but not the other.
+      .filter(p=>(p.payout_method||p.workers?.payout_method)==="wise")
       .map(p=>{
         const list=Array.isArray(p.workers?.wise_recipients)?p.workers.wise_recipients:[];
         const def=p.workers?.wise_recipient_id||list[0]?.id||null;  // last-used default
@@ -3989,6 +4272,7 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId}){
           amount:Number(p.net_php||p.payout_amount||0),  // editable
           recipients:list,
           recipient_id:def,                               // editable; defaults to last-used
+          recipient_uuid:p.workers?.wise_recipient_uuid||"",  // Wisetag/contact rows have only a UUID
           include:!!def && !p.wise_transfer_id,
           transfer_id:p.wise_transfer_id, status:p.status,
         };
@@ -4004,6 +4288,7 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId}){
   const total=selected.reduce((s,r)=>s+r.amount,0);
 
   async function createBatch(){
+    if(!gate("Create Wise batch (API draft)")) return;
     setArmed(false);setBusy(true);setMsg("");
     try{
       const {data,error}=await client.functions.invoke("wise-payouts",{
@@ -4123,7 +4408,20 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId}){
                             style={{padding:"3px 6px",fontSize:13}}>
                             {r.recipients.map(rec=><option key={rec.id} value={rec.id}>{rec.label} (#{rec.id})</option>)}
                           </select>
-                        : <span style={{color:"var(--warn)"}}>add recipient on profile</span>}
+                        : r.recipient_uuid
+                          ? <span className="muted" style={{fontStyle:"italic"}}
+                              title="Paid via Wise Tag (contact recipient). The Wise API draft path requires a bank-account recipient — include this contractor in the Manual Wise batch CSV instead (uses the stored UUID).">
+                              Wisetag — use Manual CSV
+                            </span>
+                          : (openContractor
+                              ? <button type="button"
+                                  onClick={()=>openContractor(r.worker_id)}
+                                  title="Open this contractor's profile to add a Wise recipient"
+                                  style={{background:"none",border:"none",padding:0,margin:0,
+                                    color:"var(--warn)",textDecoration:"underline",cursor:"pointer",font:"inherit"}}>
+                                  add recipient on profile
+                                </button>
+                              : <span style={{color:"var(--warn)"}}>add recipient on profile</span>)}
                   </td>
                   <td>{r.transfer_id
                     ? <span className="pill active">drafted</span>
@@ -4162,7 +4460,8 @@ function downloadCSV(filename, rowsOfArrays){
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
-function ProcessPayroll({client,companyId,consolidated}){
+function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirty,openContractor}){
+  const gate = (label)=> typeof confirmBillingDirty==="function" ? confirmBillingDirty(label) : true;
   const [periods,setPeriods]=useState([]);
   const [periodId,setPeriodId]=useState("");
   const [pers,setPers]=useState(null);   // {start,end,pay_date}
@@ -4190,7 +4489,7 @@ function ProcessPayroll({client,companyId,consolidated}){
     client.from("pay_periods").select("id,period_start,period_end,pay_date,state")
       .eq("company_id",companyId).in("state",["locked","paid"])
       .order("period_start",{ascending:false}).then(({data})=>setPeriods(data||[]));
-  },[client,companyId]);
+  },[client,companyId,active]);
 
   const [busy,setBusy]=useState(false);
   async function load(pid){
@@ -4205,25 +4504,54 @@ function ProcessPayroll({client,companyId,consolidated}){
     if(!pid)return;
     const pp=periods.find(p=>p.id===pid); setPers(pp);
     const {data,error}=await client.from("payments")
-      .select("id,worker_id,net_php,original_net_php,payout_method,status,paid_at,wise_transfer_id,wise_dates,wise_locked_at,"+
-              "workers(first_name,middle_name,last_name,email,wise_recipient_id,wise_recipient_uuid)")
+      .select("id,worker_id,net_php,original_net_php,payout_method,status,paid_at,wise_transfer_id,wise_dates,wise_locked_at,company_id,"+
+              "workers(first_name,middle_name,last_name,email,status,payout_method,wise_recipient_id,wise_recipient_uuid)")
       .eq("pay_period_id",pid);
     if(error){setMsg(error.message);return;}
-    setRows((data||[]).map(p=>({
-      payment_id:p.id,
-      worker_id:p.worker_id,
-      name:fullName(p.workers),
-      email:p.workers?.email||"",
-      net:Number(p.net_php||0),
-      original_net:p.original_net_php!=null?Number(p.original_net_php):null,  // non-null = matcher overrode
-      method:p.payout_method||"",
-      recipient_id:p.workers?.wise_recipient_id||"",
-      recipient_uuid:p.workers?.wise_recipient_uuid||"",   // for the manual-batch CSV recipientId
-      transfer_id:p.wise_transfer_id||null,
-      status:p.status||"draft", paid_at:p.paid_at||null,
-      wise_dates:p.wise_dates||null,   // { created, dateFunded, dateSent } from Wise
-      locked_at:p.wise_locked_at||null,  // when non-null this row is locked
-    })).sort((a,b)=>a.name.localeCompare(b.name)));
+    // Pull worker_companies status for THIS period's company so we can flag
+    // rows whose company link has been ended (independent of the worker-level
+    // status). Common scenario: contractor is still 'active' globally but the
+    // link to this company was ended after lock.
+    const workerIds=(data||[]).map(p=>p.worker_id);
+    let linkStatusByWorker={};
+    // Periods are scoped to the currently selected company, so companyId is
+    // the right key to look up worker_companies link status.
+    if(workerIds.length && companyId){
+      const {data:wcs}=await client.from("worker_companies")
+        .select("worker_id,status,ended_on")
+        .eq("company_id",companyId).in("worker_id",workerIds);
+      (wcs||[]).forEach(l=>{ linkStatusByWorker[l.worker_id]=l; });
+    }
+    setRows((data||[]).map(p=>{
+      const wkStatus=p.workers?.status||"active";
+      const link=linkStatusByWorker[p.worker_id];
+      const linkStatus=link?.status||"active";
+      const workerMethod=p.workers?.payout_method||null;
+      return {
+        payment_id:p.id,
+        worker_id:p.worker_id,
+        name:fullName(p.workers),
+        email:p.workers?.email||"",
+        net:Number(p.net_php||0),
+        original_net:p.original_net_php!=null?Number(p.original_net_php):null,  // non-null = matcher overrode
+        method:p.payout_method||"",
+        recipient_id:p.workers?.wise_recipient_id||"",
+        recipient_uuid:p.workers?.wise_recipient_uuid||"",   // for the manual-batch CSV recipientId
+        transfer_id:p.wise_transfer_id||null,
+        status:p.status||"draft", paid_at:p.paid_at||null,
+        wise_dates:p.wise_dates||null,   // { created, dateFunded, dateSent } from Wise
+        locked_at:p.wise_locked_at||null,  // when non-null this row is locked
+        // Stale-state indicators — set when the snapshot diverges from the
+        // contractor's current state. UI shows a 🚫 inactive badge or a method-
+        // drift hint so you know why a locked row may behave oddly later.
+        worker_status:wkStatus,
+        link_status:linkStatus,
+        link_ended_on:link?.ended_on||null,
+        stale_inactive:(wkStatus!=="active") || (linkStatus!=="active"),
+        method_drift:!!(workerMethod && p.payout_method && workerMethod!==p.payout_method),
+        current_worker_method:workerMethod,
+      };
+    }).sort((a,b)=>a.name.localeCompare(b.name)));
     // complete the lifecycle: if every payment is sent, advance the period to 'paid'
     const list=data||[];
     if(list.length && list.every(p=>p.status==="sent") && pp && pp.state!=="paid"){
@@ -4242,6 +4570,9 @@ function ProcessPayroll({client,companyId,consolidated}){
   // can't pop a date picker per row).
   async function markPaid(workerIds, paidOnIso){
     if(!workerIds.length)return;
+    // Only gate the bulk path — single-row "Mark paid" is the lightweight
+    // per-row affordance and prompting on each click would be obnoxious.
+    if(workerIds.length>1 && !gate(`Mark ${workerIds.length} contractor(s) paid`)) return;
     setBusy(true);setMsg("");
     try{
       // snapshot prior status/paid_at per worker, and the period state, for Undo
@@ -4534,12 +4865,46 @@ function ProcessPayroll({client,companyId,consolidated}){
     finally{ setBusy(false); }
   }
 
+  // Link a probable historical recipient id (surfaced by the matcher's orphan
+  // diagnostic) onto a worker's wise_recipients list. Used when a worker
+  // changed banks mid-history and old pay periods reference a recipient id
+  // that's no longer the default. Appends without disturbing wise_recipient_id.
+  const [linkBusy,setLinkBusy]=useState(null);  // `${worker_id}:${target_account}` while in flight
+  const [linkedKeys,setLinkedKeys]=useState({});
+  async function linkOrphanRecipient(workerId, workerName, targetAccount, transferId){
+    if(!workerId||!targetAccount)return;
+    const key=`${workerId}:${targetAccount}`;
+    setLinkBusy(key); setMsg("");
+    try{
+      const { data:cur, error:re } = await client.from("workers")
+        .select("wise_recipients").eq("id",workerId).single();
+      if(re) throw new Error(re.message);
+      const list = Array.isArray(cur?.wise_recipients) ? cur.wise_recipients : [];
+      const numericId = Number(targetAccount);
+      const idForList = Number.isFinite(numericId) ? numericId : targetAccount;
+      if(!list.some(x=>String(x?.id)===String(idForList))){
+        list.push({ id: idForList, label: `Historical recipient (linked from Reconcile transfer ${transferId})` });
+        const { error:ue } = await client.from("workers")
+          .update({ wise_recipients: list }).eq("id", workerId);
+        if(ue) throw new Error(ue.message);
+      }
+      logEvent(client, { company_id:companyId, action:"wise_recipient_sync",
+        entity:`${workerName||workerId} → #${targetAccount}`,
+        detail:{ kind:"link_historical_recipient", recipient_id:idForList,
+                 source_transfer_id:transferId } });
+      setLinkedKeys(p=>({...p,[key]:true}));
+      setMsg(`Linked recipient #${targetAccount} to ${workerName||"worker"}. Re-run Reconcile to match the historical pay period.`);
+    }catch(ex){ setMsg("Couldn't link recipient: "+(ex.message||ex)); }
+    finally{ setLinkBusy(null); }
+  }
+
   // Smart Reconcile — the one-button consolidation. Looks at the current rows,
   // decides what each Wise row needs, calls the right action(s), and reports
   // back in plain English. Doesn't waste API calls on rows that already have
   // Wise data (per Oliver's call: "Wise info doesn't change so if Wise info
   // is already present then it should just use that data").
   async function reconcileWithWise(){
+    if(!gate("Reconcile with Wise")) return;
     setBusy(true); setMsg(""); setMatchResult(null);
     try{
       const wiseAll=(rows||[]).filter(r=>r.method==="wise");
@@ -4683,27 +5048,55 @@ function ProcessPayroll({client,companyId,consolidated}){
   // stable recipient UUID (recipientId). Rows missing a UUID can't be uploaded,
   // so we surface them rather than emit a file Wise would reject.
   const wiseMissingUuid=wiseRows.filter(r=>!r.recipient_uuid);
-  function downloadWiseBatch(){ guardedExport("wise", ()=>{
-    // Match Wise's "all recipients" export template: 10 columns (no trailing apiError/userError
-    // columns — those only appear when you re-download a processed batch). recipientId is the
-    // stable recipient UUID; recipientDetail is left empty (Wise fills it from the recipientId).
-    const header=["recipientId","name","recipientEmail","recipientDetail","sourceCurrency",
-                  "targetCurrency","amountCurrency","amount","paymentReference","receiverType"];
-    const ref=`Payroll ${pers?.period_end||""}`.trim();
-    // amount: whole numbers have no trailing .00, cents preserved
-    const fmtAmt=n=>{ const v=Math.round(Number(n)*100)/100; return Number.isInteger(v)?String(v):v.toFixed(2); };
-    const body=wiseRows
-      .filter(r=>r.recipient_uuid)   // only rows with a UUID are valid for the batch upload
-      .map(r=>[r.recipient_uuid, r.name, r.email, "", srcCcy, tgtCcy, "target",
-               fmtAmt(r.net), ref, "PERSON"]);
-    downloadCSV(`wise_batch_${label}.csv`, [header,...body]);
-  }); }
+  function downloadWiseBatch(){
+    if(!gate("Download Wise batch CSV")) return;
+    // Hard stop if there's nothing to write (every Wise row is missing a UUID).
+    const includedCount=wiseRows.length-wiseMissingUuid.length;
+    if(!includedCount){
+      alert("All Wise rows are missing a Wise recipient UUID — nothing to write. "+
+        "Open each contractor's profile and paste their UUID (Wise → Batch payments → Download all templates).");
+      return;
+    }
+    // Click-time confirm when any row would be silently dropped — keeps the
+    // user from uploading a CSV that omits contractors they think they're paying.
+    if(wiseMissingUuid.length>0){
+      const droppedTotal=wiseMissingUuid.reduce((s,r)=>s+(r.net||0),0);
+      const lines=wiseMissingUuid.slice(0,20).map(r=>`• ${r.name} — ${money(r.net,"PHP")}`).join("\n");
+      const more=wiseMissingUuid.length>20?`\n…and ${wiseMissingUuid.length-20} more`:"";
+      if(!confirm(
+        `${wiseMissingUuid.length} contractor(s) will be DROPPED from this CSV (no Wise recipient UUID on file):\n\n`+
+        lines+more+
+        `\n\nTotal not included: ${money(droppedTotal,"PHP")}\n`+
+        `Included in the CSV: ${includedCount} contractor(s).\n\n`+
+        `Fix: open each profile (Contractors tab) and paste the UUID from Wise → Batch payments → Download all templates.\n\n`+
+        `Download anyway?`
+      )) return;
+    }
+    guardedExport("wise", ()=>{
+      // Match Wise's "all recipients" export template: 10 columns (no trailing apiError/userError
+      // columns — those only appear when you re-download a processed batch). recipientId is the
+      // stable recipient UUID; recipientDetail is left empty (Wise fills it from the recipientId).
+      const header=["recipientId","name","recipientEmail","recipientDetail","sourceCurrency",
+                    "targetCurrency","amountCurrency","amount","paymentReference","receiverType"];
+      const ref=`Payroll ${pers?.period_end||""}`.trim();
+      // amount: whole numbers have no trailing .00, cents preserved
+      const fmtAmt=n=>{ const v=Math.round(Number(n)*100)/100; return Number.isInteger(v)?String(v):v.toFixed(2); };
+      const body=wiseRows
+        .filter(r=>r.recipient_uuid)   // only rows with a UUID are valid for the batch upload
+        .map(r=>[r.recipient_uuid, r.name, r.email, "", srcCcy, tgtCcy, "target",
+                 fmtAmt(r.net), ref, "PERSON"]);
+      downloadCSV(`wise_batch_${label}.csv`, [header,...body]);
+    });
+  }
   // (2) Individual payment files — full per-contractor breakdown (all methods)
-  function downloadIndividual(){ guardedExport("individual", ()=>{
+  function downloadIndividual(){
+    if(!gate("Download individual payment files")) return;
+    guardedExport("individual", ()=>{
     const header=["Contractor","Method","Wise recipient id","Email","Amount PHP","Pay date","Period"];
     const body=(rows||[]).map(r=>[r.name,r.method,r.recipient_id,r.email,r.net.toFixed(2),pers?.pay_date||"",`${pers?.period_start}–${pers?.period_end}`]);
     downloadCSV(`payments_${label}.csv`, [header,...body]);
-  }); }
+    });
+  }
 
   const total=(rows||[]).reduce((s,r)=>s+r.net,0);
   const wiseTotal=wiseRows.reduce((s,r)=>s+r.net,0);
@@ -4984,7 +5377,46 @@ function ProcessPayroll({client,companyId,consolidated}){
                   <ul style={{margin:0,paddingLeft:18,fontSize:13}}>
                     {(matchResult.results||[]).filter(r=>String(r.outcome||"").startsWith("no_")).slice(0,15).map((r,i)=>{
                       const w=(rows||[]).find(x=>x.worker_id===r.worker_id);
-                      return (<li key={i}>{w?w.name:`worker ${String(r.worker_id).slice(0,8)}…`} <span className="muted">· {r.reason}</span></li>);
+                      const workerName=w?w.name:`worker ${String(r.worker_id).slice(0,8)}…`;
+                      const orphans=Array.isArray(r.candidate_orphan_transfers)?r.candidate_orphan_transfers:[];
+                      return (
+                        <li key={i} style={{marginBottom:orphans.length?6:0}}>
+                          {workerName} <span className="muted">· {r.reason}</span>
+                          {orphans.length>0 && (
+                            <div style={{marginTop:4,marginLeft:-4,padding:"6px 8px",
+                              background:"#fffbeb",border:"1px solid #fde68a",borderRadius:4,fontSize:12}}>
+                              <div style={{fontWeight:600,marginBottom:4}}>
+                                Possible historical recipient{orphans.length>1?"s":""} (amount + date fit, not yet on this worker):
+                              </div>
+                              {orphans.map((o,j)=>{
+                                const key=`${r.worker_id}:${o.target_account}`;
+                                const done=!!linkedKeys[key];
+                                const inflight=linkBusy===key;
+                                const created=o.created?new Date(o.created).toISOString().slice(0,10):"—";
+                                const amt=Number(o.target_value||0).toLocaleString(undefined,{minimumFractionDigits:2});
+                                return (
+                                  <div key={j} style={{display:"flex",alignItems:"center",gap:8,
+                                    flexWrap:"wrap",padding:"3px 0"}}>
+                                    <span>Transfer <code>{o.transfer_id}</code> · recipient <b>#{o.target_account}</b>
+                                      {" "}· ₱{amt} · {created}
+                                      {o.wise_status && <span className="muted"> · {o.wise_status}</span>}</span>
+                                    {done
+                                      ? <span className="pill active" style={{fontSize:10}}>linked</span>
+                                      : <button className="btn ghost sm" disabled={inflight}
+                                          onClick={()=>linkOrphanRecipient(r.worker_id, workerName, o.target_account, o.transfer_id)}>
+                                          {inflight?"Linking…":`Link #${o.target_account} to ${workerName}`}
+                                        </button>}
+                                  </div>
+                                );
+                              })}
+                              {!Object.keys(linkedKeys).length ? null :
+                                <div className="muted" style={{fontSize:11,marginTop:4}}>
+                                  After linking, click <b>Reconcile with Wise</b> again to match the linked period(s).
+                                </div>}
+                            </div>
+                          )}
+                        </li>
+                      );
                     })}
                   </ul>
                 </div>
@@ -5098,9 +5530,42 @@ function ProcessPayroll({client,companyId,consolidated}){
                     return (
                     <tr key={r.worker_id} style={locked?{background:"rgba(99,102,241,0.03)"}:{}}>
                       <td>
-                        <b>{r.name}</b>
+                        {openContractor
+                          ? <button type="button" onClick={()=>openContractor(r.worker_id)}
+                              title="Open contractor profile"
+                              style={{background:"none",border:"none",padding:0,margin:0,
+                                font:"inherit",fontWeight:700,color:"inherit",cursor:"pointer",
+                                textDecoration:r.stale_inactive?"line-through":"none"}}>
+                              {r.name}
+                            </button>
+                          : <b style={{textDecoration:r.stale_inactive?"line-through":"none"}}>{r.name}</b>}
                         {locked && <span className="pill" title={`Locked by Wise reconcile · ${fmtDate(r.locked_at)}`}
                           style={{background:"#eef2ff",color:"#3730a3",fontSize:10,marginLeft:6,verticalAlign:"middle"}}>🔒 locked</span>}
+                        {r.stale_inactive && (
+                          <span className="tip-wrap" tabIndex={0}
+                            style={{marginLeft:6,fontSize:10,verticalAlign:"middle",cursor:"help"}}>
+                            <span className="pill" style={{background:"#fef2f2",color:"#b91c1c"}}>
+                              🚫 now inactive
+                            </span>
+                            <span className="tip-body">
+                              {`This contractor is now marked inactive`}
+                              {r.worker_status!=="active" && `\n• Worker status: ${r.worker_status}`}
+                              {r.link_status!=="active" && `\n• Company link: ${r.link_status}${r.link_ended_on?` (ended ${r.link_ended_on})`:""}`}
+                              {`\n\nThe locked statement still stands — the snapshot is the source of truth for what was/will be paid.`}
+                            </span>
+                          </span>
+                        )}
+                        {r.method_drift && (
+                          <span className="tip-wrap" tabIndex={0}
+                            style={{marginLeft:6,fontSize:10,verticalAlign:"middle",cursor:"help"}}>
+                            <span className="pill" style={{background:"#fffbeb",color:"#92400e"}}>
+                              ⚠ method drift
+                            </span>
+                            <span className="tip-body">
+                              {`Payment was locked with method "${r.method||"—"}" but the contractor's current payout method is "${r.current_worker_method||"—"}". The locked statement uses the snapshot; future periods will follow the new method.`}
+                            </span>
+                          </span>
+                        )}
                       </td>
                       <td>{methodLabel(r.method)||"—"}</td>
                       <td className="muted">{isWise?(r.recipient_id?`#${r.recipient_id}`:(r.email||"—")):(r.email||"—")}</td>
@@ -5112,8 +5577,10 @@ function ProcessPayroll({client,companyId,consolidated}){
                           const fmt=n=>Number(n).toLocaleString(undefined,{minimumFractionDigits:2});
                           const tip=`Auto-overridden by Wise reconcile.\nOriginal DB amount: ₱${fmt(r.original_net)}\nWise actually sent: ₱${fmt(r.net)}\nDelta: ${sign}₱${fmt(delta)}`;
                           return (
-                            <span title={tip} style={{marginLeft:6,cursor:"help",fontSize:13,color:"#a16207"}}>
+                            <span className="tip-wrap" tabIndex={0}
+                              style={{marginLeft:6,cursor:"help",fontSize:13,color:"#a16207"}}>
                               ⚠️
+                              <span className="tip-body">{tip}</span>
                             </span>
                           );
                         })()}
@@ -5194,7 +5661,24 @@ function ProcessPayroll({client,companyId,consolidated}){
             Upload it on your Wise account → Batch payments. You fund it in Wise.</p>
           {wiseMissingUuid.length>0 &&
             <Banner tone="error" style={{marginBottom:8}}>
-              {wiseMissingUuid.length} Wise contractor(s) have no stored Wise recipient ID and will be left out of the file: {wiseMissingUuid.map(r=>r.name).join(", ")}. Pull recipients from Wise or set their recipient on their profile.
+              <b>{wiseMissingUuid.length} Wise contractor(s) have no stored Wise recipient UUID</b> and will be dropped from the CSV:
+              {" "}
+              {wiseMissingUuid.map((r,i)=>(
+                <React.Fragment key={r.worker_id||i}>
+                  {i>0 && ", "}
+                  {openContractor
+                    ? <button type="button" className="btn-link"
+                        onClick={()=>openContractor(r.worker_id)}
+                        title="Open this contractor's profile and jump to the Wise recipient UUID field"
+                        style={{background:"none",border:"none",padding:0,margin:0,color:"#b91c1c",
+                          textDecoration:"underline",cursor:"pointer",font:"inherit"}}>
+                        {r.name}
+                      </button>
+                    : <span>{r.name}</span>}
+                </React.Fragment>
+              ))}.
+              {" "}Click a name above to open the profile and paste the UUID into the <b>"Wise recipient UUID"</b> field — get UUIDs from <i>Wise → Batch payments → Download all templates</i>.
+              {" "}<span className="muted" style={{fontSize:11}}>("Pull recipients from Wise" can't fix this — the Wise API doesn't return UUIDs, only the templates CSV does.)</span>
             </Banner>}
           <div className="row" style={{alignItems:"flex-end",gap:12,marginBottom:8}}>
             <div className="field"><label style={{fontSize:12}}>Source currency</label>
@@ -5225,7 +5709,7 @@ function ProcessPayroll({client,companyId,consolidated}){
           <h3 style={{margin:"0 0 4px"}}>3 · Automatic Wise API draft</h3>
           <p className="sub">Draft the Wise transfers directly via the API (drafts only — you fund in Wise).
             Lets you edit recipients/amounts per person and create one batch.</p>
-          <WisePayouts client={client} companyId={companyId} consolidated={consolidated} presetPeriodId={periodId}/>
+          <WisePayouts client={client} companyId={companyId} consolidated={consolidated} presetPeriodId={periodId} confirmBillingDirty={confirmBillingDirty} openContractor={openContractor}/>
         </div>
       </>}
     </div>
@@ -5234,7 +5718,7 @@ function ProcessPayroll({client,companyId,consolidated}){
 
 // ============================ AUDIT LOG ======================================
 const AUDIT_LABELS={import:"Import",delete_import:"Delete import",approve:"Approve time",
-  reject:"Reject time",lock:"Lock period",mark_paid:"Mark paid",mark_unpaid:"Mark unpaid",manual_hours:"Manual hours",
+  reject:"Reject time",lock:"Lock period",unlock_period:"Unlock period",mark_paid:"Mark paid",mark_unpaid:"Mark unpaid",manual_hours:"Manual hours",
   wise_recipient_sync:"Wise recipient sync",
   wise_lock_release:"Unlock Wise-locked row",
   wise_lock_warning:"Edit attempted on locked row",
@@ -5303,6 +5787,51 @@ function App() {
   const [consolidated, setConsolidated] = useState(false);
   useEffect(()=>{ if(companyId) localStorage.setItem("sel_company",companyId); },[companyId]);
 
+  // Session-scoped "billing dirty" tracker: ProfileModal pushes a record into
+  // billingDirty whenever a billing-relevant field (rate, payout method, Wise
+  // recipient, UUID, payout account) is saved. Any action that could
+  // calculate/process/pay against stale info (Calculate, Lock & Save,
+  // Reconcile, Create Wise batch, Download CSVs, Mark all paid) calls
+  // confirmBillingDirty() first; the user sees a list of changes and can
+  // cancel or proceed. The list is cleared on confirm so back-to-back actions
+  // in the same chain don't re-prompt — a later edit re-arms it.
+  const [billingDirty, setBillingDirty] = useState([]);
+  const recordBillingChange = React.useCallback((rec) => {
+    setBillingDirty(prev => {
+      const filtered = prev.filter(e => !(e.workerId===rec.workerId && e.field===rec.field));
+      return [...filtered, { ...rec, at: new Date().toISOString() }];
+    });
+  }, []);
+  // Cross-tab "jump to contractor profile" plumbing. Any warning anywhere in
+  // the app can call openContractor(workerId) to switch to the Contractors
+  // tab and auto-open that contractor's profile modal. Contractors consumes
+  // the id via useEffect.
+  const [pendingWorkerId, setPendingWorkerId] = useState(null);
+  const openContractor = React.useCallback((workerId)=>{
+    if(!workerId) return;
+    setPendingWorkerId(String(workerId));
+    setTab("contractors");
+    const w=document.querySelector(".wrap");
+    if(w) w.scrollIntoView({block:"start"});
+    window.scrollTo(0,0);
+  }, []);
+  const consumePendingWorker = React.useCallback(()=>setPendingWorkerId(null), []);
+
+  const confirmBillingDirty = React.useCallback((actionLabel) => {
+    if (!billingDirty.length) return true;
+    const lines = billingDirty.slice(0,12).map(e=>`• ${e.name} — ${e.field}`).join("\n");
+    const more = billingDirty.length>12 ? `\n…and ${billingDirty.length-12} more` : "";
+    const ok = window.confirm(
+      `⚠ Billing info changed for ${billingDirty.length} contractor(s) in this session:\n\n`+
+      lines + more +
+      `\n\nProceed with "${actionLabel}"?\n\n`+
+      `Recommended: cancel, then Recalculate the affected pay period(s) so the new info `+
+      `is reflected before continuing.`
+    );
+    if (ok) setBillingDirty([]);
+    return ok;
+  }, [billingDirty]);
+
   if (!sb.client) return <ConnectScreen onConnect={sb.connect} />;
 
   // Tabs grouped by workflow stage so the bar reads as the real process order.
@@ -5336,11 +5865,11 @@ function App() {
         {/* All tabs stay mounted; only the active one is shown. This preserves
             each tab's in-memory state (selected period, loaded rows, filters)
             across tab switches. */}
-        <div style={{display:tab==="contractors"?"block":"none"}}><Contractors {...{client:sb.client,companyId,consolidated}} /></div>
+        <div style={{display:tab==="contractors"?"block":"none"}}><Contractors {...{client:sb.client,companyId,consolidated,onBillingChange:recordBillingChange,pendingWorkerId,consumePendingWorker}} /></div>
         <div style={{display:tab==="time"?"block":"none"}}><TimeImport {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="imports"?"block":"none"}}><DeleteImports {...{client:sb.client,companyId,consolidated}} /></div>
-        <div style={{display:tab==="payroll"?"block":"none"}}><Payroll {...{client:sb.client,companyId,consolidated}} /></div>
-        <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated}} /></div>
+        <div style={{display:tab==="payroll"?"block":"none"}}><Payroll {...{client:sb.client,companyId,consolidated,confirmBillingDirty,openContractor}} /></div>
+        <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="process",confirmBillingDirty,openContractor}} /></div>
         <div style={{display:tab==="documents"?"block":"none"}}><Documents {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId,consolidated}} /></div>

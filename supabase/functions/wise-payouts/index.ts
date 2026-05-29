@@ -314,15 +314,17 @@ Deno.serve(async (req) => {
       //    Default: rows with no wise_transfer_id yet (true "unmatched" cleanup).
       //    refresh=true: rows that ARE already matched, to re-fetch wise_dates
       //    or any other field that didn't exist when the original match ran.
-      //    We pull BOTH numeric wise_recipient_id and the newer wise_recipient_uuid
-      //    — live API probes showed /v1/transfers returns targetAccount as the
-      //    NUMERIC id, so the numeric one is the primary match key, but we index
-      //    both for robustness.
+      //    We pull numeric wise_recipient_id (LAST-USED default), the newer
+      //    wise_recipient_uuid, AND the full wise_recipients array (every saved
+      //    recipient for this worker, including historical ones from a prior
+      //    bank). Historical periods may have been paid via an older recipient
+      //    id that's no longer the default — without the full list we'd miss
+      //    those transfers and report "no_wise_transfer".
       const refresh = body.refresh === true;
       const qs = new URLSearchParams();
       qs.set("select",
         "id,worker_id,pay_period_id,wise_transfer_id,status,net_php,original_net_php,payout_method," +
-        "workers(first_name,middle_name,last_name,wise_recipient_id,wise_recipient_uuid,payout_method)," +
+        "workers(first_name,middle_name,last_name,wise_recipient_id,wise_recipient_uuid,wise_recipients,payout_method)," +
         "pay_periods(pay_date,period_start,period_end,state)");
       if (refresh) qs.set("wise_transfer_id", "not.is.null");
       else         qs.set("wise_transfer_id", "is.null");
@@ -492,23 +494,50 @@ Deno.serve(async (req) => {
           continue;
         }
         // DISCOVERY PATH (first-time match): use recipient + window matching.
-        // Try numeric id first (the format Wise's transfer API uses), then UUID.
+        // Try numeric id first (the format Wise's transfer API uses), then UUID,
+        // then every historical recipient id saved in wise_recipients. The last
+        // bit matters when a contractor changes bank: the LAST-USED default
+        // (wise_recipient_id) is the NEW bank's id, but historical pay periods
+        // were paid via the OLD recipient id that's still listed in
+        // wise_recipients. Without unioning, those historical matches return
+        // "no_wise_transfer" — even though Wise still has the transfer.
         const numId  = String(p.workers?.wise_recipient_id   ?? "").trim();
         const uuidId = String(p.workers?.wise_recipient_uuid ?? "").trim();
-        const recipKey = numId || uuidId;
-        if (!recipKey) {
+        const historicIds = (Array.isArray(p.workers?.wise_recipients) ? p.workers.wise_recipients : [])
+          .map((x: any) => String(x?.id ?? "").trim())
+          .filter((s: string) => !!s);
+        // Distinct lookup keys in priority order: current default, UUID, then historicals.
+        const keys: string[] = [];
+        const pushKey = (k: string) => { if (k && !keys.includes(k)) keys.push(k); };
+        pushKey(numId); pushKey(uuidId); historicIds.forEach(pushKey);
+        if (!keys.length) {
           unmatched++;
           results.push({ payment_id: p.id, worker_id: p.worker_id, outcome: "no_recipient",
-            reason: "Worker has no wise_recipient_id (numeric) or wise_recipient_uuid stored" });
+            reason: "Worker has no wise_recipient_id, wise_recipient_uuid, or wise_recipients entries stored" });
           continue;
         }
-        // Look up under numeric first, then UUID — whichever finds candidates wins.
-        let candidates = byRecipient.get(numId) || [];
-        if (!candidates.length && uuidId) candidates = byRecipient.get(uuidId) || [];
+        // Union candidate transfers across every known recipient id for this worker.
+        // Dedupe by transfer id since the index keys (numeric + UUID) can map to
+        // the same transfer.
+        const seenTransfers = new Set<string>();
+        let candidates: any[] = [];
+        let matchedViaKey = "";
+        for (const k of keys) {
+          for (const t of (byRecipient.get(k) || [])) {
+            const id = String(t.id ?? "");
+            if (id && !seenTransfers.has(id)) {
+              seenTransfers.add(id);
+              candidates.push(t);
+              if (!matchedViaKey) matchedViaKey = k;
+            }
+          }
+        }
         if (!candidates.length) {
           unmatched++;
+          const tried = keys.length === 1 ? "this recipient" : `${keys.length} known recipient ids`;
           results.push({ payment_id: p.id, worker_id: p.worker_id, outcome: "no_wise_transfer",
-            reason: "No Wise transfer in the date window for this recipient" });
+            reason: `No Wise transfer in the union window for ${tried} (${keys.join(", ")})`,
+            recipient_keys_tried: keys });
           continue;
         }
         // Filter by date window per-payment (the union window was the coarse net).
@@ -519,8 +548,10 @@ Deno.serve(async (req) => {
         });
         if (!inWindow.length) {
           unmatched++;
+          const tried = keys.length === 1 ? "this recipient" : `${keys.length} known recipient ids`;
           results.push({ payment_id: p.id, worker_id: p.worker_id, outcome: "no_wise_transfer_in_window",
-            reason: `Wise has transfers to this recipient but none within ±${windowDays} days of pay_date` });
+            reason: `Wise has transfers to ${tried} but none within ±${windowDays} days of pay_date`,
+            recipient_keys_tried: keys });
           continue;
         }
         // Look for an exact amount match (within ₱1.00) first. Tolerance is
@@ -676,6 +707,44 @@ Deno.serve(async (req) => {
         } else {
           results.push({ payment_id: p.id, worker_id: p.worker_id, outcome: "db_write_failed",
             error: `db ${uRes.status}` });
+        }
+      }
+
+      // Orphan-transfer diagnostic: for any payment that returned
+      // no_wise_transfer / no_wise_transfer_in_window, scan transfers that
+      // DIDN'T claim any DB row for ones whose amount and date fit. A single
+      // orphan match strongly suggests the payment was paid via a historical
+      // recipient id that's missing from the worker's wise_recipients list
+      // (typical of bank-change cases). Surfaced so the UI can offer a
+      // one-click "Link this recipient" action against the worker.
+      const claimedTransferIds = new Set<string>(
+        results.filter((r: any) => r.transfer_id).map((r: any) => String(r.transfer_id))
+      );
+      const orphans = liveTransfers.filter(t => !claimedTransferIds.has(String(t.id)));
+      if (orphans.length) {
+        const byPaymentId: Record<string, any> = {};
+        for (const p of payments) byPaymentId[String(p.id)] = p;
+        for (const r of results) {
+          if (r.outcome !== "no_wise_transfer" && r.outcome !== "no_wise_transfer_in_window") continue;
+          const p = byPaymentId[String(r.payment_id)];
+          if (!p) continue;
+          const payTs = dateMs(p);
+          const dbAmt = Number(p.net_php || 0);
+          const fits = orphans.filter(t => {
+            const tt = new Date(t.created || t.createdAt || 0).getTime();
+            if (Math.abs(tt - payTs) > windowDays * dayMs) return false;
+            const a = Number(t.targetValue ?? t.targetAmount ?? 0);
+            return Math.abs(a - dbAmt) <= 1.00;
+          }).slice(0, 5);
+          if (fits.length) {
+            r.candidate_orphan_transfers = fits.map(t => ({
+              transfer_id: String(t.id),
+              target_account: String(t.targetAccount ?? ""),
+              target_value: Number(t.targetValue ?? t.targetAmount ?? 0),
+              created: t.created || t.createdAt || null,
+              wise_status: t.status || null,
+            }));
+          }
         }
       }
 
