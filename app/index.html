@@ -6465,6 +6465,47 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
           )}
         </div>}
 
+        {/* Reconcile view: show the batch being reconciled (read-only) so you
+            can see what's there and what changed (transfer linked, marked
+            sent, amount overridden to Wise's value). */}
+        {reconcileOnly && (
+                <div className="card">
+                  <h3 style={{margin:"0 0 4px"}}>Batch being reconciled · {pers?.period_start} → {pers?.period_end}</h3>
+                  <p className="sub">{rows.length} contractor(s) · total {money(total,"PHP")} · {rows.filter(r=>r.status==="sent"||r.status==="reconciled").length} sent.
+                    The <b>Change</b> column reflects what reconcile has applied (transfer linked, sent, or amount overridden to Wise's value).</p>
+                  <div className="table-scroll"><table style={{fontSize:13}}>
+                    <thead><tr><th>Contractor</th><th>Via</th><th>Net ₱</th><th>Wise transfer</th><th>Status</th><th>Sent</th><th>Change</th></tr></thead>
+                    <tbody>
+                      {[...rows].sort((a,b)=>a.name.localeCompare(b.name)).map(r=>{
+                        const sent=r.status==="sent"||r.status==="reconciled";
+                        const overrode=r.original_net!=null && Math.abs(Number(r.original_net)-Number(r.net))>0.005;
+                        const sentDate=r.wise_dates?.dateSent||r.wise_dates?.dateFunded||r.paid_at||null;
+                        const changes=[];
+                        if(r.transfer_id) changes.push("linked");
+                        if(sent) changes.push("sent");
+                        if(overrode) changes.push(`amount: ₱${Number(r.original_net).toLocaleString(undefined,{minimumFractionDigits:2})}→₱${Number(r.net).toLocaleString(undefined,{minimumFractionDigits:2})}`);
+                        return (
+                          <tr key={r.worker_id}>
+                            <td>{r.name}{r.locked_at && <span title="Locked by reconcile" style={{marginLeft:4}}>🔒</span>}</td>
+                            <td>{methodLabel(r.method)||"—"}</td>
+                            <td>{Number(r.net||0).toLocaleString(undefined,{minimumFractionDigits:2})}</td>
+                            <td className="muted">{r.transfer_id?<code>{r.transfer_id}</code>:"—"}</td>
+                            <td><span className="pill" style={sent?{background:"#dcfce7",color:"#065f46"}:{background:"#f3f4f6",color:"var(--muted)"}}>{sent?"sent":(r.status||"draft")}</span></td>
+                            <td className="muted" style={{whiteSpace:"nowrap"}}>{sentDate?fmtDate(sentDate):"—"}</td>
+                            <td style={{fontSize:12}}>{changes.length
+                              ? <span style={{color: overrode?"#a16207":"#166534"}}>{changes.join(" · ")}</span>
+                              : <span className="muted">no change yet</span>}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table></div>
+                  <p className="muted" style={{fontSize:11,marginTop:6}}>
+                    If nothing changed after reconciling, Wise had no matching transfers for this batch's
+                    recipients/dates — check the messages above, or that the batch was actually funded in Wise.</p>
+                </div>
+        )}
+
         {/* Printable pay list + mark-paid, with channel tabs (Wise | BPI | All).
             Per CLAUDE.md guidance, grouping by transfer channel makes the list
             scannable instead of forcing the eye to jump between Wise and BPI
