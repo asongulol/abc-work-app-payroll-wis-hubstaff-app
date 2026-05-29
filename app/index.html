@@ -238,24 +238,43 @@ function FilterBox({q,setQ,placeholder}){
 const LS_URL = "sb_url", LS_KEY = "sb_anon";
 function useSupabase() {
   const [client, setClient] = useState(null);
+  const [session, setSession] = useState(null);   // Supabase Auth session (Google sign-in)
+  const [authReady, setAuthReady] = useState(false);
   const [creds, setCreds] = useState({
     url: localStorage.getItem(LS_URL) || "",
     key: localStorage.getItem(LS_KEY) || "",
   });
   useEffect(() => {
     if (creds.url && creds.key && window.__createClient) {
-      setClient(window.__createClient(creds.url, creds.key));
+      const c = window.__createClient(creds.url, creds.key);
+      setClient(c);
+      // Pick up an existing session, then subscribe to sign-in/out. The session
+      // gates the app; its email becomes the audit actor (replaces "admin").
+      setAuthReady(false);
+      c.auth.getSession().then(({ data }) => {
+        applySession(data?.session || null);
+        setAuthReady(true);
+      }).catch(() => setAuthReady(true));
+      const sub = c.auth.onAuthStateChange((_e, s) => applySession(s || null));
+      return () => { try { sub?.data?.subscription?.unsubscribe(); } catch (_e) {} };
     }
   }, [creds]);
+  function applySession(s) {
+    setSession(s);
+    if (s?.user?.email) localStorage.setItem("sb_actor", s.user.email);
+    else localStorage.removeItem("sb_actor");
+  }
   const connect = (url, key) => {
     localStorage.setItem(LS_URL, url); localStorage.setItem(LS_KEY, key);
     setCreds({ url, key });
   };
-  const disconnect = () => {
-    localStorage.removeItem(LS_URL); localStorage.removeItem(LS_KEY);
-    setCreds({ url: "", key: "" }); setClient(null);
+  const disconnect = async () => {
+    try { if (client) await client.auth.signOut(); } catch (_e) {}
+    localStorage.removeItem(LS_URL); localStorage.removeItem(LS_KEY); localStorage.removeItem("sb_actor");
+    setCreds({ url: "", key: "" }); setClient(null); setSession(null);
   };
-  return { client, creds, connect, disconnect };
+  const signOut = async () => { try { if (client) await client.auth.signOut(); } catch (_e) {} };
+  return { client, session, authReady, creds, connect, disconnect, signOut };
 }
 
 function ConnectScreen({ onConnect }) {
@@ -270,6 +289,35 @@ function ConnectScreen({ onConnect }) {
         <input placeholder="anon public key" value={key} onChange={e=>setKey(e.target.value)} />
         <button className="btn" style={{width:"100%"}}
           onClick={()=>url&&key&&onConnect(url.trim(),key.trim())}>Connect</button>
+      </div>
+    </div>
+  );
+}
+
+// Google sign-in gate. Shown once the Supabase client exists but there's no
+// session. Requires the Google provider enabled in Supabase Auth (see
+// GOOGLE_LOGIN_SETUP.md) — until then, the button surfaces Wise's error.
+function SignInScreen({ client, onBack }) {
+  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  async function google() {
+    setBusy(true); setErr("");
+    const { error } = await client.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: window.location.origin + window.location.pathname },
+    });
+    // On success the browser redirects to Google; on failure we stay and show why.
+    if (error) { setErr(error.message + " — is the Google provider enabled in Supabase Auth?"); setBusy(false); }
+  }
+  return (
+    <div className="connect">
+      <div className="card">
+        <h2>Sign in</h2>
+        <p className="sub">Sign in with your Google account to access the payroll app.</p>
+        <button className="btn" style={{width:"100%"}} disabled={busy} onClick={google}>
+          {busy ? "Redirecting…" : "Sign in with Google"}</button>
+        <Banner msg={err} tone="error" style={{marginTop:10}} />
+        <button className="btn ghost sm" style={{marginTop:10}} onClick={onBack}>
+          Use a different Supabase project</button>
       </div>
     </div>
   );
@@ -7675,6 +7723,8 @@ function App() {
   }, [billingDirty]);
 
   if (!sb.client) return <ConnectScreen onConnect={sb.connect} />;
+  if (!sb.authReady) return <div className="connect"><div className="card"><p className="sub">Loading…</p></div></div>;
+  if (!sb.session) return <SignInScreen client={sb.client} onBack={sb.disconnect} />;
 
   // Tabs grouped by workflow stage so the bar reads as the real process order.
   const tabGroups = [
@@ -7688,6 +7738,8 @@ function App() {
       <div className="topbar">
         <div className="brand">HR &amp; Payroll<small>PH independent contractors</small></div>
         <CompanySwitcher {...{client:sb.client,companyId,setCompanyId,consolidated,setConsolidated}} />
+        {sb.session?.user?.email && <span className="sub" style={{fontSize:12,whiteSpace:"nowrap"}} title="Signed in">{sb.session.user.email}</span>}
+        <button className="btn ghost sm" onClick={sb.signOut}>Sign out</button>
         <button className="btn ghost sm" onClick={sb.disconnect}>Disconnect</button>
       </div>
       <div className="tabs">
