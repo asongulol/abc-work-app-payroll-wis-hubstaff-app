@@ -29,6 +29,10 @@ const SAFE_FIELDS = new Set([
   "first_name", "middle_name", "last_name",
   "mobile", "ph_address", "date_of_birth",
   "gcash", "paymaya", "paypal", "wise_tag",
+  // 201 personal info (safe for self-edit; gov IDs/payout stay out)
+  "emergency_name", "emergency_relationship", "emergency_mobile",
+  "permanent_address", "address_landmark", "postal_code",
+  "marital_status", "education_level", "course", "year_graduated", "school",
 ]);
 
 Deno.serve(async (req) => {

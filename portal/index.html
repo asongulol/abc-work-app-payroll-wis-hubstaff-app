@@ -276,12 +276,15 @@ const FIELD_DEFS = [
   {k:"mobile",label:"Mobile",type:"tel"}, {k:"ph_address",label:"PH address"}, {k:"date_of_birth",label:"Date of birth",type:"date"},
   {k:"gcash",label:"GCash"}, {k:"paymaya",label:"PayMaya"}, {k:"paypal",label:"PayPal"},
   {k:"wise_tag",label:"Wise Tag",wise:true},
+  {k:"emergency_name",label:"Emergency contact name"}, {k:"emergency_relationship",label:"Emergency contact relationship"}, {k:"emergency_mobile",label:"Emergency contact mobile",type:"tel"},
+  {k:"permanent_address",label:"Permanent address"}, {k:"address_landmark",label:"Landmark"}, {k:"postal_code",label:"Postal code"},
+  {k:"marital_status",label:"Marital status"}, {k:"education_level",label:"Education level"}, {k:"course",label:"Course"}, {k:"year_graduated",label:"Year graduated"}, {k:"school",label:"School"},
 ];
 function ProfileView({ client, session, onSignOut }){
   const [w,setW]=useState(null); const [editable,setEditable]=useState([]); const [form,setForm]=useState({});
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [err,setErr]=useState("");
   function load(){
-    client.from("workers").select("first_name,middle_name,last_name,email,mobile,ph_address,date_of_birth,gcash,paymaya,paypal,wise_tag,hire_date,payout_method")
+    client.from("workers").select("first_name,middle_name,last_name,email,mobile,ph_address,date_of_birth,gcash,paymaya,paypal,wise_tag,hire_date,payout_method,emergency_name,emergency_relationship,emergency_mobile,permanent_address,address_landmark,postal_code,marital_status,education_level,course,year_graduated,school")
       .then(({data})=>{ const row=(data||[])[0]||{}; setW(row);
         setForm(Object.fromEntries(FIELD_DEFS.map(f=>[f.k,row[f.k]||""]))); });
     client.from("portal_settings").select("editable_fields").eq("id",1).maybeSingle()
