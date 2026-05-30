@@ -1051,6 +1051,44 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     setSavedMsg("Photo removed.");
     notifySaved(); setPhotoBusy(false);
   }
+  // --- contractor self-service portal login (admin-created; via portal-admin fn) ---
+  const [portalLogin,setPortalLogin]=useState(undefined);  // undefined=loading, null=none, obj=exists
+  const [portalBusy,setPortalBusy]=useState(false);
+  const [portalPw,setPortalPw]=useState("");               // temp password, shown once after create
+  const [portalMsg,setPortalMsg]=useState("");
+  useEffect(()=>{ let live=true;
+    if(!w?.id||!client){ setPortalLogin(null); return; }
+    client.from("contractor_logins").select("email,status,last_login_at").eq("worker_id",w.id).maybeSingle()
+      .then(({data})=>{ if(live) setPortalLogin(data||null); }).catch(()=>{ if(live) setPortalLogin(null); });
+    return ()=>{ live=false; };
+  },[w?.id]);   // eslint-disable-line
+  async function createPortalLogin(){
+    const email=(f.email||"").trim();
+    if(!email){ setPortalMsg("Set the contractor's email above (and Save details) first."); return; }
+    if(!window.confirm(`Create a portal login for ${email}? They'll be able to sign in and view ONLY their own pay, time, and documents (read-only).`)) return;
+    setPortalBusy(true); setPortalMsg(""); setPortalPw("");
+    try{
+      const {data,error}=await client.functions.invoke("portal-admin",{body:{action:"create_login",worker_id:w.id,email}});
+      if(error) throw new Error(await fnErrorMessage(error));
+      if(data?.error) throw new Error(data.error);
+      setPortalPw(data.password||"");
+      setPortalLogin({email,status:"active",last_login_at:null});
+      logEvent(client,{company_id:r.company_id,action:"edit_contractor",entity:fullName(f),detail:{portal_login:"created",email}});
+    }catch(ex){ setPortalMsg("Couldn't create login: "+(ex.message||ex)); }
+    finally{ setPortalBusy(false); }
+  }
+  async function revokePortalLogin(){
+    if(!window.confirm("Revoke this contractor's portal access? They won't be able to sign in until you re-enable it.")) return;
+    setPortalBusy(true); setPortalMsg("");
+    try{
+      const {data,error}=await client.functions.invoke("portal-admin",{body:{action:"revoke_login",worker_id:w.id}});
+      if(error) throw new Error(await fnErrorMessage(error));
+      if(data?.error) throw new Error(data.error);
+      setPortalLogin(pl=>pl?{...pl,status:"revoked"}:pl);
+      logEvent(client,{company_id:r.company_id,action:"edit_contractor",entity:fullName(f),detail:{portal_login:"revoked"}});
+    }catch(ex){ setPortalMsg("Couldn't revoke: "+(ex.message||ex)); }
+    finally{ setPortalBusy(false); }
+  }
   // --- editable fields ---
   const [f,setF]=useState({
     first_name:w.first_name||"", middle_name:w.middle_name||"", last_name:w.last_name||"",
@@ -1334,6 +1372,32 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
           <label style={{fontSize:13,display:"flex",alignItems:"center",gap:6}}><input type="checkbox" checked={f.thirteenth_month_eligible} onChange={e=>set("thirteenth_month_eligible",e.target.checked)}/> 13th-month</label>
         </div>
         <div style={{marginBottom:4}}><button className="btn" onClick={saveDetails}>Save details</button></div>
+
+        {/* --- Self-service portal login --- */}
+        <div style={{borderTop:"1px solid var(--border)",paddingTop:12,marginTop:8}}>
+          <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
+            <div><b>Self-service portal login</b>
+              <div className="sub" style={{fontSize:12,maxWidth:420}}>Lets this contractor sign in at the portal to view <b>only their own</b> pay, time, and documents (read-only).</div></div>
+            {portalLogin===undefined ? <span className="muted" style={{fontSize:12}}>…</span>
+              : portalLogin ? (
+                <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                  <span className={"pill "+(portalLogin.status==="active"?"active":"inactive")}>
+                    {portalLogin.status==="active"?"login active":"revoked"}</span>
+                  <span className="muted" style={{fontSize:12}}>{portalLogin.email}</span>
+                  {portalLogin.status==="active" &&
+                    <button className="btn ghost sm" disabled={portalBusy} onClick={revokePortalLogin}>Revoke</button>}
+                </div>
+              ) : (
+                <button className="btn sm" disabled={portalBusy} onClick={createPortalLogin}>
+                  {portalBusy?"Creating…":"Create portal login"}</button>
+              )}
+          </div>
+          {portalPw && <div className="banner" style={{marginTop:8,background:"#ecfdf5",borderColor:"#a7f3d0",color:"#065f46"}}>
+            Login created — share these <b>once</b> (the contractor should change the password after first sign-in):<br/>
+            <b>Email:</b> {portalLogin?.email} &nbsp;·&nbsp; <b>Temp password:</b> <code>{portalPw}</code>
+          </div>}
+          <Banner msg={portalMsg} tone="error" style={{marginTop:8}} />
+        </div>
 
         {/* --- Rate (effective-dated) --- */}
         <div className="row" style={{alignItems:"flex-end",borderTop:"1px solid var(--border)",paddingTop:12,marginTop:8}}>
