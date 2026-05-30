@@ -120,7 +120,8 @@ function PaySlips({ client }){
   useEffect(()=>{
     client.from("payments").select(
       "id,net_php,gross_php,health_allowance_php,thirteenth_month_php,pdd_lunch_php,bonus_php,"+
-      "deduction_php,misc_items,fx_rate,payout_method,status,paid_at,wise_transfer_id,worked_hours,"+
+      "deduction_php,misc_items,fx_rate,payout_method,status,paid_at,wise_transfer_id,"+
+      "worked_hours,expected_hours,performance_ratio,rate_php,"+
       "pay_periods(period_start,period_end,pay_date)")
       .then(({data,error})=>{ if(error) setErr(error.message);
         const list=(data||[]).slice().sort((a,b)=>String(b.pay_periods?.pay_date||"").localeCompare(String(a.pay_periods?.pay_date||"")));
@@ -146,16 +147,24 @@ function PaySlips({ client }){
               <div className="net">{peso(p.net_php)}</div>
             </div>
             {isOpen && <div style={{marginTop:10,borderTop:"1px solid var(--line)",paddingTop:8}}>
-              <div className="row"><span className="k">Gross</span><span>{peso(p.gross_php)}</span></div>
+              {/* Hours & rate — explains how gross was derived */}
+              {p.worked_hours!=null && <div className="row"><span className="k">Worked hours</span><span>{Number(p.worked_hours).toFixed(2)} h</span></div>}
+              {p.expected_hours!=null && <div className="row"><span className="k">Expected hours</span><span>{Number(p.expected_hours).toFixed(2)} h</span></div>}
+              {p.performance_ratio!=null && <div className="row"><span className="k">Hours ratio</span><span>{Math.round(Number(p.performance_ratio)*100)}%</span></div>}
+              {p.rate_php!=null && <div className="row"><span className="k">Rate (per period)</span><span>{peso(p.rate_php)}</span></div>}
+              {/* Earnings */}
+              <div className="row" style={{fontWeight:600,borderTop:"1px solid var(--line)",marginTop:4,paddingTop:6}}><span>Gross pay</span><span>{peso(p.gross_php)}</span></div>
               {p.health_allowance_php>0 && <div className="row"><span className="k">Health allowance</span><span>{peso(p.health_allowance_php)}</span></div>}
               {p.thirteenth_month_php>0 && <div className="row"><span className="k">13th month</span><span>{peso(p.thirteenth_month_php)}</span></div>}
               {p.pdd_lunch_php>0 && <div className="row"><span className="k">Lunch</span><span>{peso(p.pdd_lunch_php)}</span></div>}
               {p.bonus_php>0 && <div className="row"><span className="k">Bonus</span><span>{peso(p.bonus_php)}</span></div>}
-              {misc.map((m,i)=><div className="row" key={i}><span className="k">{m.label||m.kind}</span><span>{m.kind==="other_hours"?`${m.hours}h`:peso(m.amount)}</span></div>)}
-              <div className="row" style={{fontWeight:700,borderTop:"1px solid var(--line)",marginTop:4,paddingTop:6}}><span>Net</span><span>{peso(p.net_php)}</span></div>
-              <div className="row"><span className="k">Paid via</span><span>{p.payout_method||"—"}</span></div>
+              {misc.map((m,i)=><div className="row" key={i}><span className="k">{m.label||m.kind}</span><span>{m.kind==="other_hours"?`${m.hours} h`:(m.kind==="deduction"?"−"+peso(m.amount):peso(m.amount))}</span></div>)}
+              <div className="row" style={{fontWeight:700,borderTop:"1px solid var(--line)",marginTop:4,paddingTop:6}}><span>Net pay</span><span>{peso(p.net_php)}</span></div>
+              {/* Payout details */}
+              <div className="row" style={{borderTop:"1px solid var(--line)",marginTop:4,paddingTop:6}}><span className="k">Paid via</span><span>{p.payout_method||"—"}</span></div>
+              {p.fx_rate>0 && <div className="row"><span className="k">≈ USD (reference)</span><span>${(Number(p.net_php)/Number(p.fx_rate)).toFixed(2)} <span className="sub">@ {Number(p.fx_rate).toFixed(2)}</span></span></div>}
               {p.wise_transfer_id && <div className="row"><span className="k">Wise transfer</span><span><code>{p.wise_transfer_id}</code></span></div>}
-              {p.paid_at && <div className="row"><span className="k">Sent</span><span>{String(p.paid_at).slice(0,10)}</span></div>}
+              {p.paid_at && <div className="row"><span className="k">Date sent</span><span>{String(p.paid_at).slice(0,10)}</span></div>}
             </div>}
           </div>
         );
