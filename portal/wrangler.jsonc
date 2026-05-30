@@ -1,0 +1,9 @@
+{
+  // Static-assets-only Worker for the contractor self-service portal.
+  // Cloudflare runs `npx wrangler deploy` from this folder (Path = portal/),
+  // reads this config, and serves the files here (index.html) as static assets.
+  // Scoped to portal/ — does not affect the admin app's worker.
+  "name": "contractor-portal",
+  "compatibility_date": "2025-01-01",
+  "assets": { "directory": "./" }
+}
