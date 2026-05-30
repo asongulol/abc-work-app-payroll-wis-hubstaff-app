@@ -3742,6 +3742,10 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // Set true by "Calculate this batch" so the date-change loadSaved effect
   // defers to calculate() instead of loading the old draft (avoids a race).
   const pendingCalc=React.useRef(false);
+  // Bumped by calcBatch so the calculate() trigger fires even when the period
+  // dates are UNCHANGED (re-calculating the already-loaded batch). A [start,end]
+  // dep alone silently no-ops then, leaving "Calculating…" stuck forever.
+  const [calcNonce,setCalcNonce]=useState(0);
   const [showHol,setShowHol]=useState(false);
   const [holTick,setHolTick]=useState(0);     // bump to re-read holidays after edits
   const [undo,setUndo]=useState(null);        // {label,fn} — rollback after a destructive recalculation
@@ -3783,7 +3787,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // the new dates have settled, run calculate() (which rebuilds + saves the
   // draft). loadSaved skips this render so it doesn't clobber the result.
   useEffect(()=>{ if(pendingCalc.current){ pendingCalc.current=false; calculate(); } /* eslint-disable-next-line */
-  },[start,end]);
+  },[calcNonce]);
 
   // Auto-save edits (gross override, PDD, recipient/method) back to the draft,
   // debounced, so manual changes also survive navigation. Skip locked periods.
@@ -4326,7 +4330,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // calculate(). Scrolls the run card into view so the result is visible.
   function calcBatch(b){
     if(!gate("Calculate")) return;
-    setAutoDates(false); pendingCalc.current=true; applyStart(b.start);
+    setAutoDates(false); pendingCalc.current=true; applyStart(b.start); setCalcNonce(n=>n+1);
     setMsg(`Calculating ${b.start} → ${b.end}…`);
   }
   // Just load a period (no recalc) — used to review/inspect a locked or paid
