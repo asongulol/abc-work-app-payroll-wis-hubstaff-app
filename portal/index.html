@@ -204,27 +204,69 @@ function TimeView({ client }){
   );
 }
 
-function DocsView({ client }){
-  const [rows,setRows]=useState(null); const [err,setErr]=useState("");
-  useEffect(()=>{
-    client.from("documents").select("kind,title,signed_on,expires_on").order("signed_on",{ascending:false})
+function DocsView({ client, session }){
+  const [rows,setRows]=useState(null); const [err,setErr]=useState(""); const [wid,setWid]=useState(null);
+  const [kind,setKind]=useState("ic_agreement"); const [file,setFile]=useState(null);
+  const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
+  function load(){
+    client.from("workers").select("id").maybeSingle().then(({data})=>setWid(data?.id||null));
+    client.from("documents").select("id,kind,title,signed_on,expires_on,storage_path,created_at")
+      .order("created_at",{ascending:false})
       .then(({data,error})=>{ if(error) setErr(error.message); setRows(data||[]); });
-  },[]);
-  if(err) return <div className="wrap"><div className="err">{err}</div></div>;
-  if(rows===null) return <div className="wrap"><div className="empty">Loading…</div></div>;
+  }
+  useEffect(load,[]);
   const label=k=>({ic_agreement:"IC Agreement",w8ben:"W-8BEN",gov_id:"Government ID"}[k]||k);
+  async function upload(){
+    if(!file){ setMsg("Choose a file first."); return; }
+    if(!wid){ setMsg("Couldn't find your profile — contact admin."); return; }
+    setBusy(true); setMsg("");
+    try{
+      const uid=session?.user?.id;
+      const path=`${uid}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
+      const up=await client.storage.from("contractor-docs").upload(path,file,{upsert:false});
+      if(up.error) throw up.error;
+      const ins=await client.from("documents").insert({worker_id:wid,kind,title:file.name,storage_path:path});
+      if(ins.error) throw ins.error;
+      setMsg("Uploaded ✓"); setFile(null); load();
+    }catch(ex){ setMsg("Upload failed: "+(ex.message||ex)); }
+    finally{ setBusy(false); }
+  }
+  async function view(d){
+    if(!d.storage_path) return;
+    const { data, error }=await client.storage.from("contractor-docs").createSignedUrl(d.storage_path,120);
+    if(error){ setMsg("Couldn't open: "+error.message); return; }
+    window.open(data.signedUrl,"_blank");
+  }
   return (
     <div className="wrap">
       <h2>Documents</h2>
-      {!rows.length ? <div className="empty">No documents on file.</div> :
-        rows.map((d,i)=>(
-          <div className="card" key={i}>
+      <div className="card">
+        <div style={{fontWeight:700,marginBottom:6}}>Upload a document</div>
+        <label className="sub">Type</label>
+        <select value={kind} onChange={e=>setKind(e.target.value)}
+          style={{width:"100%",padding:12,fontSize:16,border:"1px solid var(--line)",borderRadius:10,margin:"6px 0"}}>
+          <option value="ic_agreement">IC Agreement</option>
+          <option value="w8ben">W-8BEN</option>
+          <option value="gov_id">Government ID</option>
+        </select>
+        <input type="file" onChange={e=>setFile(e.target.files?.[0]||null)} style={{margin:"6px 0"}}/>
+        {msg && <div style={{fontSize:14,padding:"4px 0",color:msg.includes("✓")?"var(--good)":"var(--accent)"}}>{msg}</div>}
+        <button className="btn" style={{width:"100%"}} disabled={busy} onClick={upload}>{busy?"Uploading…":"Upload"}</button>
+      </div>
+      {err && <div className="err">{err}</div>}
+      {rows===null ? <div className="empty">Loading…</div> :
+       !rows.length ? <div className="empty">No documents on file yet.</div> :
+       rows.map((d,i)=>(
+        <div className="card" key={d.id||i}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
             <div style={{fontWeight:700}}>{label(d.kind)}</div>
-            {d.signed_on && <div className="row"><span className="k">Signed</span><span>{d.signed_on}</span></div>}
-            {d.expires_on && <div className="row"><span className="k">Expires</span><span>{d.expires_on}</span></div>}
-            {d.title && <div className="sub">{d.title}</div>}
+            {d.storage_path && <button className="btn link" style={{padding:"4px 8px"}} onClick={()=>view(d)}>View</button>}
           </div>
-        ))}
+          {d.title && <div className="sub">{d.title}</div>}
+          {d.signed_on && <div className="row"><span className="k">Signed</span><span>{d.signed_on}</span></div>}
+          {d.expires_on && <div className="row"><span className="k">Expires</span><span>{d.expires_on}</span></div>}
+        </div>
+      ))}
     </div>
   );
 }
@@ -308,7 +350,7 @@ function Portal({ client, session }){
       </div>
       {tab==="pay"  && <PaySlips client={client}/>}
       {tab==="time" && <TimeView client={client}/>}
-      {tab==="docs" && <DocsView client={client}/>}
+      {tab==="docs" && <DocsView client={client} session={session}/>}
       {tab==="me"   && <ProfileView client={client} session={session} onSignOut={signOut}/>}
       <div className="tabs">
         <button className={tab==="pay"?"on":""}  onClick={()=>setTab("pay")}><span className="ic">₱</span>Pay slips</button>
