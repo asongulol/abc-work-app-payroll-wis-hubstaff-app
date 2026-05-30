@@ -1,0 +1,9 @@
+# Cloudflare Pages response headers (applied to the served app/ files).
+# Keep this app out of search indexes and add basic hardening for a PII app.
+# NOTE: no Content-Security-Policy here on purpose — the app loads React, Babel,
+# Tailwind and supabase-js from CDNs at runtime, so a strict CSP would break it.
+/*
+  X-Robots-Tag: noindex, nofollow
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
