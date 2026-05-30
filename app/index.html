@@ -774,6 +774,51 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
   );
 }
 
+// Admin picker: which profile fields contractors may self-edit in the portal.
+// Writes portal_settings.editable_fields (read by the portal + enforced by the
+// portal-self edge function). Payout destination is deliberately NOT offered.
+function PortalSettingsModal({ client, onClose }){
+  const CANDIDATES=[
+    {k:"first_name",label:"First name"},{k:"middle_name",label:"Middle name"},{k:"last_name",label:"Last name"},
+    {k:"mobile",label:"Mobile"},{k:"ph_address",label:"PH address"},{k:"date_of_birth",label:"Date of birth"},
+    {k:"gcash",label:"GCash"},{k:"paymaya",label:"PayMaya"},{k:"paypal",label:"PayPal"},{k:"wise_tag",label:"Wise Tag"},
+  ];
+  const [sel,setSel]=useState(null); const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
+  useEffect(()=>{ client.from("portal_settings").select("editable_fields").eq("id",1).maybeSingle()
+    .then(({data})=>setSel(Array.isArray(data?.editable_fields)?data.editable_fields:[])); },[]);
+  const toggle=k=>setSel(s=>s.includes(k)?s.filter(x=>x!==k):[...s,k]);
+  async function save(){
+    setBusy(true);setMsg("");
+    const {error}=await client.from("portal_settings").upsert({id:1,editable_fields:sel,updated_at:new Date().toISOString()},{onConflict:"id"});
+    if(error) setMsg("Error: "+error.message);
+    else { setMsg("Saved."); logEvent(client,{action:"edit_contractor",entity:"portal settings",detail:{editable_fields:sel}}); }
+    setBusy(false);
+  }
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
+          <div><h2 style={{margin:0}}>Portal — editable fields</h2>
+            <p className="sub" style={{margin:"4px 0 0"}}>Tick the profile fields contractors may edit themselves in the portal. Payout destination (Wise recipient ID/UUID) is always admin-only.</p></div>
+          <button className="btn ghost sm" onClick={onClose}>Close</button>
+        </div>
+        {sel===null ? <div className="empty">Loading…</div> :
+        <div style={{marginTop:12}}>
+          {CANDIDATES.map(c=>(
+            <label key={c.k} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 0",fontSize:14}}>
+              <input type="checkbox" checked={sel.includes(c.k)} onChange={()=>toggle(c.k)}/> {c.label}
+            </label>
+          ))}
+          <div style={{display:"flex",gap:8,alignItems:"center",marginTop:10}}>
+            <button className="btn" disabled={busy} onClick={save}>{busy?"Saving…":"Save"}</button>
+            {msg && <span className="sub">{msg}</span>}
+          </div>
+        </div>}
+      </div>
+    </div>
+  );
+}
+
 // ============================ CONTRACTORS ====================================
 function Contractors({ client, companyId, consolidated, onBillingChange, pendingWorkerId, consumePendingWorker }) {
   const { data, loading, reload } = useQuery(client, c => {
@@ -781,7 +826,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
     let q = c.from("worker_companies")
       .select("contract,role,hubstaff_name,hubstaff_user_id,status,company_id,companies(name),"+
               "workers(id,first_name,middle_name,last_name,status,email,mobile,ph_address,hire_date,date_of_birth,"+
-              "payout_method,gcash,paymaya,paypal,wise_recipient_id,wise_recipient_uuid,wise_recipients,photo_url,health_allowance_eligible,thirteenth_month_eligible)");
+              "payout_method,gcash,paymaya,paypal,wise_recipient_id,wise_recipient_uuid,wise_recipients,wise_tag,photo_url,health_allowance_eligible,thirteenth_month_eligible)");
     if (!consolidated && companyId) q = q.eq("company_id", companyId);
     return q;
   }, [client, companyId, consolidated]);
@@ -853,6 +898,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
   const [addErr,setAddErr]=useState("");
   const [showBulk,setShowBulk]=useState(false);
   const [showPull,setShowPull]=useState(false);
+  const [showPortalSettings,setShowPortalSettings]=useState(false);
   async function addContractor(){
     if(consolidated||!companyId){setAddErr("Pick a single company first (top-left switcher) to add a contractor.");return;}
     setAdding(true);setAddErr("");
@@ -908,6 +954,9 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
           <button className="btn ghost" disabled={consolidated} onClick={()=>setShowBulk(true)}
             title={consolidated?"Pick a single company first":"Import a roster of contractors (CSV / paste)"}>
             ⇪ Bulk import</button>
+          <button className="btn ghost" onClick={()=>setShowPortalSettings(true)}
+            title="Choose which profile fields contractors can edit in the self-service portal">
+            ⚙ Portal fields</button>
           <button className="btn" disabled={adding||consolidated} onClick={addContractor}
             title={consolidated?"Pick a single company first":"Add a new contractor to this company"}>
             {adding?"Adding…":"+ Add contractor"}</button>
@@ -951,6 +1000,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
       {selected && <ProfileModal r={selected} client={client} onClose={()=>{setSelected(null);reload();}} onBillingChange={onBillingChange} onSaved={reload} />}
       {showBulk && <BulkImport client={client} companyId={companyId} consolidated={consolidated} onClose={()=>setShowBulk(false)} onDone={reload} />}
       {showPull && <PullRecipients client={client} companyId={companyId} consolidated={consolidated} onClose={()=>{setShowPull(false);reload();}} />}
+      {showPortalSettings && <PortalSettingsModal client={client} onClose={()=>setShowPortalSettings(false)} />}
     </div>
     </div>
   );
@@ -1396,6 +1446,8 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
             Login created — share these <b>once</b> (the contractor should change the password after first sign-in):<br/>
             <b>Email:</b> {portalLogin?.email} &nbsp;·&nbsp; <b>Temp password:</b> <code>{portalPw}</code>
           </div>}
+          {w.wise_tag && <div className="banner" style={{marginTop:8,background:"#eff6ff",borderColor:"#bfdbfe",color:"#1e40af"}}>
+            <b>Wise Tag from contractor:</b> <code>{w.wise_tag}</code> — use this to set up their Wise recipient (then store the recipient ID/UUID above).</div>}
           <Banner msg={portalMsg} tone="error" style={{marginTop:8}} />
         </div>
 

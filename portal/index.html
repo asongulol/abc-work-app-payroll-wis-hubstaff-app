@@ -229,23 +229,69 @@ function DocsView({ client }){
   );
 }
 
+const FIELD_DEFS = [
+  {k:"first_name",label:"First name"}, {k:"middle_name",label:"Middle name"}, {k:"last_name",label:"Last name"},
+  {k:"mobile",label:"Mobile",type:"tel"}, {k:"ph_address",label:"PH address"}, {k:"date_of_birth",label:"Date of birth",type:"date"},
+  {k:"gcash",label:"GCash"}, {k:"paymaya",label:"PayMaya"}, {k:"paypal",label:"PayPal"},
+  {k:"wise_tag",label:"Wise Tag",wise:true},
+];
 function ProfileView({ client, session, onSignOut }){
-  const [w,setW]=useState(null);
-  useEffect(()=>{
-    client.from("workers").select("first_name,middle_name,last_name,email,mobile,hire_date,payout_method")
-      .then(({data})=>setW((data||[])[0]||{}));
-  },[]);
+  const [w,setW]=useState(null); const [editable,setEditable]=useState([]); const [form,setForm]=useState({});
+  const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [err,setErr]=useState("");
+  function load(){
+    client.from("workers").select("first_name,middle_name,last_name,email,mobile,ph_address,date_of_birth,gcash,paymaya,paypal,wise_tag,hire_date,payout_method")
+      .then(({data})=>{ const row=(data||[])[0]||{}; setW(row);
+        setForm(Object.fromEntries(FIELD_DEFS.map(f=>[f.k,row[f.k]||""]))); });
+    client.from("portal_settings").select("editable_fields").eq("id",1).maybeSingle()
+      .then(({data})=>setEditable(Array.isArray(data?.editable_fields)?data.editable_fields:[]));
+  }
+  useEffect(load,[]);
+  const isEditable=k=>editable.includes(k);
+  const set=(k,v)=>setForm(x=>({...x,[k]:v}));
+  async function save(){
+    setBusy(true); setMsg(""); setErr("");
+    const fields={};
+    FIELD_DEFS.forEach(f=>{ if(isEditable(f.k) && (form[f.k]||"")!==(w[f.k]||"")) fields[f.k]=form[f.k]; });
+    if(!Object.keys(fields).length){ setMsg("Nothing changed."); setBusy(false); return; }
+    const {data,error}=await client.functions.invoke("portal-self",{body:{action:"update_profile",fields}});
+    if(error||data?.error){ setErr((data&&data.error)||error.message); }
+    else { setMsg("Saved — thank you!"); load(); }
+    setBusy(false);
+  }
+  if(!w) return <div className="wrap"><div className="empty">Loading…</div></div>;
+  const anyEditable=FIELD_DEFS.some(f=>isEditable(f.k));
   return (
     <div className="wrap">
       <h2>Profile</h2>
       <div className="card">
-        <div style={{fontWeight:700,fontSize:18}}>{fullName(w)||"—"}</div>
-        <div className="row"><span className="k">Email</span><span>{w?.email||session?.user?.email||"—"}</span></div>
-        <div className="row"><span className="k">Mobile</span><span>{w?.mobile||"—"}</span></div>
-        <div className="row"><span className="k">Engaged since</span><span>{w?.hire_date||"—"}</span></div>
-        <div className="row"><span className="k">Paid via</span><span>{w?.payout_method||"—"}</span></div>
+        <div style={{fontWeight:700,fontSize:18,marginBottom:4}}>{fullName(w)||"—"}</div>
+        <div className="row"><span className="k">Email (login)</span><span>{w.email||session?.user?.email||"—"}</span></div>
+        <div className="row"><span className="k">Engaged since</span><span>{w.hire_date||"—"}</span></div>
+        <div className="row"><span className="k">Paid via</span><span>{w.payout_method||"—"}</span></div>
       </div>
-      <p className="sub">Need a correction? Contact your payroll admin.</p>
+      <div className="card">
+        <div style={{fontWeight:700,marginBottom:6}}>Your details</div>
+        <p className="sub" style={{marginTop:0}}>{anyEditable
+          ? "Update your info and Save. Fields shown as plain text are managed by payroll."
+          : "Editing is currently turned off by your payroll admin."}</p>
+        {FIELD_DEFS.map(f=>(
+          <div key={f.k} style={{margin:"8px 0"}}>
+            <label className="sub" style={{display:"block"}}>{f.label}</label>
+            {isEditable(f.k)
+              ? <input type={f.type||"text"} value={form[f.k]||""} onChange={e=>set(f.k,e.target.value)} placeholder={f.wise?"@yourtag":""}/>
+              : <div style={{padding:"6px 0",fontSize:15}}>{w[f.k]||<span className="sub">—</span>}</div>}
+            {f.wise && isEditable("wise_tag") &&
+              <a href="https://wise.com/invite/dic/olivert410" target="_blank" rel="noreferrer"
+                 style={{fontSize:13,color:"var(--accent)",fontWeight:600,display:"inline-block",marginTop:2}}>Don't have a Wise account? Set one up →</a>}
+          </div>
+        ))}
+        {anyEditable && <>
+          {err && <div className="err">{err}</div>}
+          {msg && <div style={{color:"var(--good)",fontSize:14,padding:"4px 0"}}>{msg}</div>}
+          <button className="btn" style={{width:"100%",marginTop:8}} disabled={busy} onClick={save}>{busy?"Saving…":"Save changes"}</button>
+        </>}
+      </div>
+      <p className="sub">Questions about your pay? Contact your payroll admin.</p>
       <button className="btn ghost" style={{width:"100%",color:"var(--accent)",borderColor:"var(--accent)"}} onClick={onSignOut}>Sign out</button>
     </div>
   );
