@@ -294,14 +294,28 @@ join companies   c  on c.id  = p.company_id
 group by p.company_id, c.name, pp.period_start, pp.period_end, p.payout_currency;
 
 -- ============================================================================
--- RLS SCAFFOLDING (kept permissive for admin-only Phase 1; ready to tighten)
--- ----------------------------------------------------------------------------
--- For now a single admin role uses the service key. When per-company logins
--- arrive, add a memberships table (user_id, company_id, role) and replace the
--- permissive policies below with company-scoped ones, e.g.:
+-- RLS — allowlist model (Phase 2, applied 2026-05-30; see
+-- migrations/2026-05-30_phase2_rls_admin.sql). Only an AUTHENTICATED user in
+-- admin_users (is_admin()) can touch payroll data; the anon key alone grants
+-- nothing. Auth = Supabase Auth + Google. Service role bypasses RLS (recovery).
+-- For per-company logins later, swap is_admin() for a membership check, e.g.:
 --   using ( company_id in (select company_id from memberships
 --                          where user_id = auth.uid()) )
 -- ============================================================================
+create table if not exists admin_users (
+  user_id  uuid primary key references auth.users(id) on delete cascade,
+  email    text unique not null,
+  role     text not null default 'admin',
+  added_at timestamptz not null default now()
+);
+alter table admin_users enable row level security;
+create or replace function is_admin() returns boolean
+  language sql stable security definer set search_path = public as $$
+  select exists (select 1 from admin_users where user_id = auth.uid());
+$$;
+drop policy if exists admin_users_read on admin_users;
+create policy admin_users_read on admin_users for select to authenticated using (is_admin());
+
 alter table companies        enable row level security;
 alter table workers          enable row level security;
 alter table worker_companies enable row level security;
@@ -310,16 +324,19 @@ alter table pay_periods      enable row level security;
 alter table time_entries     enable row level security;
 alter table payments         enable row level security;
 alter table documents        enable row level security;
+alter table audit_log        enable row level security;
 
--- Phase 1: authenticated admin can do everything. (Service role bypasses RLS.)
+-- Authenticated + allowlisted admin can do everything. (Service role bypasses RLS.)
 do $$
 declare t text;
 begin
   foreach t in array array['companies','workers','worker_companies','rates',
-                           'pay_periods','time_entries','payments','documents']
+                           'pay_periods','time_entries','payments','documents','audit_log']
   loop
+    execute format('drop policy if exists %I_admin_all on %I;', t, t);
+    execute format('drop policy if exists %I_anon_all on %I;', t, t);
     execute format(
-      'create policy %I_admin_all on %I for all to authenticated using (true) with check (true);',
+      'create policy %I_admin_all on %I for all to authenticated using (is_admin()) with check (is_admin());',
       t, t);
   end loop;
 end$$;
