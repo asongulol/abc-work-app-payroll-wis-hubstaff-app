@@ -188,7 +188,6 @@ function TimeView({ client }){
           <div style={{fontWeight:700}}>{g.key}</div>
           <div className="row"><span className="k">Worked</span><span>{hrs(g.tracked).toFixed(2)} h</span></div>
           {g.pto>0 && <div className="row"><span className="k">PTO</span><span>{hrs(g.pto).toFixed(2)} h</span></div>}
-          <div className="row"><span className="k">Days with time</span><span>{g.days}</span></div>
           <div className="row" style={{fontWeight:700}}><span>Total</span><span>{(hrs(g.tracked)+hrs(g.pto)).toFixed(2)} h</span></div>
         </div>
       ))}
@@ -199,7 +198,7 @@ function TimeView({ client }){
 function DocsView({ client }){
   const [rows,setRows]=useState(null); const [err,setErr]=useState("");
   useEffect(()=>{
-    client.from("documents").select("kind,signed_on,expires_on,note").order("signed_on",{ascending:false})
+    client.from("documents").select("kind,title,signed_on,expires_on").order("signed_on",{ascending:false})
       .then(({data,error})=>{ if(error) setErr(error.message); setRows(data||[]); });
   },[]);
   if(err) return <div className="wrap"><div className="err">{err}</div></div>;
@@ -214,7 +213,7 @@ function DocsView({ client }){
             <div style={{fontWeight:700}}>{label(d.kind)}</div>
             {d.signed_on && <div className="row"><span className="k">Signed</span><span>{d.signed_on}</span></div>}
             {d.expires_on && <div className="row"><span className="k">Expires</span><span>{d.expires_on}</span></div>}
-            {d.note && <div className="sub">{d.note}</div>}
+            {d.title && <div className="sub">{d.title}</div>}
           </div>
         ))}
     </div>
