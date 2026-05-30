@@ -237,13 +237,19 @@ function FilterBox({q,setQ,placeholder}){
 
 // ---- Supabase connection (anon key only; stored in this browser) ------------
 const LS_URL = "sb_url", LS_KEY = "sb_anon";
+// Built-in connection. Safe to ship the anon key here because RLS is locked to
+// allowlisted Google logins (Phase 2) — the key alone grants nothing. So the
+// app auto-connects and goes straight to Google sign-in; no key pasting on any
+// browser. localStorage still overrides if set (e.g. to point at a staging DB).
+const SUPABASE_URL  = "https://cgsidolrauzsowqlllsz.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNnc2lkb2xyYXV6c293cWxsbHN6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4MDMwMzEsImV4cCI6MjA5NTM3OTAzMX0.2Z_dDcN0la3c5l2YMYWjeUejhAGZH4ROHXQtYRGWYfY";
 function useSupabase() {
   const [client, setClient] = useState(null);
   const [session, setSession] = useState(null);   // Supabase Auth session (Google sign-in)
   const [authReady, setAuthReady] = useState(false);
   const [creds, setCreds] = useState({
-    url: localStorage.getItem(LS_URL) || "",
-    key: localStorage.getItem(LS_KEY) || "",
+    url: localStorage.getItem(LS_URL) || SUPABASE_URL,
+    key: localStorage.getItem(LS_KEY) || SUPABASE_ANON,
   });
   useEffect(() => {
     if (creds.url && creds.key && window.__createClient) {
@@ -7741,7 +7747,6 @@ function App() {
         <CompanySwitcher {...{client:sb.client,companyId,setCompanyId,consolidated,setConsolidated}} />
         {sb.session?.user?.email && <span className="sub" style={{fontSize:12,whiteSpace:"nowrap"}} title="Signed in">{sb.session.user.email}</span>}
         <button className="btn ghost sm" onClick={sb.signOut}>Sign out</button>
-        <button className="btn ghost sm" onClick={sb.disconnect}>Disconnect</button>
       </div>
       <div className="tabs">
         {tabGroups.map(([label,items],gi)=>(
