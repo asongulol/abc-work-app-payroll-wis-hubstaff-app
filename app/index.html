@@ -3014,13 +3014,26 @@ function DeleteImports({client,companyId,consolidated,onDeleted}){
 
 // ---- approval workflow ------------------------------------------------------
 function TimeApproval({client,companyId,consolidated}){
-  const {data,loading,reload}=useQuery(client,c=>{
+  // ACTIVE (pending/rejected) only. Bounded, so it never hits PostgREST's
+  // 1000-row default cap — which (oldest-first) was hiding recent pending
+  // entries behind old approved history and making the grid undercount.
+  const {data,loading,reload:reloadActive}=useQuery(client,c=>{
     let q=c.from("time_entries")
       .select("id,source_name,work_date,tracked_seconds,pto_seconds,approval,worker_id")
+      .neq("approval","approved")
       .order("work_date",{ascending:true});
     if(companyId)q=q.eq("company_id",companyId);
     return q;
   },[client,companyId]);
+  // Approved history (recent) for the "previously approved periods" section.
+  const {data:approvedData,reload:reloadApproved}=useQuery(client,c=>{
+    let q=c.from("time_entries")
+      .select("id,source_name,work_date,tracked_seconds,pto_seconds,approval,worker_id")
+      .eq("approval","approved").order("work_date",{ascending:false}).limit(1000);
+    if(companyId)q=q.eq("company_id",companyId);
+    return q;
+  },[client,companyId]);
+  const reload=useCallback(()=>{reloadActive();reloadApproved();},[reloadActive,reloadApproved]);
 
   // active contractors in this company, for the manual-hours picker
   const {data:wcs}=useQuery(client,c=>{
@@ -3033,10 +3046,10 @@ function TimeApproval({client,companyId,consolidated}){
       name:`${x.workers.first_name} ${x.workers.last_name}`.trim()}))
     .sort((a,b)=>a.name.localeCompare(b.name));
 
-  const entries=data||[];
   // ACTIVE = still needs a decision (pending or rejected). APPROVED = history.
-  const active=entries.filter(e=>e.approval!=="approved");
-  const approved=entries.filter(e=>e.approval==="approved");
+  const active=data||[];
+  const approved=approvedData||[];
+  const entries=active.concat(approved);   // combined, for prior-state lookups
 
   // group active by contractor for review
   const byPerson={};
@@ -3258,8 +3271,13 @@ function TimeApproval({client,companyId,consolidated}){
     try{
       const idSet=new Set(ids);
       const prior=entries.filter(e=>idSet.has(e.id)).map(e=>({id:e.id,approval:e.approval}));
-      const {error}=await client.from("time_entries").update({approval:status}).in("id",ids);
-      if(error)throw error;
+      // Chunk the id list: a single .in() with hundreds of UUIDs builds a URL
+      // that exceeds PostgREST's length limit, so the request silently fails —
+      // which is why "Approve all pending" appeared to do nothing.
+      for(let i=0;i<ids.length;i+=100){
+        const {error}=await client.from("time_entries").update({approval:status}).in("id",ids.slice(i,i+100));
+        if(error)throw error;
+      }
       logEvent(client,{company_id:companyId, action:status==="approved"?"approve":"reject",
         entity:pStart?`${pStart} → ${pEnd}`:"time entries", detail:{entries:ids.length}});
       const verb=status==="approved"?"Approved":"Rejected";
@@ -3269,7 +3287,9 @@ function TimeApproval({client,companyId,consolidated}){
           const byStatus={};
           prior.forEach(p=>{(byStatus[p.approval]=byStatus[p.approval]||[]).push(p.id);});
           for(const [st,idl] of Object.entries(byStatus)){
-            await client.from("time_entries").update({approval:st}).in("id",idl);
+            for(let i=0;i<idl.length;i+=100){
+              await client.from("time_entries").update({approval:st}).in("id",idl.slice(i,i+100));
+            }
           }
           logEvent(client,{company_id:companyId,action:"undo",entity:"approval",detail:{of:status,entries:ids.length}});
         }});
@@ -3850,6 +3870,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       setUndo(null);
     }
     setBusy(true);setMsg("");setRows(null);setDropped([]);
+    try{
     // 1. approved time in range — both tracked AND paid PTO count toward worked_hours
     const {data:te,error:e1}=await client.from("time_entries")
       .select("worker_id,source_name,work_date,tracked_seconds,pto_seconds,approval")
@@ -3956,13 +3977,14 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     }
     setDropped(droppedMsg);
     setRows(out);
-    setBusy(false);
     if(!out.length){
       setMsg("No approved time found for this company in that date range — check the period dates match the approved time, and that contractors are linked to this company."+
         (droppedMsg.length?" "+droppedMsg.join(" "):" Import & approve hours first."));
       return;
     }
     await saveDraft(out);   // persist so it survives tab-switch / refresh
+    }catch(ex){ setMsg("Calculate failed: "+(ex.message||ex)); }
+    finally{ setBusy(false); }   // ALWAYS clear so the button never sticks on "Calculating…"
   }
 
   // Save the current calculation as a DRAFT (period state='open', payments status='draft').
