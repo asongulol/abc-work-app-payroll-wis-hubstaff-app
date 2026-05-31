@@ -7982,6 +7982,168 @@ function summarizeDetail(d){
   return parts.join(" · ");
 }
 
+// ============================ ONBOARDING (HR review) =========================
+const ONB_AGR_LABEL = { ic_agreement:"IC Agreement", non_compete:"Non-Compete", confidentiality_nda:"NDA", baa:"BAA" };
+const ONB_DOC_LABEL = { resume:"Resume / CV", diploma:"Diploma / TOR", nbi_clearance:"NBI Clearance", gov_id:"Gov ID / Passport" };
+const ONB_STAGE_LABEL = { stage1_sign:"Signing", stage2_profile:"Profile", stage3_docs:"Documents", complete:"Complete" };
+const ONB_DOC_KINDS = ["resume","diploma","nbi_clearance","gov_id"];
+function onbPct(p){ return Math.round(((p.stage1_complete?1:0)+(p.stage2_complete?1:0)+(p.stage3_complete?1:0))/3*100); }
+function onbStatus(p, pending){
+  if(pending>0) return {txt:"Action needed",color:"#b45309",bg:"#fef3c7"};
+  if(p.completed_at) return {txt:"Complete",color:"#166534",bg:"#dcfce7"};
+  if(p.stalled) return {txt:"Stalled",color:"#991b1b",bg:"#fee2e2"};
+  return {txt:"In progress",color:"#1e40af",bg:"#dbeafe"};
+}
+function Badge({s}){ return <span style={{padding:"2px 8px",borderRadius:999,fontSize:11,fontWeight:600,color:s.color,background:s.bg,whiteSpace:"nowrap"}}>{s.txt}</span>; }
+// supabase-js v2 puts non-2xx edge-fn error bodies on error.context (a Response),
+// NOT in data. Pull the server's {error} message out so HR sees the real cause.
+async function edgeErr(error, data){
+  if(data && data.error) return data.error;
+  try { if(error && error.context && typeof error.context.json==="function"){ const j=await error.context.json(); if(j && j.error) return j.error; } } catch(_e){}
+  return (error && error.message) || "Something went wrong — please try again.";
+}
+
+function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
+  const { data:wRows } = useQuery(client, c=>c.from("workers")
+    .select("first_name,middle_name,last_name,email,work_email,mobile,ph_address,permanent_address,address_landmark,postal_code,date_of_birth,emergency_name,emergency_relationship,emergency_mobile,marital_status,education_level,course,year_graduated,school,gcash,paymaya,paypal,wise_tag,profile_extras")
+    .eq("id",worker_id).limit(1), [client,worker_id]);
+  const { data:sigs } = useQuery(client, c=>c.from("onboarding_signatures")
+    .select("agreement_kind,doc_version,doc_sha256,signed_legal_name,signature_method,ip_address,user_agent,device_fingerprint,signed_at,status")
+    .eq("worker_id",worker_id).order("signed_at"), [client,worker_id]);
+  const { data:docs, reload:reloadDocs } = useQuery(client, c=>c.from("documents")
+    .select("id,kind,side,title,storage_path,issued_on,review_status,review_reason,reviewed_at,created_at")
+    .eq("worker_id",worker_id).in("kind",ONB_DOC_KINDS).order("created_at",{ascending:false}), [client,worker_id]);
+  const w=(wRows||[])[0]||{};
+  const ex=(w.profile_extras&&typeof w.profile_extras==="object")?w.profile_extras:{};
+  const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
+  async function view(d){
+    if(!d.storage_path) return;
+    const win=window.open("about:blank","_blank");   // open synchronously (popup-blocker safe), then redirect
+    const {data,error}=await client.storage.from("contractor-docs").createSignedUrl(d.storage_path,120);
+    if(error||!data){ if(win)win.close(); setMsg("Open failed: "+((error&&error.message)||"no url")); return; }
+    if(win) win.location=data.signedUrl; else window.open(data.signedUrl,"_blank");
+  }
+  async function review(d,action){
+    let reason=null;
+    if(action==="needs_replacement"){ reason=window.prompt("Reason the contractor will see (e.g. blurry, expired, wrong document):"); if(reason===null)return; if(!reason.trim()){setMsg("A reason is required.");return;} }
+    setBusy(true); setMsg("");
+    const { data, error } = await client.functions.invoke("portal-review",{body:{action,document_id:d.id,reason}});
+    setBusy(false);
+    if(error||(data&&data.error)){ setMsg(await edgeErr(error,data)); return; }
+    logEvent(client,{action:"document_review",entity:(ONB_DOC_LABEL[d.kind]||d.kind),detail:{document_id:d.id,action,reason}});
+    reloadDocs(); onChange&&onChange();
+  }
+  const byKey={}; (docs||[]).forEach(d=>{ const k=d.kind+"|"+(d.side||""); (byKey[k]=byKey[k]||[]).push(d); });
+  const FIELDS=[["Mobile","mobile"],["Current address","ph_address"],["Permanent address","permanent_address"],["Postal","postal_code"],["Date of birth","date_of_birth"],["Emergency contact","emergency_name"],["Relationship","emergency_relationship"],["Emergency mobile","emergency_mobile"],["Marital","marital_status"],["Education","education_level"],["Course","course"],["Year grad.","year_graduated"],["School","school"],["GCash","gcash"],["PayMaya","paymaya"],["PayPal","paypal"],["Wise Tag","wise_tag"]];
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:720}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}}>
+          <h2 style={{margin:0}}>{[w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ")||w.email||"Contractor"}</h2>
+          <button className="btn ghost sm" onClick={onClose}>Close</button>
+        </div>
+        <p className="sub" style={{marginTop:2}}>{w.email}{w.work_email?` · ${w.work_email}`:""}</p>
+        {msg && <div className="banner" style={{background:"#fee2e2",borderColor:"#fca5a5"}}>{msg}</div>}
+
+        <h3 style={{marginBottom:4}}>1 · Agreements</h3>
+        {(sigs||[]).length===0? <p className="sub">No signatures yet.</p> :
+         <div className="table-scroll"><table>
+           <thead><tr><th>Agreement</th><th>Signed name</th><th>When</th><th>IP</th><th>Ver</th></tr></thead>
+           <tbody>{(sigs||[]).map((s,i)=>(<tr key={i}>
+             <td>{ONB_AGR_LABEL[s.agreement_kind]||s.agreement_kind}{s.status!=="signed"?` (${s.status})`:""}</td>
+             <td>{s.signed_legal_name}</td>
+             <td className="muted" style={{fontSize:11,whiteSpace:"nowrap"}}>{new Date(s.signed_at).toLocaleString()}</td>
+             <td className="muted" style={{fontSize:11}}>{s.ip_address||"—"}</td>
+             <td className="muted" style={{fontSize:11}} title={s.doc_sha256?("sha256 "+s.doc_sha256):""}>{s.doc_version}</td>
+           </tr>))}</tbody></table></div>}
+
+        <h3 style={{marginBottom:4,marginTop:14}}>2 · Profile</h3>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px 16px",fontSize:13}}>
+          {FIELDS.map(([lbl,k])=>(<div key={k}><span className="muted">{lbl}:</span> {w[k]||"—"}</div>))}
+        </div>
+        {(ex.favorite_color||ex.favorite_food||ex.motto)&&<p className="muted" style={{fontSize:12,marginTop:4}}>{[ex.favorite_color&&"Color: "+ex.favorite_color,ex.favorite_food&&"Food: "+ex.favorite_food,ex.motto&&"Motto: "+ex.motto].filter(Boolean).join(" · ")}</p>}
+
+        <h3 style={{marginBottom:4,marginTop:14}}>3 · Documents</h3>
+        {(docs||[]).length===0? <p className="sub">No documents uploaded yet.</p> :
+         Object.keys(byKey).sort().map(key=>{
+           const list=byKey[key]; const d=list[0]; const side=key.split("|")[1]; const kind=key.split("|")[0];
+           const badge=d.review_status==="approved"?{txt:"Approved",color:"#166534",bg:"#dcfce7"}:d.review_status==="needs_replacement"?{txt:"Needs replacement",color:"#b45309",bg:"#fef3c7"}:{txt:"Pending review",color:"#1e40af",bg:"#dbeafe"};
+           return (
+            <div key={key} style={{borderTop:"1px solid #e5e7eb",padding:"8px 0"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+                <div><b>{ONB_DOC_LABEL[kind]||kind}{side?` (${side})`:""}</b>
+                  <div className="muted" style={{fontSize:11}}>{d.title}{d.issued_on?` · issued ${d.issued_on}`:""}{list.length>1?` · ${list.length} versions`:""}</div></div>
+                <Badge s={badge}/>
+              </div>
+              {d.review_status==="needs_replacement"&&d.review_reason&&<div className="muted" style={{fontSize:12}}>Reason: {d.review_reason}</div>}
+              <div style={{display:"flex",gap:6,marginTop:6}}>
+                <button className="btn ghost sm" onClick={()=>view(d)} disabled={!d.storage_path}>View</button>
+                {d.review_status!=="approved"&&<button className="btn sm" disabled={busy} onClick={()=>review(d,"approve")}>Approve</button>}
+                {d.review_status!=="needs_replacement"&&<button className="btn ghost sm" disabled={busy} onClick={()=>review(d,"needs_replacement")}>Needs replacement</button>}
+              </div>
+            </div>
+           );
+         })}
+      </div>
+    </div>
+  );
+}
+
+function OnboardingAdmin({ client }){
+  const [showDone,setShowDone]=useState(false); const [sel,setSel]=useState(null);
+  const { data:progs, loading, reload } = useQuery(client, c=>c.from("onboarding_progress")
+    .select("worker_id,current_stage,stage1_complete,stage2_complete,stage3_complete,name_mismatch_flag,stalled,started_at,completed_at,updated_at,workers(first_name,middle_name,last_name,email)")
+    .order("updated_at",{ascending:false}), [client]);
+  const { data:pendDocs, reload:reloadPend } = useQuery(client, c=>c.from("documents")
+    .select("worker_id,review_status").in("kind",ONB_DOC_KINDS).eq("review_status","pending"), [client]);
+  const pendBy={}; (pendDocs||[]).forEach(d=>{ pendBy[d.worker_id]=(pendBy[d.worker_id]||0)+1; });
+  const all=(progs||[]).map(p=>{ const w=p.workers||{}; return {...p,
+    _name:[w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ")||w.email||p.worker_id,
+    _email:w.email||"", _pending:pendBy[p.worker_id]||0, _pct:onbPct(p) }; });
+  const visible=all.filter(r=> showDone || !r.completed_at || r._pending>0 );
+  // count from the pending docs directly so a worker with a pending doc but no
+  // onboarding_progress row still gets counted (orphans = uploaded outside onboarding).
+  const progIds=new Set((progs||[]).map(p=>p.worker_id));
+  const needReview=Object.keys(pendBy).length;
+  const orphanReview=Object.keys(pendBy).filter(id=>!progIds.has(id)).length;
+  const { rows, Th, q, setQ } = useSortFilter(visible, {
+    name:r=>r._name, stage:r=>r.current_stage, pct:r=>r._pct,
+    status:r=>(r._pending>0?0:r.completed_at?3:r.stalled?1:2), updated:r=>r.updated_at,
+  }, ["_name","_email"]);
+  function refresh(){ reload(); reloadPend(); }
+  return (
+    <div className="card">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
+        <div><h2>Onboarding</h2><p className="sub">New-contractor onboarding — agreements signed, profile completed, documents reviewed.</p></div>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <label className="sub" style={{display:"flex",gap:4,alignItems:"center"}}><input type="checkbox" checked={showDone} onChange={e=>setShowDone(e.target.checked)}/> Show completed</label>
+          <button className="btn ghost sm" onClick={refresh}>Refresh</button>
+        </div>
+      </div>
+      {needReview>0 && <div className="banner" style={{background:"#fef3c7",borderColor:"#fcd34d"}}>{needReview} contractor{needReview>1?"s have":" has"} documents waiting for review.{orphanReview>0?` (${orphanReview} uploaded outside onboarding — not listed below.)`:""}</div>}
+      <FilterBox q={q} setQ={setQ} placeholder="Filter by name or email…" />
+      {loading? <div className="empty">Loading…</div> :
+       rows.length===0? <div className="empty">{q?"No matches for your filter.":"No onboarding in progress."}{(!q && !showDone && all.length>0)?" (Completed are hidden — tick “Show completed”.)":""}</div> :
+       <div className="table-scroll"><table>
+         <thead><tr><Th k="name">Contractor</Th><Th k="stage">Stage</Th><Th k="pct">Progress</Th><Th k="status">Status</Th><Th k="updated">Updated</Th><th></th></tr></thead>
+         <tbody>
+           {rows.map(r=>(
+             <tr key={r.worker_id}>
+               <td>{r._name}{r.name_mismatch_flag&&<span title="Signed legal name differs from profile name" style={{marginLeft:6}}>⚠️</span>}<div className="muted" style={{fontSize:11}}>{r._email}</div></td>
+               <td>{ONB_STAGE_LABEL[r.current_stage]||r.current_stage}</td>
+               <td><div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:60,height:6,background:"#e5e7eb",borderRadius:999,overflow:"hidden"}}><div style={{width:r._pct+"%",height:"100%",background:"#1F3A68"}}/></div><span className="muted" style={{fontSize:11}}>{r._pct}%</span></div></td>
+               <td><Badge s={onbStatus(r,r._pending)}/>{r._pending>0&&<span className="muted" style={{fontSize:11,marginLeft:4}}>{r._pending}</span>}</td>
+               <td className="muted" style={{whiteSpace:"nowrap",fontSize:12}}>{new Date(r.updated_at).toLocaleDateString()}</td>
+               <td><button className="btn ghost sm" onClick={()=>setSel(r.worker_id)}>Review</button></td>
+             </tr>
+           ))}
+         </tbody>
+       </table></div>}
+      {sel && <OnboardingDrilldown client={client} worker_id={sel} onClose={()=>setSel(null)} onChange={refresh}/>}
+    </div>
+  );
+}
+
 // ============================ APP SHELL ======================================
 function App() {
   const sb = useSupabase();
@@ -8043,7 +8205,7 @@ function App() {
   const tabGroups = [
     ["Setup",   [["contractors","Contractors"],["documents","Documents"]]],
     ["Run payroll", [["time","Time & Approval"],["payroll","Calculate"],["process","Process and Pay"]]],
-    ["Review",  [["batches","Review & Recon Batches"],["reports","Reports"],["imports","Imports"],["audit","Audit Log"]]],
+    ["Review",  [["onboarding","Onboarding"],["batches","Review & Recon Batches"],["reports","Reports"],["imports","Imports"],["audit","Audit Log"]]],
   ];
   function go(id){ setTab(id); const w=document.querySelector(".wrap"); if(w) w.scrollIntoView({block:"start"}); window.scrollTo(0,0); }
   return (
@@ -8080,6 +8242,7 @@ function App() {
         <div style={{display:tab==="batches"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="batches",confirmBillingDirty,openContractor,reconcileOnly:true}} /></div>
         <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId,consolidated}} /></div>
+        <div style={{display:tab==="onboarding"?"block":"none"}}><OnboardingAdmin {...{client:sb.client}} /></div>
       </div>
     </div>
   );
