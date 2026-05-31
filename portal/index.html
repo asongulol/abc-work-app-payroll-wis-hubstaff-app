@@ -284,7 +284,7 @@ function ProfileView({ client, session, onSignOut }){
   const [w,setW]=useState(null); const [editable,setEditable]=useState([]); const [form,setForm]=useState({});
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [err,setErr]=useState("");
   function load(){
-    client.from("workers").select("first_name,middle_name,last_name,email,work_email,mobile,ph_address,date_of_birth,gcash,paymaya,paypal,wise_tag,hire_date,payout_method,emergency_name,emergency_relationship,emergency_mobile,permanent_address,address_landmark,postal_code,marital_status,education_level,course,year_graduated,school")
+    client.from("workers").select("first_name,middle_name,last_name,email,work_email,mobile,work_number,work_extension,ph_address,date_of_birth,gcash,paymaya,paypal,wise_tag,hire_date,payout_method,emergency_name,emergency_relationship,emergency_mobile,permanent_address,address_landmark,postal_code,marital_status,education_level,course,year_graduated,school")
       .then(({data})=>{ const row=(data||[])[0]||{}; setW(row);
         setForm(Object.fromEntries(FIELD_DEFS.map(f=>[f.k,row[f.k]||""]))); });
     client.from("portal_settings").select("editable_fields").eq("id",1).maybeSingle()
@@ -312,6 +312,7 @@ function ProfileView({ client, session, onSignOut }){
         <div style={{fontWeight:700,fontSize:18,marginBottom:4}}>{fullName(w)||"—"}</div>
         <div className="row"><span className="k">Personal email</span><span>{w.email||session?.user?.email||"—"}</span></div>
         {w.work_email && <div className="row"><span className="k">Work email</span><span>{w.work_email}</span></div>}
+        {w.work_number && <div className="row"><span className="k">Work number</span><span>{w.work_number}{w.work_extension?` ext. ${w.work_extension}`:""}</span></div>}
         <div className="row"><span className="k">Engaged since</span><span>{w.hire_date||"—"}</span></div>
         <div className="row"><span className="k">Paid via</span><span>{w.payout_method||"—"}</span></div>
       </div>
