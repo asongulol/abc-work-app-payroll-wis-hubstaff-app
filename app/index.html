@@ -378,7 +378,8 @@ const BULK_COLMAP={
   firstname:"first_name", first:"first_name", givenname:"first_name",
   middlename:"middle_name", middle:"middle_name",
   lastname:"last_name", last:"last_name", surname:"last_name", familyname:"last_name",
-  email:"email", emailaddress:"email", wiseemail:"email",
+  email:"email", emailaddress:"email", personalemail:"email", wiseemail:"email",
+  workemail:"work_email", companyemail:"work_email", abcemail:"work_email", abckidsnyemail:"work_email",
   mobile:"mobile", phone:"mobile", contactnumber:"mobile", cell:"mobile",
   wiserecipientid:"wise_recipient_id", wiseid:"wise_recipient_id", recipientid:"wise_recipient_id", wiserecipient:"wise_recipient_id",
   wiserecipientuuid:"wise_recipient_uuid", wiseuuid:"wise_recipient_uuid", recipientuuid:"wise_recipient_uuid", uuid:"wise_recipient_uuid", wisetaguuid:"wise_recipient_uuid",
@@ -575,6 +576,7 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
     if(last!=null && last!=="") wp.last_name=last;
     if(mid) wp.middle_name=mid;
     if(rec.email) wp.email=rec.email;
+    if(rec.work_email) wp.work_email=rec.work_email;
     if(rec.mobile) wp.mobile=rec.mobile;
     if(rec.ph_address) wp.ph_address=rec.ph_address;
     if(rec.hire_date) wp.hire_date=rec.hire_date;
@@ -903,7 +905,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
       .select("contract,role,hubstaff_name,hubstaff_user_id,status,company_id,companies(name),"+
               "workers(id,first_name,middle_name,last_name,status,email,mobile,ph_address,hire_date,date_of_birth,"+
               "payout_method,gcash,paymaya,paypal,wise_recipient_id,wise_recipient_uuid,wise_recipients,wise_tag,photo_url,health_allowance_eligible,thirteenth_month_eligible,"+
-              "emergency_name,emergency_relationship,emergency_mobile,permanent_address,address_landmark,postal_code,marital_status,education_level,course,year_graduated,school,profile_extras)");
+              "emergency_name,emergency_relationship,emergency_mobile,permanent_address,address_landmark,postal_code,marital_status,education_level,course,year_graduated,school,work_email,profile_extras)");
     if (!consolidated && companyId) q = q.eq("company_id", companyId);
     return q;
   }, [client, companyId, consolidated]);
@@ -1106,7 +1108,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   async function refreshLocal(){
     if(!w?.id || !client) return;
     const { data, error } = await client.from("workers")
-      .select("first_name,middle_name,last_name,email,mobile,ph_address,hire_date,date_of_birth,"+
+      .select("first_name,middle_name,last_name,email,work_email,mobile,ph_address,hire_date,date_of_birth,"+
         "payout_method,wise_recipient_id,wise_recipient_uuid,wise_recipients,photo_url,"+
         "health_allowance_eligible,thirteenth_month_eligible")
       .eq("id", w.id).single();
@@ -1114,7 +1116,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     setPhoto(data.photo_url||"");
     setF({
       first_name:data.first_name||"", middle_name:data.middle_name||"",
-      last_name:data.last_name||"", email:data.email||"",
+      last_name:data.last_name||"", email:data.email||"", work_email:data.work_email||"",
       mobile:data.mobile||"", ph_address:data.ph_address||"",
       hire_date:data.hire_date||"", date_of_birth:data.date_of_birth||"",
       health_allowance_eligible:!!data.health_allowance_eligible,
@@ -1224,7 +1226,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   // --- editable fields ---
   const [f,setF]=useState({
     first_name:w.first_name||"", middle_name:w.middle_name||"", last_name:w.last_name||"",
-    email:w.email||"", mobile:w.mobile||"", ph_address:w.ph_address||"",
+    email:w.email||"", work_email:w.work_email||"", mobile:w.mobile||"", ph_address:w.ph_address||"",
     hire_date:w.hire_date||"", date_of_birth:w.date_of_birth||"",
     health_allowance_eligible:!!w.health_allowance_eligible,
     thirteenth_month_eligible:!!w.thirteenth_month_eligible,
@@ -1336,16 +1338,16 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     // (w) and the link fields against r, so the audit records what changed.
     const wDiff=auditDiff(w,{
       first_name:f.first_name, middle_name:f.middle_name||null, last_name:f.last_name,
-      email:f.email||null, mobile:f.mobile||null, ph_address:f.ph_address||null,
+      email:f.email||null, work_email:f.work_email||null, mobile:f.mobile||null, ph_address:f.ph_address||null,
       hire_date:f.hire_date||null, date_of_birth:f.date_of_birth||null,
       health_allowance_eligible:f.health_allowance_eligible,
       thirteenth_month_eligible:f.thirteenth_month_eligible,
-    },["first_name","middle_name","last_name","email","mobile","ph_address","hire_date",
+    },["first_name","middle_name","last_name","email","work_email","mobile","ph_address","hire_date",
        "date_of_birth","health_allowance_eligible","thirteenth_month_eligible"]);
     const linkDiff=auditDiff({contract:r.contract,role:r.role,hubstaff_name:r.hubstaff_name},
       {contract,role:role||null,hubstaff_name:hubName||null},["contract","role","hubstaff_name"]);
     const {error:e1}=await client.from("workers").update({
-      first_name:f.first_name, middle_name:f.middle_name||null, last_name:f.last_name, email:f.email||null, mobile:f.mobile||null,
+      first_name:f.first_name, middle_name:f.middle_name||null, last_name:f.last_name, email:f.email||null, work_email:f.work_email||null, mobile:f.mobile||null,
       ph_address:f.ph_address||null, hire_date:f.hire_date||null, date_of_birth:f.date_of_birth||null,
       health_allowance_eligible:f.health_allowance_eligible,
       thirteenth_month_eligible:f.thirteenth_month_eligible}).eq("id",w.id);
@@ -1490,7 +1492,8 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
             </select></Field>
         </div>
         <div className="row">
-          <div className="field"><label>Email</label><input style={inp} type="email" value={f.email} onChange={e=>set("email",e.target.value)}/></div>
+          <div className="field"><label>Personal email</label><input style={inp} type="email" value={f.email} onChange={e=>set("email",e.target.value)}/></div>
+          <div className="field"><label>Work email <span className="muted" style={{fontWeight:400}}>(@abckidsny.com)</span></label><input style={inp} type="email" value={f.work_email} onChange={e=>set("work_email",e.target.value)} placeholder="name@abckidsny.com"/></div>
           <div className="field"><label>Mobile</label><input style={inp} type="tel" value={f.mobile} onChange={e=>set("mobile",e.target.value)}/></div>
         </div>
         <div className="row">
