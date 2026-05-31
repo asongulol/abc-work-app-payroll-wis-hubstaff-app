@@ -1471,6 +1471,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     notifySaved();
   }
   const inp={width:"100%"};
+  const [ptab,setPtab]=useState("profile");
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal" onClick={e=>e.stopPropagation()}>
@@ -1490,6 +1491,13 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
         </div>
         <Banner msg={savedMsg} style={{marginTop:4}} />
 
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",margin:"10px 0 6px",borderBottom:"1px solid var(--border)",paddingBottom:8}}>
+          {[["profile","Profile"],["pay","Pay & payout"],["personal","Personal / HR"],["portal","Portal & login"]].map(([k,lbl])=>(
+            <button key={k} className={"btn sm "+(ptab===k?"":"ghost")} onClick={()=>setPtab(k)}>{lbl}</button>
+          ))}
+        </div>
+
+        {ptab==="profile" && <>
         {/* --- Details (editable) --- */}
         <div className="row">
           <div className="field"><label>First name</label><input style={inp} value={f.first_name} onChange={e=>set("first_name",e.target.value)}/></div>
@@ -1530,6 +1538,8 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
         </div>
         <div style={{marginBottom:4}}><button className="btn" onClick={saveDetails}>Save details</button></div>
 
+        </>}
+        {ptab==="portal" && <>
         {/* --- Self-service portal login --- */}
         <div style={{borderTop:"1px solid var(--border)",paddingTop:12,marginTop:8}}>
           <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
@@ -1558,6 +1568,8 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
           <Banner msg={portalMsg} tone="error" style={{marginTop:8}} />
         </div>
 
+        </>}
+        {ptab==="personal" && <>
         {/* --- Personal / HR details (editable here; contractors can also self-maintain in the portal) --- */}
         <details style={{borderTop:"1px solid var(--border)",paddingTop:10,marginTop:8}}>
           <summary style={{cursor:"pointer",fontWeight:600}}>Personal / HR details <span className="muted" style={{fontWeight:400,fontSize:12}}>(editable · also self-maintained via the portal)</span></summary>
@@ -1584,6 +1596,8 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
             return bits.length? <div className="sub" style={{marginTop:8}}>{bits.join(" · ")}</div> : null; })()}
         </details>
 
+        </>}
+        {ptab==="pay" && <>
         {/* --- Rate (effective-dated) --- */}
         <div className="row" style={{alignItems:"flex-end",borderTop:"1px solid var(--border)",paddingTop:12,marginTop:8}}>
           <div className="field"><label>Rate (PHP per period)</label>
@@ -1712,6 +1726,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
             read-only because Wise doesn't allow API edits of existing
             recipients. */}
         <ExternalSourcesPanel w={w} f={f} r={r} client={client} onBillingChange={onBillingChange} onSaved={notifySaved}/>
+        </>}
 
         <p className="muted" style={{fontSize:12,marginTop:10,borderTop:"1px solid var(--border)",paddingTop:12}}>
           Independent contractor record. No employee-style supervision data is stored,
