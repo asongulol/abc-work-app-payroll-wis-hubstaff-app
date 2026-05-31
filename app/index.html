@@ -23,16 +23,19 @@
   body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
        background:var(--bg);color:var(--text);font-size:14px}
   .topbar{display:flex;align-items:center;gap:16px;padding:12px 20px;background:var(--card);
-          border-bottom:1px solid var(--border);position:sticky;top:0;z-index:30;
+          border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10;
           padding-top:calc(12px + env(safe-area-inset-top,0px))}
   .brand{font-weight:700;font-size:16px;margin-right:8px}
   .brand small{color:var(--muted);font-weight:400;font-size:12px;display:block}
-  .topbar-actions{display:flex;align-items:center;gap:8px}
-  .company-switcher{min-width:220px}
+  /* Wrappers are layout-transparent on desktop (display:contents) so the topbar
+     renders identically to baseline — CompanySwitcher's marginLeft:auto still
+     right-aligns the actions. They become real flex/block boxes on mobile. */
+  .topbar-actions{display:contents}
+  .company-switcher{display:contents}
   select,input,button,textarea{font-family:inherit;font-size:14px}
   select,input,textarea{padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:#fff}
   .tabs{display:flex;gap:4px;padding:0 20px;background:var(--card);border-bottom:1px solid var(--border)}
-  .tab{padding:11px 16px;border:none;background:none;cursor:pointer;color:var(--muted);min-height:44px;
+  .tab{padding:11px 16px;border:none;background:none;cursor:pointer;color:var(--muted);
        border-bottom:2px solid transparent;font-weight:500}
   .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
   .wrap{max-width:1180px;margin:22px auto;padding:0 20px}
@@ -175,7 +178,7 @@
   @media (max-width: 820px) {
     .wrap{margin:14px auto;padding:0 12px}
     .card{padding:14px}
-    .topbar{flex-wrap:wrap;gap:8px;align-items:flex-start}
+    .topbar{flex-wrap:wrap;gap:8px;align-items:flex-start;z-index:30}
     .brand{flex:1 1 100%;margin-right:0}
     .topbar-actions{width:100%;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
     .topbar-actions > *{flex:1 1 auto;min-width:140px}
@@ -184,7 +187,7 @@
           scrollbar-width:none;padding:0 12px;position:sticky;
           top:calc(0px + env(safe-area-inset-top,0px));z-index:20}
     .tabs::-webkit-scrollbar{display:none}
-    .tab{flex:0 0 auto;white-space:nowrap;padding:11px 13px}
+    .tab{flex:0 0 auto;white-space:nowrap;padding:11px 13px;min-height:44px}
     /* Brand title: scale down + truncate gracefully so it never pushes the
        sign-out / company switcher off-screen on narrow phones. */
     .brand{font-size:15px;overflow:hidden;text-overflow:ellipsis}
@@ -192,7 +195,11 @@
        vertical separators eat horizontal room in the swipe row — drop them
        on phones so the tabs themselves stay reachable one-handed. */
     .tabgroup-label,.tab-sep{display:none}
-    .company-switcher{width:100%}
+    .company-switcher{display:block;width:100%}
+    /* Modals must sit above the elevated sticky header (z:30) and the fixed
+       bottom-nav (z:40) across tablet/phone widths — not only on the <=640px
+       sheet layout — or a modal opened at 641-820px hides behind them. */
+    .modal-bg{z-index:50}
     .grid-2{grid-template-columns:1fr !important}
   }
   /* two-column responsive grid used by Time Import options */
@@ -1061,7 +1068,7 @@ function PortalSettingsModal({ client, onClose }){
               <input type="checkbox" checked={sel.includes(c.k)} onChange={()=>toggle(c.k)}/> {c.label}
             </label>
           ))}
-          <div style={{display:"flex",gap:8,alignItems:"center",marginTop:10}}>
+          <div className="actions" style={{display:"flex",gap:8,alignItems:"center",marginTop:10}}>
             <button className="btn" disabled={busy} onClick={save}>{busy?"Saving…":"Save"}</button>
             {msg && <span className="sub">{msg}</span>}
           </div>
@@ -1098,7 +1105,7 @@ function AnnouncementsModal({ client, onClose }){
         <div style={{marginTop:12,borderBottom:"1px solid var(--border)",paddingBottom:12}}>
           <input style={{width:"100%",padding:8,border:"1px solid var(--border)",borderRadius:8,marginBottom:6}} placeholder="Title" value={title} onChange={e=>setTitle(e.target.value)}/>
           <textarea style={{width:"100%",height:70,padding:8,border:"1px solid var(--border)",borderRadius:8}} placeholder="Message (optional)" value={body} onChange={e=>setBody(e.target.value)}/>
-          <div style={{display:"flex",gap:8,alignItems:"center",marginTop:6}}>
+          <div className="actions" style={{display:"flex",gap:8,alignItems:"center",marginTop:6}}>
             <button className="btn" disabled={busy} onClick={post}>{busy?"Posting…":"Post announcement"}</button>
             {msg && <span className="sub">{msg}</span>}
           </div>
@@ -5645,7 +5652,7 @@ function Reports({client,companyId,consolidated}){
               <React.Fragment key={p.key}>
               <tr className="clickable" onClick={()=>setOpenKey(open?null:p.key)}
                   style={{cursor:"pointer", background:open?"#f1f5f9":undefined}}>
-                <td className="card-skip" style={{color:"var(--muted)"}}>{open?"▾":"▸"}</td>
+                <td data-label="Details" style={{color:"var(--muted)"}}>{open?"▾":"▸"}</td>
                 {consolidated&&<td data-label="Company">{p.company||"—"}</td>}
                 <td className="card-title">{p.start} → {p.end}</td>
                 <td data-label="Pay date">{p.pay_date||"—"}</td>
@@ -6307,7 +6314,7 @@ function PullRecipients({client,companyId,consolidated,onClose}){
               ))}
             </tbody>
           </table></div>
-          <div style={{marginTop:10,display:"flex",gap:8,alignItems:"center"}}>
+          <div className="actions" style={{marginTop:10,display:"flex",gap:8,alignItems:"center"}}>
             <button className="btn" disabled={recBusy||!toSave.length} onClick={saveMatchedRecipients}>
               {toSave.length?`Save ${toSave.length} matched ID(s)`:"Nothing new to save"}</button>
             <button className="btn ghost" disabled={recBusy} onClick={()=>setRecSync(null)}>Dismiss</button>
