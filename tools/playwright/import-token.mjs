@@ -2,24 +2,27 @@
 //
 // Use this when `npm run capture` gets stuck on Cloudflare's "verify you are
 // human" challenge — that challenge trips on the Playwright-automated browser.
-// Your NORMAL Chrome has already passed Cloudflare and is logged in, so we just
-// copy the session JWT out of it.
+// Your NORMAL Chrome has already passed Cloudflare and is logged in, so we copy
+// the session out of it.
 //
-// STEP 1 — in your normal Chrome, on https://payroll.abbilabs.com (logged in),
-//          open DevTools (Cmd+Opt+J) → Console, paste this one line, hit Enter:
+// STEP 1 — in your normal Chrome, on https://payroll.abbilabs.com (LOGGED IN),
+//          open DevTools (Cmd+Opt+J) → Console, paste this one line, Enter:
 //
-//   copy(JSON.stringify({tokenKey:Object.keys(localStorage).find(k=>/^sb-.*-auth-token$/.test(k)),token:localStorage.getItem(Object.keys(localStorage).find(k=>/^sb-.*-auth-token$/.test(k)))}))
+//   copy(JSON.stringify(Object.fromEntries(Object.entries(localStorage).filter(([k])=>k.startsWith('sb-')))))
 //
-//   (It copies the session to your clipboard. "undefined" copied = you're not
-//    logged in on that tab — sign in first, then re-run the line.)
+//   (Copies ALL Supabase localStorage entries to your clipboard. If it copies
+//    "{}", that tab isn't signed in — sign in, then re-run the line.)
 //
-// STEP 2 — back in the terminal:
+// STEP 2 — terminal:
 //
-//   npm run import        # reads your clipboard (macOS pbpaste) and saves it
+//   npm run import          # reads the clipboard (macOS pbpaste) and saves it
 //
 // Alternatives if clipboard reading is blocked:
-//   pbpaste | npm run import          # pipe it in
-//   npm run import -- path/to/file    # or read from a file you pasted into
+//   pbpaste | npm run import
+//   npm run import -- path/to/file
+//
+// Back-compat: the older single-token snippet ({tokenKey, token}) and a raw
+// session object are also accepted.
 
 import { execSync } from 'node:child_process';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
@@ -38,7 +41,6 @@ async function readStdin() {
   for await (const c of process.stdin) chunks.push(c);
   return Buffer.concat(chunks).toString('utf8');
 }
-
 function fromClipboard() {
   try {
     return execSync('pbpaste', { encoding: 'utf8' });
@@ -46,12 +48,9 @@ function fromClipboard() {
     return '';
   }
 }
-
 async function getRawInput() {
   const fileArg = process.argv[2];
-  if (fileArg) {
-    return { raw: await readFile(fileArg, 'utf8'), source: `file ${fileArg}` };
-  }
+  if (fileArg) return { raw: await readFile(fileArg, 'utf8'), source: `file ${fileArg}` };
   const piped = await readStdin();
   if (piped.trim()) return { raw: piped, source: 'stdin (piped)' };
   const clip = fromClipboard();
@@ -59,41 +58,75 @@ async function getRawInput() {
   return { raw: '', source: 'none' };
 }
 
-// Accept either: the {tokenKey, token} JSON from the console snippet, OR a bare
-// token string (the value of the localStorage key), OR the value double-encoded.
-function normalize(raw) {
+// Coerce whatever was pasted into a {key:value} localStorage entries map.
+function toEntries(raw) {
   const trimmed = raw.trim().replace(/^['"]|['"]$/g, '');
   if (!trimmed) return null;
-
-  // Case 1: the snippet's wrapper object.
+  let obj;
   try {
-    const obj = JSON.parse(trimmed);
-    if (obj && typeof obj === 'object' && obj.token) {
-      return { tokenKey: obj.tokenKey || DEFAULT_KEY, token: obj.token };
-    }
-    // Case 2: it parsed to the supabase session object itself (has access_token).
-    if (obj && typeof obj === 'object' && (obj.access_token || obj.currentSession || obj.user)) {
-      return { tokenKey: DEFAULT_KEY, token: trimmed };
-    }
+    obj = JSON.parse(trimmed);
   } catch {
-    /* not JSON — fall through */
+    return null;
+  }
+  if (!obj || typeof obj !== 'object') return null;
+
+  // Case A: full localStorage map { "sb-…": "…", … } — every value a string.
+  const keys = Object.keys(obj);
+  const looksLikeMap =
+    keys.length > 0 && keys.every((k) => typeof obj[k] === 'string') && keys.some((k) => k.startsWith('sb-'));
+  if (looksLikeMap) {
+    const entries = {};
+    for (const k of keys) if (k.startsWith('sb-')) entries[k] = obj[k];
+    return entries;
   }
 
-  // Case 3: a bare token string that itself is the stored value.
-  return { tokenKey: DEFAULT_KEY, token: trimmed };
+  // Case B: legacy wrapper { tokenKey, token } where token is a STRING.
+  if (typeof obj.token === 'string') {
+    return { [obj.tokenKey || DEFAULT_KEY]: obj.token };
+  }
+
+  // Case C: a raw session object (has access_token) — store it under the key.
+  if (obj.access_token || obj.currentSession || obj.user) {
+    return { [DEFAULT_KEY]: trimmed };
+  }
+
+  return null;
 }
 
-function describe(token) {
+// Reassemble the auth-token value (handling chunked …auth-token.0/.1 keys and a
+// base64- prefix) just to print a friendly who/expiry line. Best-effort.
+function describe(entries) {
+  const exact = entries[DEFAULT_KEY] != null ? entries[DEFAULT_KEY] : null;
+  let value = exact;
+  if (value == null) {
+    const chunks = Object.keys(entries)
+      .filter((k) => /-auth-token\.\d+$/.test(k))
+      .sort((a, b) => Number(a.split('.').pop()) - Number(b.split('.').pop()));
+    if (chunks.length) value = chunks.map((k) => entries[k]).join('');
+  }
+  if (value == null) {
+    const anyKey = Object.keys(entries).find((k) => /-auth-token$/.test(k));
+    value = anyKey ? entries[anyKey] : '';
+  }
+  let decoded = String(value || '');
+  if (decoded.startsWith('base64-')) {
+    try {
+      decoded = Buffer.from(decoded.slice(7), 'base64').toString('utf8');
+    } catch {
+      /* leave as-is */
+    }
+  }
   let email = '(unknown)';
   let expiresAt = null;
   try {
-    const parsed = JSON.parse(token);
-    email = parsed?.user?.email || parsed?.currentSession?.user?.email || email;
-    expiresAt = parsed?.expires_at || parsed?.currentSession?.expires_at || null;
+    const p = JSON.parse(decoded);
+    const sess = p.currentSession || p;
+    email = sess?.user?.email || email;
+    expiresAt = sess?.expires_at || null;
   } catch {
-    /* opaque token string — still usable */
+    /* opaque — fine */
   }
-  return { email, expiresAt };
+  return { email, expiresAt, authLen: String(value || '').length };
 }
 
 async function main() {
@@ -101,39 +134,60 @@ async function main() {
   if (!raw.trim()) {
     console.error(
       '✗ Nothing to import.\n' +
-        '  In your normal Chrome (logged in at payroll.abbilabs.com), open DevTools\n' +
-        '  → Console and run:\n\n' +
-        "    copy(JSON.stringify({tokenKey:Object.keys(localStorage).find(k=>/^sb-.*-auth-token$/.test(k)),token:localStorage.getItem(Object.keys(localStorage).find(k=>/^sb-.*-auth-token$/.test(k)))}))\n\n" +
+        '  In your normal Chrome (LOGGED IN at payroll.abbilabs.com), DevTools → Console, run:\n\n' +
+        "    copy(JSON.stringify(Object.fromEntries(Object.entries(localStorage).filter(([k])=>k.startsWith('sb-')))))\n\n" +
         '  then run `npm run import` again.'
     );
     process.exit(1);
   }
 
-  const norm = normalize(raw);
-  if (!norm || !norm.token || norm.token === 'null' || norm.token === 'undefined') {
+  const entries = toEntries(raw);
+  if (!entries || Object.keys(entries).length === 0) {
     console.error(
-      `✗ The ${source} content didn't contain a session token (got "${(norm?.token || '').slice(0, 24)}…").\n` +
-        '  Make sure you ran the console snippet ON the logged-in payroll.abbilabs.com tab\n' +
-        '  (a copied "undefined" means that tab is not signed in).'
+      `✗ The ${source} content wasn't a recognizable Supabase session.\n` +
+        '  Make sure you copied the output of the localStorage snippet from a LOGGED-IN\n' +
+        '  payroll.abbilabs.com tab (copying "{}" means that tab is not signed in).'
     );
     process.exit(1);
   }
 
-  const { email, expiresAt } = describe(norm.token);
+  // Hard validation: a real auth-token value must exist and not be garbage.
+  const authKey = Object.keys(entries).find((k) => /-auth-token(\.\d+)?$/.test(k));
+  const authVal = authKey ? String(entries[authKey] || '') : '';
+  if (!authKey) {
+    console.error('✗ No "…-auth-token" entry found in the copied data — are you signed in on that tab?');
+    process.exit(1);
+  }
+  if (authVal.includes('[object Object]') || authVal.length < 40) {
+    console.error(
+      `✗ The auth-token value looks invalid (${authVal.length} chars${
+        authVal.includes('[object Object]') ? ', literally "[object Object]"' : ''
+      }).\n` +
+        '  Use the NEW snippet (it copies the whole localStorage map, not a single key):\n\n' +
+        "    copy(JSON.stringify(Object.fromEntries(Object.entries(localStorage).filter(([k])=>k.startsWith('sb-')))))\n"
+    );
+    process.exit(1);
+  }
+
+  const { email, expiresAt, authLen } = describe(entries);
   await mkdir(AUTH_DIR, { recursive: true });
   await writeFile(
     SESSION_FILE,
-    JSON.stringify({ tokenKey: norm.tokenKey, token: norm.token, capturedFor: email, expiresAt }, null, 2)
+    JSON.stringify(
+      { format: 'localStorage-v2', entries, capturedFor: email, expiresAt, keyCount: Object.keys(entries).length },
+      null,
+      2
+    )
   );
 
-  console.log(`✓ Imported session from ${source}`);
-  console.log(`  user: ${email}`);
+  console.log(`✓ Imported ${Object.keys(entries).length} Supabase localStorage entr${Object.keys(entries).length === 1 ? 'y' : 'ies'} from ${source}`);
+  console.log(`  user: ${email}  (auth-token ${authLen} chars)`);
   if (expiresAt) {
     const mins = Math.round((expiresAt * 1000 - Date.now()) / 60000);
     console.log(
       mins > 0
         ? `  access token expires in ~${mins} min (supabase-js auto-refreshes during a run).`
-        : `  ⚠ access token already expired ${-mins} min ago — re-copy it and import again.`
+        : `  ⚠ access token expired ${-mins} min ago — re-copy from your browser and import again.`
     );
   }
   console.log(`  saved → ${SESSION_FILE} (gitignored)`);

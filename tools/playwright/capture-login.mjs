@@ -38,33 +38,57 @@ async function main() {
   await page.goto(PROD_URL, { waitUntil: 'domcontentloaded' });
 
   const deadline = Date.now() + TIMEOUT_MS;
-  let token = null;
+  let entries = null;
   while (Date.now() < deadline) {
-    token = await page.evaluate((key) => window.localStorage.getItem(key), TOKEN_KEY).catch(() => null);
-    if (token) break;
+    // Grab ALL sb-* localStorage entries (handles base64 + chunked tokens), the
+    // same robust format `npm run import` uses.
+    entries = await page
+      .evaluate(() => {
+        const out = {};
+        for (let i = 0; i < window.localStorage.length; i++) {
+          const k = window.localStorage.key(i);
+          if (k && k.startsWith('sb-')) out[k] = window.localStorage.getItem(k);
+        }
+        return out;
+      })
+      .catch(() => null);
+    if (entries && Object.keys(entries).some((k) => /-auth-token(\.\d+)?$/.test(k))) break;
     await page.waitForTimeout(1000);
   }
 
-  if (!token) {
+  if (!entries || !Object.keys(entries).some((k) => /-auth-token(\.\d+)?$/.test(k))) {
     console.error('✗ Timed out without a session. Did the Google login complete?');
     await browser.close();
     process.exit(1);
   }
 
-  // Sanity: pull the user email out of the token for confirmation.
+  // Sanity: pull the user email out of the (possibly base64/chunked) token.
   let email = '(unknown)';
   let expiresAt = null;
   try {
-    const parsed = JSON.parse(token);
-    email = parsed?.user?.email || email;
-    expiresAt = parsed?.expires_at || null;
+    let v = entries[TOKEN_KEY];
+    if (v == null) {
+      const chunks = Object.keys(entries)
+        .filter((k) => /-auth-token\.\d+$/.test(k))
+        .sort((a, b) => Number(a.split('.').pop()) - Number(b.split('.').pop()));
+      v = chunks.map((k) => entries[k]).join('');
+    }
+    if (typeof v === 'string' && v.startsWith('base64-')) v = Buffer.from(v.slice(7), 'base64').toString('utf8');
+    const parsed = JSON.parse(v);
+    const sess = parsed.currentSession || parsed;
+    email = sess?.user?.email || email;
+    expiresAt = sess?.expires_at || null;
   } catch {
-    /* token is an opaque string in some supabase-js versions; still usable */
+    /* opaque — still usable */
   }
 
   await writeFile(
     SESSION_FILE,
-    JSON.stringify({ tokenKey: TOKEN_KEY, token, capturedFor: email, expiresAt }, null, 2)
+    JSON.stringify(
+      { format: 'localStorage-v2', entries, capturedFor: email, expiresAt, keyCount: Object.keys(entries).length },
+      null,
+      2
+    )
   );
 
   console.log(`✓ Session captured for ${email}`);

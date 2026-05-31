@@ -49,11 +49,17 @@ they never touch Cloudflare; they only need the Supabase JWT.
    DevTools (`Cmd+Opt+J`) → **Console**, paste this one line, press Enter:
 
    ```js
-   copy(JSON.stringify({tokenKey:Object.keys(localStorage).find(k=>/^sb-.*-auth-token$/.test(k)),token:localStorage.getItem(Object.keys(localStorage).find(k=>/^sb-.*-auth-token$/.test(k)))}))
+   copy(JSON.stringify(Object.fromEntries(Object.entries(localStorage).filter(([k])=>k.startsWith('sb-')))))
    ```
 
-   (It copies the session to your clipboard. If it copies `undefined`, that tab
-   isn't signed in — sign in, then re-run the line.)
+   This copies **all** Supabase localStorage entries (handles the modern
+   base64/chunked token format) to your clipboard. If it copies `{}`, that tab
+   isn't signed in — sign in, then re-run the line.
+
+   ⚠ Copy the snippet's **output** (what lands on your clipboard after Enter) —
+   don't paste a shell command or these instructions. `npm run import` now
+   rejects anything that isn't a real session, so a wrong paste fails loudly
+   instead of silently leaving you on the sign-in screen.
 
 2. In the terminal:
 
