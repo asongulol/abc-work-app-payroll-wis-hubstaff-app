@@ -6,13 +6,10 @@
 -- WRITE MODEL: rows are INSERTed by service-role edge fns only (no contractor
 -- INSERT policy). A contractor may read their own undismissed notifications and
 -- UPDATE their own row to set dismissed_at.
+--
+-- Depends on: A1 enums (portal_notification_kind) — created in the enums file so
+-- this file only USES the type. Run A1 (and let it commit) before this.
 -- ============================================================================
-do $$ begin
-  create type portal_notification_kind as enum (
-    'stage_complete','upload_received','doc_approved',
-    'doc_needs_replacement','onboarding_complete','onboarding_stalled');
-exception when duplicate_object then null; end $$;
-
 create table if not exists portal_notifications (
   id           uuid primary key default gen_random_uuid(),
   worker_id    uuid not null references workers(id) on delete cascade,

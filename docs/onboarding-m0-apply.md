@@ -10,26 +10,24 @@ Each file is idempotent (safe to re-run). Files live in `schema/migrations/`.
 
 ## Paste order
 
-| # | File | Notes |
-|---|------|-------|
-| 1 | `2026-05-31_onboarding_enums.sql` | **First** — others depend on these types. |
-| 2 | `2026-05-31_onboarding_progress.sql` | gate-state table (read-only RLS; no write policy). |
-| 3 | `2026-05-31_onboarding_signatures.sql` | eSign ledger (read-only RLS; immutable). |
-| 4 | `2026-05-31_documents_review_cols.sql` | adds review columns + neutralizes legacy docs. |
-| 5 | `2026-05-31_document_kind_values.sql` | ⚠️ **paste & run ALONE** (enum add can't share a txn with use). |
-| 6 | `2026-05-31_onboarding_config.sql` | config blob on `portal_settings` (flag defaults **false**). |
-| 7 | `2026-05-31_portal_notifications.sql` | banner table. |
-| 8 | `2026-05-31_onboarding_reminders.sql` | reminder dedupe log (service-role only). |
+| Run | File(s) | Notes |
+|-----|---------|-------|
+| **Run 1 (alone)** | `2026-05-31_onboarding_enums.sql` | Creates all 6 enum types. **Must be its own run** — the Supabase SQL Editor does not make a type created inside a `DO` block visible to later statements in the *same* submission, so the tables can't be in this run. Let it commit first. |
+| **Run 2** | `…_onboarding_progress.sql` + `…_onboarding_signatures.sql` + `…_documents_review_cols.sql` + `…_onboarding_config.sql` + `…_portal_notifications.sql` + `…_onboarding_reminders.sql` | All tables/columns. Paste together — they only *use* the now-committed types. |
+| **Run 3 (alone)** | `2026-05-31_document_kind_values.sql` | ⚠️ Run by itself — an enum `ADD VALUE` can't share a transaction with anything that uses the value. |
 
-> Items 1–4 and 6–8 may be pasted together in one run if you like; **item 5 must be
-> its own separate run.** After each, run the `VERIFY` query in the file's footer.
+> Why the split: a `CREATE TYPE` inside `do $$ … $$` isn't visible to a later
+> `CREATE TABLE` in the **same** SQL Editor submission (one transaction). Creating
+> the types in their own run (so they commit) before the tables avoids the
+> `type "onboarding_stage" does not exist` error. After each run, the `VERIFY`
+> query in each file's footer confirms it.
 
 ## One-shot post-apply sanity check
 
 ```sql
 select
   (select count(*) from pg_type where typname in
-     ('onboarding_stage','agreement_kind','signature_method','signature_status','review_status')) as enums,      -- 5
+     ('onboarding_stage','agreement_kind','signature_method','signature_status','review_status','portal_notification_kind')) as enums,  -- 6
   (select count(*) from information_schema.tables where table_name in
      ('onboarding_progress','onboarding_signatures','portal_notifications','onboarding_reminders')) as new_tables, -- 4
   (select count(*) from information_schema.columns where table_name='documents'

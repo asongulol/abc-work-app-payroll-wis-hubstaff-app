@@ -32,7 +32,18 @@ do $$ begin
   create type review_status as enum ('pending','approved','needs_replacement');
 exception when duplicate_object then null; end $$;
 
+-- In-portal banner notification kinds (used by portal_notifications in E.2).
+-- Kept here with the other enums so every table file only USES types, never
+-- creates-then-uses one in the same run (the Supabase SQL Editor does not make
+-- a DO-block-created type visible to later statements in the same submission).
+do $$ begin
+  create type portal_notification_kind as enum (
+    'stage_complete','upload_received','doc_approved',
+    'doc_needs_replacement','onboarding_complete','onboarding_stalled');
+exception when duplicate_object then null; end $$;
+
 -- VERIFY:
 --   select typname from pg_type where typname in
---     ('onboarding_stage','agreement_kind','signature_method','signature_status','review_status');
---   -- expect 5 rows.
+--     ('onboarding_stage','agreement_kind','signature_method','signature_status',
+--      'review_status','portal_notification_kind');
+--   -- expect 6 rows.
