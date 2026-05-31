@@ -1158,6 +1158,142 @@ function AnnouncementsModal({ client, onClose }){
 }
 
 // ============================ CONTRACTORS ====================================
+// Guided "Add contractor" wizard: admin captures the IC essentials, the
+// contractor completes the rest via onboarding. Creates NOTHING until Create.
+function AddContractorWizard({ client, companyId, companyName, onClose, onCreated }){
+  const [step,setStep]=useState(1);
+  const today=new Date().toISOString().slice(0,10);
+  const [f,setF]=useState({ first_name:"", middle_name:"", last_name:"", email:"",
+    ph_address:"", permanent_address:"", date_of_birth:"",
+    contract:"FT", role:"", rate:"", contract_date:today, hire_date:today,
+    health_allowance_eligible:true, thirteenth_month_eligible:true, invite:true });
+  const set=(k,v)=>setF(x=>({...x,[k]:v}));
+  const [busy,setBusy]=useState(false); const [err,setErr]=useState(""); const [errs,setErrs]=useState({});
+  const [result,setResult]=useState(null);
+  const ne=v=>v!=null&&String(v).trim()!=="";
+  function validateStep(s){
+    const e={};
+    if(s===1){
+      if(!ne(f.first_name)) e.first_name="Required";
+      if(!ne(f.last_name)) e.last_name="Required";
+      if(f.invite || ne(f.email)){ if(!ne(f.email)) e.email="Email required to invite"; else if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f.email.trim())) e.email="Enter a valid email"; }
+    }
+    if(s===2){
+      if(ne(f.rate) && !(parseFloat(f.rate)>0)) e.rate="Enter a positive amount";
+      if(!ne(f.hire_date)) e.hire_date="Required";
+    }
+    return e;
+  }
+  function next(){ const e=validateStep(step); setErrs(e); if(!Object.keys(e).length) setStep(s=>Math.min(3,s+1)); }
+  function back(){ setErrs({}); setErr(""); setStep(s=>Math.max(1,s-1)); }
+  async function create(){
+    const e={...validateStep(1),...validateStep(2)};
+    if(Object.keys(e).length){ setErrs(e); setErr("Please fix the highlighted fields."); setStep((e.first_name||e.last_name||e.email)?1:2); return; }
+    if(!companyId){ setErr("Pick a single company first."); return; }
+    setBusy(true); setErr("");
+    try{
+      const base={ first_name:f.first_name.trim(), middle_name:f.middle_name.trim()||null, last_name:f.last_name.trim(),
+        email:f.email.trim()||null, ph_address:f.ph_address.trim()||null, permanent_address:f.permanent_address.trim()||null,
+        date_of_birth:f.date_of_birth||null, hire_date:f.hire_date||null, status:"active",
+        health_allowance_eligible:!!f.health_allowance_eligible, thirteenth_month_eligible:!!f.thirteenth_month_eligible };
+      let {data:w,error:e1}=await client.from("workers").insert(base).select().single();
+      if(e1 && /payout_method/i.test(e1.message)){ ({data:w,error:e1}=await client.from("workers").insert({...base,payout_method:"wise"}).select().single()); }
+      if(e1) throw e1;
+      const {error:e2}=await client.from("worker_companies").insert({worker_id:w.id, company_id:companyId, contract:f.contract, role:f.role.trim()||null, status:"active", started_on:f.hire_date||null});
+      if(e2) throw e2;
+      if(parseFloat(f.rate)>0){
+        const {error:e3}=await client.from("rates").insert({worker_id:w.id, company_id:companyId, amount_php:parseFloat(f.rate), effective_start:f.contract_date||f.hire_date||today});
+        if(e3) throw e3;
+      }
+      let invited=null;
+      if(f.invite){
+        const {data,error}=await client.functions.invoke("portal-admin",{body:{action:"create_login",worker_id:w.id,email:f.email.trim()}});
+        if(error||(data&&data.error)) throw new Error((data&&data.error)||await fnErrorMessage(error));
+        invited={email:data.email,password:data.password};
+      }
+      logEvent(client,{company_id:companyId,action:"add_contractor",entity:`${f.first_name} ${f.last_name}`,detail:{from:"wizard",contract:f.contract,invited:!!f.invite,rate:parseFloat(f.rate)||null}});
+      setResult(invited||{ok:true}); onCreated&&onCreated();
+    }catch(ex){ setErr("Couldn't create: "+(ex.message||ex)); }
+    finally{ setBusy(false); }
+  }
+  const inp={width:"100%",padding:8,border:"1px solid #d1d5db",borderRadius:8,margin:"2px 0",fontSize:14};
+  // field() is a plain JSX-returning helper (NOT a nested component) so inputs keep focus across renders
+  const field=(label,k,type,ph)=>(
+    <div style={{margin:"6px 0"}}>
+      <label className="muted" style={{fontSize:12}}>{label}</label>
+      <input style={inp} type={type||"text"} value={f[k]} placeholder={ph||""} onChange={e=>set(k,e.target.value)} aria-invalid={errs[k]?"true":"false"}/>
+      {errs[k] && <div style={{color:"#b91c1c",fontSize:12}}>{errs[k]}</div>}
+    </div>
+  );
+  if(result){
+    return (
+      <div className="modal-bg" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+        <h2 style={{marginTop:0}}>✓ Contractor added</h2>
+        {result.password ? <div>
+          <p className="sub">Portal login created. Share these with {f.first_name} — they complete onboarding on first sign-in.</p>
+          <div className="card" style={{background:"#f8fafc"}}>
+            <div className="row"><span className="muted">Email</span><b>{result.email}</b></div>
+            <div className="row"><span className="muted">Temp password</span><b>{result.password}</b></div>
+          </div>
+          <button className="btn ghost sm" onClick={()=>{ try{navigator.clipboard.writeText("Email: "+result.email+"\nTemp password: "+result.password);}catch(_e){} }}>Copy</button>
+        </div> : <p className="sub">{f.first_name} {f.last_name} was added.</p>}
+        <div style={{marginTop:12}}><button className="btn" onClick={onClose}>Done</button></div>
+      </div></div>
+    );
+  }
+  return (
+    <div className="modal-bg" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <h2 style={{margin:0}}>Add contractor <span className="muted" style={{fontSize:13,fontWeight:400}}>· {companyName||"this company"}</span></h2>
+        <button className="btn ghost sm" onClick={onClose}>Cancel</button>
+      </div>
+      <div style={{display:"flex",gap:6,margin:"10px 0"}}>{[1,2,3].map(n=>(<div key={n} style={{flex:1,height:4,borderRadius:2,background:n<=step?"#1F3A68":"#e5e7eb"}}/>))}</div>
+      <p className="sub" style={{marginTop:0}}>Step {step} of 3 · {step===1?"Identity":step===2?"Engagement (IC terms)":"Portal & onboarding"}</p>
+      {step===1 && <div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>{field("First name *","first_name")}{field("Middle name","middle_name")}{field("Last name *","last_name")}</div>
+        {field("Personal email *","email","email","name@example.com")}
+        {field("Current address","ph_address")}
+        {field("Permanent address","permanent_address")}
+        {field("Date of birth","date_of_birth","date")}
+      </div>}
+      {step===2 && <div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+          <div style={{margin:"6px 0"}}><label className="muted" style={{fontSize:12}}>Contract</label>
+            <select style={inp} value={f.contract} onChange={e=>set("contract",e.target.value)}><option value="FT">Full-time</option><option value="PT">Part-time</option></select></div>
+          {field("Role / position","role")}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>{field("Rate (PHP / period)","rate","number")}{field("Contract date","contract_date","date")}</div>
+        {field("Hire date (start) *","hire_date","date")}
+        <div style={{display:"flex",gap:16,marginTop:6}}>
+          <label style={{fontSize:13,display:"flex",gap:6,alignItems:"center"}}><input type="checkbox" checked={f.health_allowance_eligible} onChange={e=>set("health_allowance_eligible",e.target.checked)}/> Health allowance</label>
+          <label style={{fontSize:13,display:"flex",gap:6,alignItems:"center"}}><input type="checkbox" checked={f.thirteenth_month_eligible} onChange={e=>set("thirteenth_month_eligible",e.target.checked)}/> 13th month</label>
+        </div>
+      </div>}
+      {step===3 && <div>
+        <label style={{fontSize:14,display:"flex",gap:8,alignItems:"flex-start",margin:"6px 0"}}>
+          <input type="checkbox" checked={f.invite} onChange={e=>set("invite",e.target.checked)} style={{marginTop:3}}/>
+          <span><b>Invite to the contractor portal</b><br/><span className="muted" style={{fontSize:12}}>Creates a login and starts onboarding — the contractor signs the IC Agreement, Non-Compete, NDA and BAA, completes their profile, and uploads documents. You'll get a temp password to share.</span></span>
+        </label>
+        {f.invite && !ne(f.email) && <div style={{color:"#b91c1c",fontSize:12}}>Add a personal email in step 1 to invite.</div>}
+        <div className="card" style={{background:"#f8fafc",marginTop:8}}>
+          <div className="muted" style={{fontSize:12,marginBottom:4}}>Summary</div>
+          <div className="row"><span className="muted">Name</span><span>{[f.first_name,f.middle_name,f.last_name].filter(Boolean).join(" ")||"—"}</span></div>
+          <div className="row"><span className="muted">Email</span><span>{f.email||"—"}</span></div>
+          <div className="row"><span className="muted">Company / contract</span><span>{companyName} · {f.contract}{f.role?` · ${f.role}`:""}</span></div>
+          <div className="row"><span className="muted">Rate</span><span>{parseFloat(f.rate)>0?`₱${f.rate}/period`:"not set"}</span></div>
+          <div className="row"><span className="muted">Hire date</span><span>{f.hire_date||"—"}</span></div>
+        </div>
+      </div>}
+      {err && <div className="err" style={{marginTop:8}}>{err}</div>}
+      <div style={{display:"flex",justifyContent:"space-between",marginTop:12}}>
+        <button className="btn ghost sm" disabled={step===1||busy} onClick={back}>Back</button>
+        {step<3 ? <button className="btn" onClick={next}>Next</button>
+          : <button className="btn" disabled={busy||(f.invite&&!ne(f.email))} onClick={create}>{busy?"Creating…":"Create contractor"}</button>}
+      </div>
+    </div></div>
+  );
+}
+
 function Contractors({ client, companyId, consolidated, onBillingChange, pendingWorkerId, consumePendingWorker }) {
   const { data, loading, reload } = useQuery(client, c => {
     // workers joined to their company link(s) + current rate
@@ -1274,6 +1410,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
   const [showPull,setShowPull]=useState(false);
   const [showPortalSettings,setShowPortalSettings]=useState(false);
   const [showAnnounce,setShowAnnounce]=useState(false);
+  const [showWizard,setShowWizard]=useState(false);
   async function addContractor(){
     if(consolidated||!companyId){setAddErr("Pick a single company first (top-left switcher) to add a contractor.");return;}
     setAdding(true);setAddErr("");
@@ -1335,9 +1472,12 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
           <button className="btn ghost" onClick={()=>setShowAnnounce(true)}
             title="Post announcements to the contractor portal welcome page">
             📣 Announcements</button>
-          <button className="btn" disabled={adding||consolidated} onClick={addContractor}
-            title={consolidated?"Pick a single company first":"Add a new contractor to this company"}>
-            {adding?"Adding…":"+ Add contractor"}</button>
+          <button className="btn ghost sm" disabled={adding||consolidated} onClick={addContractor}
+            title={consolidated?"Pick a single company first":"Quick-add a blank row to fill in on the profile"}>
+            {adding?"…":"Quick add"}</button>
+          <button className="btn" disabled={consolidated} onClick={()=>setShowWizard(true)}
+            title={consolidated?"Pick a single company first":"Add a contractor (guided) and optionally invite them to onboard"}>
+            + Add contractor</button>
         </div>
       </div>
       <Banner msg={addErr} tone="error" style={{marginTop:10}} />
@@ -1380,6 +1520,9 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
         </tbody>
       </table></div>}
       {selected && <ProfileModal r={selected} client={client} onClose={()=>{setSelected(null);reload();}} onBillingChange={onBillingChange} onSaved={reload} />}
+      {showWizard && <AddContractorWizard client={client} companyId={companyId}
+        companyName={(allRows.find(x=>x.company_id===companyId)||{}).companies?.name||""}
+        onClose={()=>setShowWizard(false)} onCreated={reload} />}
       {showBulk && <BulkImport client={client} companyId={companyId} consolidated={consolidated} onClose={()=>setShowBulk(false)} onDone={reload} />}
       {showPull && <PullRecipients client={client} companyId={companyId} consolidated={consolidated} onClose={()=>{setShowPull(false);reload();}} />}
       {showPortalSettings && <PortalSettingsModal client={client} onClose={()=>setShowPortalSettings(false)} />}
