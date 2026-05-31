@@ -23,7 +23,8 @@
   body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
        background:var(--bg);color:var(--text);font-size:14px}
   .topbar{display:flex;align-items:center;gap:16px;padding:12px 20px;background:var(--card);
-          border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}
+          border-bottom:1px solid var(--border);position:sticky;top:0;z-index:30;
+          padding-top:calc(12px + env(safe-area-inset-top,0px))}
   .brand{font-weight:700;font-size:16px;margin-right:8px}
   .brand small{color:var(--muted);font-weight:400;font-size:12px;display:block}
   .topbar-actions{display:flex;align-items:center;gap:8px}
@@ -31,7 +32,7 @@
   select,input,button,textarea{font-family:inherit;font-size:14px}
   select,input,textarea{padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:#fff}
   .tabs{display:flex;gap:4px;padding:0 20px;background:var(--card);border-bottom:1px solid var(--border)}
-  .tab{padding:11px 16px;border:none;background:none;cursor:pointer;color:var(--muted);
+  .tab{padding:11px 16px;border:none;background:none;cursor:pointer;color:var(--muted);min-height:44px;
        border-bottom:2px solid transparent;font-weight:500}
   .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
   .wrap{max-width:1180px;margin:22px auto;padding:0 20px}
@@ -125,6 +126,19 @@
     .brand{flex:1 1 100%;margin-right:0}
     .topbar-actions{width:100%;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
     .topbar-actions > *{flex:1 1 auto;min-width:140px}
+    /* Sub-tab rows: scroll sideways instead of wrapping/overflowing on phones. */
+    .tabs{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;
+          scrollbar-width:none;padding:0 12px;position:sticky;
+          top:calc(0px + env(safe-area-inset-top,0px));z-index:20}
+    .tabs::-webkit-scrollbar{display:none}
+    .tab{flex:0 0 auto;white-space:nowrap;padding:11px 13px}
+    /* Brand title: scale down + truncate gracefully so it never pushes the
+       sign-out / company switcher off-screen on narrow phones. */
+    .brand{font-size:15px;overflow:hidden;text-overflow:ellipsis}
+    /* Workflow group labels ("Setup", "Run payroll", "Review") and the
+       vertical separators eat horizontal room in the swipe row — drop them
+       on phones so the tabs themselves stay reachable one-handed. */
+    .tabgroup-label,.tab-sep{display:none}
     .company-switcher{width:100%}
     .grid-2{grid-template-columns:1fr !important}
   }
@@ -140,9 +154,34 @@
     visibility:hidden;opacity:0;transition:opacity .1s;text-align:left;font-weight:400}
   .tip-body::after{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);
     border:4px solid transparent;border-top-color:#1f2937}
+  /* ===== Mobile bottom tab bar (phones/tablet only, <=768px) =================
+     A fixed bottom navigation so the primary tabs are reachable one-handed
+     without scrolling the top tab row. Hidden at >=769px so the desktop
+     experience is untouched. Mirrors the same `tab` state + go() handler as
+     the top tabs — no new navigation logic. */
+  .bottom-nav{display:none}
+  @media (max-width: 768px) {
+    .bottom-nav{
+      display:flex;position:fixed;left:0;right:0;bottom:0;z-index:40;
+      background:var(--card);border-top:1px solid var(--border);
+      overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;
+      padding-bottom:env(safe-area-inset-bottom,0px);
+      box-shadow:0 -2px 8px rgba(0,0,0,.06)}
+    .bottom-nav::-webkit-scrollbar{display:none}
+    .bottom-nav .bnav{
+      flex:1 0 auto;min-width:64px;min-height:56px;border:none;background:none;
+      cursor:pointer;color:var(--muted);font-weight:500;font-size:11px;
+      display:flex;flex-direction:column;align-items:center;justify-content:center;
+      gap:3px;padding:6px 8px;line-height:1.1;text-align:center}
+    .bottom-nav .bnav .bnav-ico{font-size:18px;line-height:1}
+    .bottom-nav .bnav.active{color:var(--accent)}
+    .bottom-nav .bnav.active .bnav-ico{transform:translateY(-1px)}
+    /* Keep page content clear of the fixed bar (incl. safe-area inset). */
+    .wrap{padding-bottom:calc(72px + env(safe-area-inset-bottom,0px))}
+  }
   @media print {
     body{background:#fff}
-    .topbar,.tabs,.no-print{display:none !important}
+    .topbar,.tabs,.bottom-nav,.no-print{display:none !important}
     .wrap{margin:0;max-width:none}
     /* hide every card except the pay list when printing */
     .card{display:none !important}
@@ -8074,6 +8113,14 @@ function App() {
     ["Review",  [["batches","Review & Recon Batches"],["reports","Reports"],["imports","Imports"],["audit","Audit Log"]]],
   ];
   function go(id){ setTab(id); const w=document.querySelector(".wrap"); if(w) w.scrollIntoView({block:"start"}); window.scrollTo(0,0); }
+  // Flattened tab list for the mobile bottom nav (same ids/handler as the top
+  // tabs). Short labels + an emoji glyph keep each item compact one-handed.
+  const bottomNav = [
+    ["contractors","People","👥"],["documents","Docs","📄"],
+    ["time","Time","⏱"],["payroll","Calc","🧮"],["process","Pay","💸"],
+    ["batches","Batches","📦"],["reports","Reports","📊"],
+    ["imports","Imports","🗂"],["audit","Audit","📝"],
+  ];
   return (
     <div>
       <div className="topbar">
@@ -8111,6 +8158,17 @@ function App() {
         <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId,consolidated}} /></div>
       </div>
+      {/* Mobile-only bottom tab bar (<=768px); hidden on desktop via CSS. */}
+      <nav className="bottom-nav no-print" aria-label="Primary">
+        {bottomNav.map(([id,lbl,ico])=>(
+          <button key={id} className={"bnav"+(tab===id?" active":"")}
+            aria-current={tab===id?"page":undefined} aria-label={lbl}
+            onClick={()=>go(id)}>
+            <span className="bnav-ico" aria-hidden="true">{ico}</span>
+            <span>{lbl}</span>
+          </button>
+        ))}
+      </nav>
     </div>
   );
 }
