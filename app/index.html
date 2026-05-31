@@ -197,6 +197,25 @@
   }
   /* two-column responsive grid used by Time Import options */
   .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  /* ===== Phase 4: Dashboard stat cards & summary grids =======================
+     The dashboard summary strips (.dash-stats) are flex `.row`s of `.field`
+     stat cards (.dash-stat) with a big `.val` number (.dash-stat-num). On
+     desktop the `.field` min-width:200 + flex:1 yields an even multi-column
+     row (untouched). The rules below ONLY take effect on small screens, so
+     they are inert at >=1024px and the desktop layout is unchanged.
+       <=640px : two-up grid (even cards, no odd full-width stretch)
+       <=400px : single column for tiny phones (360px target)
+     A grid (not flex) on mobile sizes the cards evenly while min-width:0
+     overrides the .field min-width:200 that would otherwise overflow a 360px
+     viewport. The big number is nudged down a touch to fit two-up. */
+  @media (max-width: 640px) {
+    .dash-stats{display:grid !important;grid-template-columns:1fr 1fr;gap:10px 12px;margin-bottom:8px}
+    .dash-stats > .dash-stat{min-width:0 !important;margin-bottom:0}
+    .dash-stats .dash-stat-num{font-size:18px !important}
+  }
+  @media (max-width: 400px) {
+    .dash-stats{grid-template-columns:1fr}
+  }
   /* Custom hover tooltip — native title= is unreliable on Chrome/macOS for
      multi-line text; this fires instantly and respects line breaks. */
   .tip-wrap{position:relative;display:inline-block}
@@ -5573,13 +5592,13 @@ function Reports({client,companyId,consolidated}){
         <p className="sub">Totals come from locked/saved pay statements.
           {consolidated?" Showing every company.":" Showing the selected company."}
           {" "}Click a period to see the per-contractor breakdown.</p>
-        <div className="row">
-          <div className="field"><label>Total net (all periods)</label>
-            <div className="val" style={{fontSize:20,fontWeight:700}}>{money(grandNet,"PHP")}</div></div>
-          <div className="field"><label>Unpaid / not yet sent</label>
-            <div className="val" style={{fontSize:20,fontWeight:700,color:grandUnpaid>0?"var(--warn)":"var(--good)"}}>{money(grandUnpaid,"PHP")}</div></div>
-          <div className="field"><label>Pay periods recorded</label>
-            <div className="val" style={{fontSize:20,fontWeight:700}}>{periods.length}</div></div>
+        <div className="row dash-stats">
+          <div className="field dash-stat"><label>Total net (all periods)</label>
+            <div className="val dash-stat-num" style={{fontSize:20,fontWeight:700}}>{money(grandNet,"PHP")}</div></div>
+          <div className="field dash-stat"><label>Unpaid / not yet sent</label>
+            <div className="val dash-stat-num" style={{fontSize:20,fontWeight:700,color:grandUnpaid>0?"var(--warn)":"var(--good)"}}>{money(grandUnpaid,"PHP")}</div></div>
+          <div className="field dash-stat"><label>Pay periods recorded</label>
+            <div className="val dash-stat-num" style={{fontSize:20,fontWeight:700}}>{periods.length}</div></div>
         </div>
       </div>
 
