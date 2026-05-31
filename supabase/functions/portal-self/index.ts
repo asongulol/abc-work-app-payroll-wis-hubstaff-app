@@ -48,6 +48,18 @@ const TAB_FIELDS: Record<string, true> = { contact: true, personal: true, payout
 const PH_MOBILE = /^(\+63|0)9\d{9}$/;
 const nonEmpty = (v: unknown) => v != null && String(v).trim() !== "";
 
+// Age as of "today" in Asia/Manila (TZ-independent; client mirrors this exactly
+// so the age>=18 check can't disagree across the midnight-PHT boundary).
+function ageManila(dobStr: string): number | null {
+  const [y, m, d] = String(dobStr).slice(0, 10).split("-").map(Number);
+  if (!y || !m || !d) return null;
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Manila", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  const [ty, tm, td] = today.split("-").map(Number);
+  let a = ty - y;
+  if (tm < m || (tm === m && td < d)) a--;
+  return a;
+}
+
 // Validate one Stage-2 tab against the (flattened) worker row. Returns [] when
 // the tab's required fields are satisfied. Mirrors the client-side hints, but
 // THIS is the authority (the client can't mark a tab complete on its own).
@@ -65,17 +77,7 @@ function validateTab(tab: string, w: Record<string, any>): Array<{ field: string
     mobile("mobile", "Mobile");
     if (nonEmpty(w.postal_code) && !/^\d{4}$/.test(String(w.postal_code).trim())) e.push({ field: "postal_code", msg: "PH postal code is 4 digits" });
     if (!nonEmpty(w.date_of_birth)) e.push({ field: "date_of_birth", msg: "Date of birth is required" });
-    else {
-      const dob = new Date(String(w.date_of_birth));
-      if (isNaN(dob.getTime())) e.push({ field: "date_of_birth", msg: "Invalid date" });
-      else {
-        const now = new Date();
-        let age = now.getUTCFullYear() - dob.getUTCFullYear();
-        const m = now.getUTCMonth() - dob.getUTCMonth();
-        if (m < 0 || (m === 0 && now.getUTCDate() < dob.getUTCDate())) age--;
-        if (age < 18) e.push({ field: "date_of_birth", msg: "You must be at least 18" });
-      }
-    }
+    else { const a = ageManila(String(w.date_of_birth)); if (a == null) e.push({ field: "date_of_birth", msg: "Invalid date" }); else if (a < 18) e.push({ field: "date_of_birth", msg: "You must be at least 18" }); }
   } else if (tab === "personal") {
     req("emergency_name", "Emergency contact name is required");
     req("emergency_relationship", "Emergency contact relationship is required");
@@ -160,6 +162,9 @@ Deno.serve(async (req) => {
     const opRes = await fetch(`${SB}/rest/v1/onboarding_progress?worker_id=eq.${worker_id}&select=stage1_complete,completed_at,current_stage`, { headers: svc });
     const op = (await opRes.json())?.[0];
     if (!op || !op.stage1_complete) return json({ error: "finish signing your agreements first", code: "stage_out_of_order" }, 409);
+    // once fully onboarded, profile edits go through update_profile (admin-gated),
+    // not complete_tab — block replay that could null a field / flip stage2_complete.
+    if (op.completed_at) return json({ error: "onboarding is already complete", code: "stage_locked" }, 409);
 
     // During onboarding a contractor may edit ANY SAFE_FIELD (not gated by the
     // admin editable_fields picker) so required fields can always be filled.
@@ -186,10 +191,11 @@ Deno.serve(async (req) => {
     const curStage = op.current_stage || "stage2_profile";
     const next_stage = op.completed_at ? curStage
       : (stage2_complete && RANK["stage3_docs"] > RANK[curStage] ? "stage3_docs" : curStage);
-    await fetch(`${SB}/rest/v1/onboarding_progress?worker_id=eq.${worker_id}`, {
+    const opUpd = await fetch(`${SB}/rest/v1/onboarding_progress?worker_id=eq.${worker_id}`, {
       method: "PATCH", headers: { ...svc, Prefer: "return=minimal" },
       body: JSON.stringify({ stage2_last_tab: tab, stage2_complete, current_stage: next_stage, updated_at: new Date().toISOString() }),
     });
+    if (!opUpd.ok) return json({ error: `progress update failed: ${await opUpd.text()}` }, 500);
 
     return json({ ok: true, tab, tab_complete: field_errors.length === 0, field_errors, stage2_complete });
   } catch (e) {

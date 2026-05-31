@@ -140,6 +140,22 @@ function t(key, vars){
   return s;
 }
 
+// supabase-js v2: on a non-2xx response `data` is null and the server's JSON
+// body is on error.context (a Response). Pull the real {error} message out.
+async function fnErr(error, data){
+  if(data && data.error) return data.error;
+  try { const j = await error.context.json(); if(j && j.error) return j.error; } catch(_e){}
+  return (error && error.message) || "Something went wrong — please try again.";
+}
+// age as of today in Asia/Manila — mirrors the server's ageManila exactly so the
+// 18+ check can't disagree across the midnight-PHT boundary.
+function ageManila(dobStr){
+  const p=String(dobStr).slice(0,10).split("-").map(Number); const y=p[0],m=p[1],d=p[2];
+  if(!y||!m||!d) return null;
+  const today=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Manila",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+  const tp=today.split("-").map(Number); let a=tp[0]-y; if(tp[1]<m||(tp[1]===m&&tp[2]<d))a--; return a;
+}
+
 // Placeholder agreement bodies — REPLACE with the executed legal text + real
 // version before go-live. Long enough that the scroll-to-end gate is meaningful.
 const AGREEMENT_TEXT = {
@@ -417,7 +433,7 @@ function ProfileView({ client, session, onSignOut }){
     FIELD_DEFS.forEach(f=>{ if(isEditable(f.k) && (form[f.k]||"")!==curVal(f)) fields[f.k]=form[f.k]; });
     if(!Object.keys(fields).length){ setMsg("Nothing changed."); setBusy(false); return; }
     const {data,error}=await client.functions.invoke("portal-self",{body:{action:"update_profile",fields}});
-    if(error||data?.error){ setErr((data&&data.error)||error.message); }
+    if(error||data?.error){ setErr(await fnErr(error,data)); }
     else { setMsg("Saved — thank you!"); load(); }
     setBusy(false);
   }
@@ -630,7 +646,7 @@ function SignaturePad({ client, agreement, text, canSign, onSigned }){
       signature_data, scrolled_to_end:true, device_fingerprint:deviceFingerprint(),
     }});
     setBusy(false);
-    if(error||(data&&data.error)){ setErr((data&&data.error)||error.message); return; }
+    if(error||(data&&data.error)){ setErr(await fnErr(error,data)); return; }
     onSigned && onSigned();
   }
   const ghost = { color:"var(--accent)", borderColor:"var(--accent)" };
@@ -763,8 +779,7 @@ function validateTabClient(tab, f){
     if(!ne(f.mobile)) e.mobile="Required"; else if(!PHM.test(String(f.mobile).replace(/\s/g,""))) e.mobile="Use 09XXXXXXXXX or +639XXXXXXXXX";
     if(ne(f.postal_code)&&!/^\d{4}$/.test(String(f.postal_code).trim())) e.postal_code="PH postal code is 4 digits";
     if(!ne(f.date_of_birth)) e.date_of_birth="Required";
-    else { const d=new Date(f.date_of_birth); if(isNaN(d.getTime())) e.date_of_birth="Invalid date";
-      else { const n=new Date(); let a=n.getFullYear()-d.getFullYear(); const m=n.getMonth()-d.getMonth(); if(m<0||(m===0&&n.getDate()<d.getDate()))a--; if(a<18)e.date_of_birth="You must be at least 18"; } }
+    else { const a=ageManila(f.date_of_birth); if(a==null) e.date_of_birth="Invalid date"; else if(a<18) e.date_of_birth="You must be at least 18"; }
   } else if(tab==="personal"){
     if(!ne(f.emergency_name)) e.emergency_name="Required";
     if(!ne(f.emergency_relationship)) e.emergency_relationship="Required";
@@ -800,7 +815,7 @@ function Stage2Profile({ client, onAdvance }){
     const fields=Object.fromEntries(secFields.map(d=>[d.k,form[d.k]]));
     const { data, error } = await client.functions.invoke("portal-self",{body:{action:"complete_tab",tab:sec,fields}});
     setBusy(false);
-    if(error||(data&&data.error)){ setServerErr((data&&data.error)||error.message); return; }
+    if(error||(data&&data.error)){ setServerErr(await fnErr(error,data)); return; }
     if(data.field_errors&&data.field_errors.length){ const fe={}; data.field_errors.forEach(x=>fe[x.field]=x.msg); setErrs(fe); return; }
     if(data.stage2_complete){ onAdvance && onAdvance(); return; }
     if(!isLast) setSec(order[idx+1]); else onAdvance && onAdvance();
@@ -893,7 +908,8 @@ function Stage3Docs({ client, session, cfg, onAdvance }){
       .then(({data,error})=>{ if(error) setErr(error.message); setDocs(data||[]); });
   }
   useEffect(load,[]);
-  const reqDocs=(cfg&&cfg.documents)||[];
+  const DEFAULT_DOCS=[{kind:"resume",title:"Resume / CV",required:true},{kind:"diploma",title:"Diploma or Transcript of Records",required:true},{kind:"nbi_clearance",title:"NBI Clearance",required:true,freshness_months:6},{kind:"gov_id",title:"Government-issued ID or Passport",required:true,sides:["front","back"]}];
+  const reqDocs=(cfg&&Array.isArray(cfg.documents)&&cfg.documents.length)?cfg.documents:DEFAULT_DOCS;
   const byKey={}; (docs||[]).forEach(d=>{ const key=d.kind+"|"+(d.side||""); (byKey[key]=byKey[key]||[]).push(d); });
   const latest=(kind,side)=>{ const a=byKey[kind+"|"+(side||"")]; return a&&a[0]; };
   const slots=[];

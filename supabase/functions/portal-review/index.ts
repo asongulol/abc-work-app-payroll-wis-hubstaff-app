@@ -40,23 +40,30 @@ function isStale(issuedISO: string, months: number, now: Date): boolean {
 // "action needed" for HR but does not silently revoke a contractor's portal
 // access; an admin re-locks explicitly via reopen_stage (M1 step 5).
 //
-// NOTE (gov_id sides): we count DISTINCT evidence (storage_path) per kind, which
-// stops a single uploaded row from satisfying a 2-side requirement. True
-// front/back labelling lands with the Stage-3 upload UI via a `side` column;
-// until then no gov_id uploads exist (gate is off), so this is the correct floor.
+// gov_id sides: for a kind that declares `sides` (e.g. front+back), completion
+// requires an approved row for EACH configured side (matched on documents.side),
+// not just N approved rows — two approved "front" uploads must NOT satisfy it.
+// Non-sided kinds just need one approved row.
 async function reEvalStage3(SB: string, svc: any, worker_id: string, cfg: any, now: Date) {
   const reqDocs: any[] = (Array.isArray(cfg.documents) && cfg.documents.length
     ? cfg.documents
     : [{ kind: "resume" }, { kind: "diploma" }, { kind: "nbi_clearance" }, { kind: "gov_id", sides: ["front", "back"] }]
   ).filter((d: any) => d.required !== false);          // honor optional docs
 
-  const apRes = await fetch(`${SB}/rest/v1/documents?worker_id=eq.${worker_id}&review_status=eq.approved&select=id,kind,storage_path`, { headers: svc });
+  const apRes = await fetch(`${SB}/rest/v1/documents?worker_id=eq.${worker_id}&review_status=eq.approved&select=id,kind,side,storage_path`, { headers: svc });
   const apRows = (await apRes.json()) || [];
-  const distinct: Record<string, Set<string>> = {};
-  for (const r of apRows) (distinct[r.kind] ||= new Set()).add(r.storage_path || r.id);
+  const evidence: Record<string, Set<string>> = {};    // non-sided kinds: distinct storage_path/id
+  const sidesSeen: Record<string, Set<string>> = {};   // sided kinds: distinct approved `side`
+  for (const r of apRows) {
+    (evidence[r.kind] ||= new Set()).add(r.storage_path || r.id);
+    if (r.side) (sidesSeen[r.kind] ||= new Set()).add(r.side);
+  }
   const stage3_complete = reqDocs.every((d: any) => {
-    const need = Array.isArray(d.sides) ? d.sides.length : 1;
-    return (distinct[d.kind]?.size || 0) >= need;
+    if (Array.isArray(d.sides) && d.sides.length) {
+      const have = sidesSeen[d.kind] || new Set<string>();
+      return d.sides.every((s: string) => have.has(s));   // every configured side approved
+    }
+    return (evidence[d.kind]?.size || 0) >= 1;
   });
 
   const opRes = await fetch(`${SB}/rest/v1/onboarding_progress?worker_id=eq.${worker_id}&select=stage1_complete,stage2_complete,completed_at,current_stage`, { headers: svc });
