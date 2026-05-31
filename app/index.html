@@ -1875,16 +1875,16 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
                   const endLabel=row.effective_end || "(current)";
                   return (
                     <tr key={row.id}>
-                      <td>
+                      <td className="card-title">
                         {isEditing
                           ? <input type="date" value={rateEditDate}
                               onChange={e=>setRateEditDate(e.target.value)}
                               style={{fontSize:13,padding:"2px 4px"}}/>
                           : <span>{row.effective_start}</span>}
                       </td>
-                      <td className={row.effective_end?undefined:"muted"} style={{fontSize:13}}>{endLabel}</td>
-                      <td>{Number(row.amount_php).toLocaleString(undefined,{minimumFractionDigits:2})}</td>
-                      <td style={{textAlign:"right"}}>
+                      <td data-label="Effective to" className={row.effective_end?undefined:"muted"} style={{fontSize:13}}>{endLabel}</td>
+                      <td data-label="Amount ₱">{Number(row.amount_php).toLocaleString(undefined,{minimumFractionDigits:2})}</td>
+                      <td className="card-action" style={{textAlign:"right"}}>
                         {isEditing
                           ? <>
                               <button className="btn sm" onClick={()=>saveRateEffectiveEdit(row)}>Save</button>{" "}
@@ -3882,12 +3882,12 @@ function TimeApproval({client,companyId,consolidated}){
             return (
               <React.Fragment key={name}>
               <tr>
-                <td><b>{name}</b></td>
-                <td>{periodDays}</td>
-                <td>{workingDays}</td>
-                <td>{daysWorked}</td>
+                <td className="card-title"><b>{name}</b></td>
+                <td data-label="Days in period">{periodDays}</td>
+                <td data-label="Working days">{workingDays}</td>
+                <td data-label="Days worked">{daysWorked}</td>
                 {/* Tracked is editable (manual override of Hubstaff timer). */}
-                <td>
+                <td data-label="Tracked (h)">
                   {editing
                     ? <span style={{display:"inline-flex",gap:4,alignItems:"center"}}>
                         <input type="number" step="0.01" autoFocus style={{width:80}}
@@ -3899,14 +3899,14 @@ function TimeApproval({client,companyId,consolidated}){
                         style={{padding:"1px 6px"}} onClick={()=>setEditHrs(x=>({...x,[name]:trackedH}))}>✎</button></span>}
                 </td>
                 {/* PTO is API-sourced (not editable here); shown as muted if zero. */}
-                <td style={ptoSec>0?{color:"var(--accent)",fontWeight:600}:{color:"var(--muted)"}}>
+                <td data-label="PTO (h)" style={ptoSec>0?{color:"var(--accent)",fontWeight:600}:{color:"var(--muted)"}}>
                   {ptoSec>0?ptoH:"—"}
                 </td>
                 {/* Total = Tracked + PTO. This is what payroll uses. */}
-                <td style={{fontWeight:600}}>{totalH}</td>
-                <td><span className="pill" style={status==="rejected"?{background:"#fee2e2",color:"var(--bad)"}:{background:"var(--warn-soft)",color:"var(--warn)"}}>
+                <td data-label="Total (h)" style={{fontWeight:600}}>{totalH}</td>
+                <td data-label="Status"><span className="pill" style={status==="rejected"?{background:"#fee2e2",color:"var(--bad)"}:{background:"var(--warn-soft)",color:"var(--warn)"}}>
                       {status}</span></td>
-                <td style={{textAlign:"right",whiteSpace:"nowrap"}}>
+                <td className="card-action" style={{textAlign:"right",whiteSpace:"nowrap"}}>
                   <button className="btn sm" disabled={busy} onClick={()=>setApproval(ids,"approved")}>Approve</button>{" "}
                   <button className="btn ghost sm" onClick={()=>{
                     // open the inline add-hours panel for THIS contractor, PRE-FILLED
@@ -5155,7 +5155,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
             const anyBonus = sfRows.some(r => Number(r.bonus)>0);
             const miscSum = r => miscTotal(r.misc_items);
             return (
-          <div className="table-scroll"><table>
+          <div className="table-scroll keep-table"><table>
             <thead><tr>
               <SfTh k="name">Contractor</SfTh><SfTh k="worked">Worked h</SfTh><th>Exp</th><SfTh k="ratio">Ratio</SfTh><SfTh k="rate">Rate ₱</SfTh>
               <th>Gross ₱</th>
@@ -5171,7 +5171,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
               {sfRows.map(r=>(
                 <tr key={r.worker_id} style={
                   r.inactive?{background:"#fef2f2"}:r.rate==null?{background:"var(--warn-soft)"}:{}}>
-                  <td>
+                  <td className="card-title">
                     <b style={r.inactive?{textDecoration:"line-through"}:{}}>{r.name}</b>
                     {r.inactive && <span className="tip-wrap" tabIndex={0}
                       style={{marginLeft:6,fontSize:10,verticalAlign:"middle",cursor:"help"}}>
@@ -5670,7 +5670,7 @@ function Reports({client,companyId,consolidated}){
                 <tr>
                   <td colSpan={nCols} style={{background:"#f8fafc",padding:"8px 10px"}}>
                     <div style={{maxHeight:320,overflow:"auto"}}>
-                      <table>
+                      <table className="keep-table">
                         <thead><tr>
                           <th>Contractor</th><th>Hours</th><th>Rate ₱</th><th>Gross ₱</th>
                           <th>Health ₱</th><th>13th ₱</th><th>Lunch ₱</th><th>Bonus ₱</th>
@@ -5818,13 +5818,13 @@ function PerContractorSummary({client,companyId,consolidated}){
         <tbody>
           {rows.map((r,i)=>(
             <tr key={i}>
-              <td><b>{r.name}</b></td>{consolidated&&<td className="muted">{r.company}</td>}
-              <td>{r.periods}</td>
-              <td>{r.hours.toFixed(2)}</td>
-              <td>{money(r.gross,"PHP")}</td>
-              <td style={r.misc<0?{color:"#b91c1c"}:{}}>{money(r.misc,"PHP")}</td>
-              <td><b>{money(r.net,"PHP")}</b></td>
-              <td style={r.paid<r.net?{color:"var(--warn)"}:{color:"var(--good)"}}>{money(r.paid,"PHP")}</td>
+              <td className="card-title"><b>{r.name}</b></td>{consolidated&&<td data-label="Company" className="muted">{r.company}</td>}
+              <td data-label="Periods">{r.periods}</td>
+              <td data-label="Hours">{r.hours.toFixed(2)}</td>
+              <td data-label="Gross ₱">{money(r.gross,"PHP")}</td>
+              <td data-label="Misc ₱" style={r.misc<0?{color:"#b91c1c"}:{}}>{money(r.misc,"PHP")}</td>
+              <td data-label="Net ₱"><b>{money(r.net,"PHP")}</b></td>
+              <td data-label="Paid ₱" style={r.paid<r.net?{color:"var(--warn)"}:{color:"var(--good)"}}>{money(r.paid,"PHP")}</td>
             </tr>
           ))}
         </tbody>
@@ -6078,10 +6078,10 @@ function WiseReconciliation({client,companyId,consolidated}){
                   <tbody>
                     {emailCheck.mismatches.map((m,i)=>(
                       <tr key={i}>
-                        <td><b>{m.name}</b></td>
-                        <td style={{color:"#b91c1c"}}>{m.db_email}</td>
-                        <td style={{color:"var(--good)"}}>{m.wise_email}</td>
-                        <td className="muted">{m.wise_name||"—"}</td>
+                        <td className="card-title"><b>{m.name}</b></td>
+                        <td data-label="DB email" style={{color:"#b91c1c"}}>{m.db_email}</td>
+                        <td data-label="Wise email" style={{color:"var(--good)"}}>{m.wise_email}</td>
+                        <td data-label="Wise recipient name" className="muted">{m.wise_name||"—"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -6306,11 +6306,11 @@ function PullRecipients({client,companyId,consolidated,onClose}){
             <tbody>
               {recSync.preview.map(p=>(
                 <tr key={p.recipient_id}>
-                  <td><b>{p.name||"(no name)"}</b> <span className="muted">#{p.recipient_id}</span></td>
-                  <td>{p.currency||"—"}</td>
-                  <td className="muted">{p.account||"—"}</td>
-                  <td>{p.matched?p.worker_name:<span className="muted">— no match —</span>}</td>
-                  <td>{p.already
+                  <td className="card-title"><b>{p.name||"(no name)"}</b> <span className="muted">#{p.recipient_id}</span></td>
+                  <td data-label="Currency">{p.currency||"—"}</td>
+                  <td data-label="Account" className="muted">{p.account||"—"}</td>
+                  <td data-label="Matched contractor">{p.matched?p.worker_name:<span className="muted">— no match —</span>}</td>
+                  <td className="card-action">{p.already
                     ? <span className="pill active">already linked</span>
                     : p.matched
                       ? <span className="pill info">will link</span>
@@ -6462,13 +6462,13 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
             <tbody>
               {rows.map(r=>(
                 <tr key={r.worker_id} style={r.transfer_id?{opacity:.6}:{}}>
-                  <td><input type="checkbox" checked={r.include&&!r.transfer_id} disabled={r.transfer_id}
+                  <td className="card-action"><input type="checkbox" checked={r.include&&!r.transfer_id} disabled={r.transfer_id}
                     onChange={e=>setRow(r.worker_id,{include:e.target.checked})}/></td>
-                  <td><b>{r.name}</b></td>
-                  <td><input type="number" step="0.01" value={r.amount} disabled={r.transfer_id}
+                  <td className="card-title"><b>{r.name}</b></td>
+                  <td data-label="Amount ₱"><input type="number" step="0.01" value={r.amount} disabled={r.transfer_id}
                     onChange={e=>setRow(r.worker_id,{amount:parseFloat(e.target.value)||0})}
                     style={{width:100,padding:"3px 6px",fontSize:13}}/></td>
-                  <td>
+                  <td data-label="Wise recipient">
                     {r.transfer_id
                       ? <span className="muted">#{r.recipient_id}</span>
                       : r.recipients.length
@@ -6491,7 +6491,7 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
                                 </button>
                               : <span style={{color:"var(--warn)"}}>add recipient on profile</span>)}
                   </td>
-                  <td>{r.transfer_id
+                  <td className="card-action">{r.transfer_id
                     ? <span className="pill active">drafted</span>
                     : <span className="pill" style={{background:"#f3f4f6",color:"var(--muted)"}}>{r.status||"ready"}</span>}</td>
                 </tr>
@@ -7319,10 +7319,10 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
                   <tbody>
                     {ready.map(p=>(
                       <tr key={p.id} style={periodId===p.id?{background:"#eff6ff"}:{}}>
-                        <td><b>{p.period_start} → {p.period_end}</b></td>
-                        <td>{p.pay_date||"—"}</td>
-                        <td><span className="pill" style={{background:"#eef2ff",color:"#3730a3"}}>locked · ready to pay</span></td>
-                        <td style={{textAlign:"right"}}>
+                        <td className="card-title"><b>{p.period_start} → {p.period_end}</b></td>
+                        <td data-label="Pay date">{p.pay_date||"—"}</td>
+                        <td data-label="Status"><span className="pill" style={{background:"#eef2ff",color:"#3730a3"}}>locked · ready to pay</span></td>
+                        <td className="card-action" style={{textAlign:"right"}}>
                           <button className="btn sm" disabled={busy} onClick={()=>load(p.id)}>
                             {periodId===p.id?"Loaded":"Open & pay"}</button>
                         </td>
@@ -7417,10 +7417,10 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
                     <tbody>
                       {reconResult.variances.map((v,i)=>(
                         <tr key={i}>
-                          <td>{v.name}</td>
-                          <td>{v.db_amount.toLocaleString(undefined,{minimumFractionDigits:2})}</td>
-                          <td>{v.wise_amount.toLocaleString(undefined,{minimumFractionDigits:2})}</td>
-                          <td style={{color:v.delta>0?"#a16207":"#b91c1c",fontWeight:600}}>
+                          <td className="card-title">{v.name}</td>
+                          <td data-label="DB (₱)">{v.db_amount.toLocaleString(undefined,{minimumFractionDigits:2})}</td>
+                          <td data-label="Wise (₱)">{v.wise_amount.toLocaleString(undefined,{minimumFractionDigits:2})}</td>
+                          <td data-label="Delta (₱)" style={{color:v.delta>0?"#a16207":"#b91c1c",fontWeight:600}}>
                             {(v.delta>0?"+":"")+v.delta.toLocaleString(undefined,{minimumFractionDigits:2})}
                           </td>
                         </tr>
@@ -7541,13 +7541,13 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
                       {(matchResult.results||[]).filter(r=>r.outcome==="matched_with_variance_overridden").map((r,i)=>{
                         const w=(rows||[]).find(x=>x.worker_id===r.worker_id);
                         return (<tr key={i}>
-                          <td><b>{w?w.name:`worker ${String(r.worker_id).slice(0,8)}…`}</b></td>
-                          <td className="muted">{Number(r.db_amount).toLocaleString(undefined,{minimumFractionDigits:2})}</td>
-                          <td><b>{Number(r.wise_amount).toLocaleString(undefined,{minimumFractionDigits:2})}</b></td>
-                          <td style={{color:r.delta>0?"#a16207":"#b91c1c",fontWeight:600}}>
+                          <td className="card-title"><b>{w?w.name:`worker ${String(r.worker_id).slice(0,8)}…`}</b></td>
+                          <td data-label="Was DB (₱)" className="muted">{Number(r.db_amount).toLocaleString(undefined,{minimumFractionDigits:2})}</td>
+                          <td data-label="Now Wise (₱)"><b>{Number(r.wise_amount).toLocaleString(undefined,{minimumFractionDigits:2})}</b></td>
+                          <td data-label="Delta (₱)" style={{color:r.delta>0?"#a16207":"#b91c1c",fontWeight:600}}>
                             {(r.delta>0?"+":"")+Number(r.delta).toLocaleString(undefined,{minimumFractionDigits:2})}
                           </td>
-                          <td><span className="muted">{r.wise_status||"—"}</span></td>
+                          <td data-label="Wise status"><span className="muted">{r.wise_status||"—"}</span></td>
                         </tr>);
                       })}
                     </tbody>
@@ -7568,13 +7568,13 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
                       {(matchResult.results||[]).filter(r=>r.outcome==="matched_with_variance").map((r,i)=>{
                         const w=(rows||[]).find(x=>x.worker_id===r.worker_id);
                         return (<tr key={i}>
-                          <td>{w?w.name:`worker ${String(r.worker_id).slice(0,8)}…`}</td>
-                          <td>{Number(r.db_amount).toLocaleString(undefined,{minimumFractionDigits:2})}</td>
-                          <td>{Number(r.wise_amount).toLocaleString(undefined,{minimumFractionDigits:2})}</td>
-                          <td style={{color:r.delta>0?"#a16207":"#b91c1c",fontWeight:600}}>
+                          <td className="card-title">{w?w.name:`worker ${String(r.worker_id).slice(0,8)}…`}</td>
+                          <td data-label="DB (₱)">{Number(r.db_amount).toLocaleString(undefined,{minimumFractionDigits:2})}</td>
+                          <td data-label="Wise (₱)">{Number(r.wise_amount).toLocaleString(undefined,{minimumFractionDigits:2})}</td>
+                          <td data-label="Delta (₱)" style={{color:r.delta>0?"#a16207":"#b91c1c",fontWeight:600}}>
                             {(r.delta>0?"+":"")+Number(r.delta).toLocaleString(undefined,{minimumFractionDigits:2})}
                           </td>
-                          <td><span className="muted">{r.wise_status||"—"}</span></td>
+                          <td data-label="Wise status"><span className="muted">{r.wise_status||"—"}</span></td>
                         </tr>);
                       })}
                     </tbody>
@@ -7783,7 +7783,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
             const visibleTotal = visibleRows.reduce((s,r)=>s+r.net,0);
             const fmtDate=(iso)=>{ if(!iso)return ""; try{return new Date(iso).toLocaleDateString();}catch(e){return String(iso).slice(0,10);} };
             return (
-              <div className="table-scroll"><table>
+              <div className="table-scroll keep-table"><table>
                 <thead><tr>
                   <th>Contractor</th><th>Method</th><th>Recipient/Email</th>
                   <th>Amount ₱</th><th>Status</th>
@@ -8170,11 +8170,11 @@ function AuditLog({client,companyId,consolidated}){
         <tbody>
           {rows.map(r=>(
             <tr key={r.id}>
-              <td className="muted" style={{whiteSpace:"nowrap"}}>{new Date(r.created_at).toLocaleString()}</td>
-              <td><span className="pill info">{r._label}</span></td>
-              <td>{r.entity||"—"}</td>
-              <td className="muted" style={{fontSize:12,maxWidth:360}}>{summarizeDetail(r.detail)}</td>
-              <td className="muted">{r.actor||"—"}</td>
+              <td className="card-title muted" style={{whiteSpace:"nowrap"}}>{new Date(r.created_at).toLocaleString()}</td>
+              <td data-label="Action"><span className="pill info">{r._label}</span></td>
+              <td data-label="Item">{r.entity||"—"}</td>
+              <td data-label="Detail" className="muted" style={{fontSize:12,maxWidth:360}}>{summarizeDetail(r.detail)}</td>
+              <td data-label="By" className="muted">{r.actor||"—"}</td>
             </tr>
           ))}
         </tbody>
