@@ -1191,14 +1191,25 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
     if(Object.keys(e).length){ setErrs(e); setErr("Please fix the highlighted fields."); setStep((e.first_name||e.last_name||e.email)?1:2); return; }
     if(!companyId){ setErr("Pick a single company first."); return; }
     setBusy(true); setErr("");
+    let w=null;
     try{
+      // MATCH-BEFORE-CREATE: never make a second record for an existing email.
+      if(ne(f.email)){
+        const {data:dupe}=await client.from("workers").select("id,first_name,last_name").ilike("email",f.email.trim()).limit(1);
+        if(Array.isArray(dupe)&&dupe.length){
+          setErrs({email:"A contractor with this email already exists"}); setStep(1);
+          setErr(`${[dupe[0].first_name,dupe[0].last_name].filter(Boolean).join(" ")||"Someone"} already uses ${f.email.trim()} — open their profile instead.`);
+          setBusy(false); return;
+        }
+      }
       const base={ first_name:f.first_name.trim(), middle_name:f.middle_name.trim()||null, last_name:f.last_name.trim(),
         email:f.email.trim()||null, ph_address:f.ph_address.trim()||null, permanent_address:f.permanent_address.trim()||null,
         date_of_birth:f.date_of_birth||null, hire_date:f.hire_date||null, status:"active",
         health_allowance_eligible:!!f.health_allowance_eligible, thirteenth_month_eligible:!!f.thirteenth_month_eligible };
-      let {data:w,error:e1}=await client.from("workers").insert(base).select().single();
-      if(e1 && /payout_method/i.test(e1.message)){ ({data:w,error:e1}=await client.from("workers").insert({...base,payout_method:"wise"}).select().single()); }
-      if(e1) throw e1;
+      let r=await client.from("workers").insert(base).select().single();
+      if(r.error && /payout_method/i.test(r.error.message)) r=await client.from("workers").insert({...base,payout_method:"wise"}).select().single();
+      if(r.error) throw r.error;
+      w=r.data;
       const {error:e2}=await client.from("worker_companies").insert({worker_id:w.id, company_id:companyId, contract:f.contract, role:f.role.trim()||null, status:"active", started_on:f.hire_date||null});
       if(e2) throw e2;
       if(parseFloat(f.rate)>0){
@@ -1213,8 +1224,14 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
       }
       logEvent(client,{company_id:companyId,action:"add_contractor",entity:`${f.first_name} ${f.last_name}`,detail:{from:"wizard",contract:f.contract,invited:!!f.invite,rate:parseFloat(f.rate)||null}});
       setResult(invited||{ok:true}); onCreated&&onCreated();
-    }catch(ex){ setErr("Couldn't create: "+(ex.message||ex)); }
-    finally{ setBusy(false); }
+    }catch(ex){
+      // Roll back the just-created worker so a late failure (e.g. invite on an
+      // email already taken in Supabase Auth) never leaves an orphaned, half-
+      // created contractor. FK ON DELETE CASCADE clears worker_companies / rates
+      // / contractor_logins / onboarding_progress.
+      if(w&&w.id){ try{ await client.from("workers").delete().eq("id",w.id); }catch(_e){} }
+      setErr("Couldn't create: "+(ex.message||ex));
+    }finally{ setBusy(false); }
   }
   const inp={width:"100%",padding:8,border:"1px solid #d1d5db",borderRadius:8,margin:"2px 0",fontSize:14};
   // field() is a plain JSX-returning helper (NOT a nested component) so inputs keep focus across renders
@@ -1522,7 +1539,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
       {selected && <ProfileModal r={selected} client={client} onClose={()=>{setSelected(null);reload();}} onBillingChange={onBillingChange} onSaved={reload} />}
       {showWizard && <AddContractorWizard client={client} companyId={companyId}
         companyName={(allRows.find(x=>x.company_id===companyId)||{}).companies?.name||""}
-        onClose={()=>setShowWizard(false)} onCreated={reload} />}
+        onClose={()=>{setShowWizard(false);reload();}} onCreated={reload} />}
       {showBulk && <BulkImport client={client} companyId={companyId} consolidated={consolidated} onClose={()=>setShowBulk(false)} onDone={reload} />}
       {showPull && <PullRecipients client={client} companyId={companyId} consolidated={consolidated} onClose={()=>{setShowPull(false);reload();}} />}
       {showPortalSettings && <PortalSettingsModal client={client} onClose={()=>setShowPortalSettings(false)} />}
