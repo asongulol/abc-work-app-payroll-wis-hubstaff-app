@@ -232,6 +232,63 @@
     /* Keep page content clear of the fixed bar (incl. safe-area inset). */
     .wrap{padding-bottom:calc(72px + env(safe-area-inset-bottom,0px))}
   }
+  /* ===== Phase 3: Forms & Modals — mobile sheets (<=640px) ===================
+     Below the sm breakpoint, the shared `.modal-bg`/`.modal` dialogs become
+     full-width slide-up sheets pinned to the bottom of the viewport, with a
+     sticky Save/Cancel action bar and a safe-area inset. Form `.row`s collapse
+     to a single column and inputs/labels grow to >=16px so iOS Safari does not
+     auto-zoom on focus. ALL of this is gated to <=640px, so the centered
+     desktop dialogs at >=1024px are completely untouched (this is purely
+     additive; every modal shares these classes so no JSX changes are needed).
+     Note: several modals set an inline `style={{maxWidth:NNN}}` on `.modal`;
+     inline styles outrank stylesheet rules, so the mobile overrides below use
+     `!important` to reliably reach full width on phones. */
+  @media (max-width: 640px) {
+    /* Backdrop: dock the sheet to the bottom, no outer padding so it can be
+       full-bleed. Keep scroll containment on the sheet itself (below). */
+    .modal-bg{
+      align-items:flex-end;justify-content:stretch;padding:0;
+      z-index:50}                       /* above the bottom-nav (z-40) */
+    /* Sheet: full width, tall but capped to the viewport, rounded top only,
+       internal scroll, and bottom padding clears the sticky action bar +
+       home-indicator safe area. Use dynamic viewport units (dvh) so mobile
+       browser chrome resizing never clips the top of the sheet. */
+    .modal{
+      max-width:100% !important;width:100% !important;
+      max-height:92vh;max-height:92dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;
+      border-radius:16px 16px 0 0;padding:18px 16px;
+      padding-bottom:0;
+      position:relative;animation:sheetUp .22s ease-out}
+    /* Larger, easier-to-hit close button on the sheet (>=44px touch target). */
+    .modal .x{font-size:26px;min-width:44px;min-height:44px;line-height:1;margin:-4px -4px 0 0}
+    /* Form rows stack to a single column; fields go full width. */
+    .modal .row{flex-direction:column;gap:0}
+    .modal .field{min-width:0;width:100%}
+    /* >=16px on form controls + labels prevents iOS focus auto-zoom and makes
+       inputs comfortably tappable. */
+    .modal label,
+    .modal input,
+    .modal select,
+    .modal textarea{font-size:16px}
+    .modal .field label{font-size:12px}   /* keep the small uppercase caption */
+    .modal input,
+    .modal select,
+    .modal textarea{min-height:44px;padding:10px 12px}
+    .modal textarea{min-height:88px}
+    /* Sticky action bar pinned to the bottom of the sheet. Buttons become
+       full-width, stacked, and stay reachable above the home indicator. */
+    .modal .actions{
+      position:sticky;bottom:0;left:0;right:0;
+      display:flex !important;
+      margin:16px -16px 0 !important;padding:12px 16px;
+      padding-bottom:calc(12px + env(safe-area-inset-bottom,0px));
+      background:var(--card);border-top:1px solid var(--border);
+      flex-direction:column-reverse !important;justify-content:stretch !important;
+      gap:8px !important;flex-wrap:nowrap;
+      box-shadow:0 -2px 8px rgba(0,0,0,.06);z-index:1}
+    .modal .actions .btn{width:100%;min-height:44px;font-size:15px}
+  }
+  @keyframes sheetUp{from{transform:translateY(100%)}to{transform:none}}
   @media print {
     body{background:#fff}
     .topbar,.tabs,.bottom-nav,.no-print{display:none !important}
@@ -910,7 +967,7 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
             <thead><tr><th>Row</th><th>Name</th><th>Error</th></tr></thead>
             <tbody>{result.errors.map((e,i)=>(<tr key={i}><td>{e.row}</td><td>{e.name}</td><td style={{color:"#991b1b"}}>{e.msg}</td></tr>))}</tbody>
           </table></div>}
-          <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:14}}>
+          <div className="actions" style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:14}}>
             <button className="btn ghost" onClick={()=>{setText("");setPreview([]);setResult(null);setStage("input");}}>Import more</button>
             <button className="btn" onClick={()=>{onDone&&onDone();onClose();}}>Done</button>
           </div>
@@ -5341,7 +5398,7 @@ function MiscModal({ row, onClose, onSave }){
               ))}
         </div>
 
-        <div style={{...sectionStyle, display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div className="actions" style={{...sectionStyle, display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div style={{fontSize:13}}>
             Net impact: <b style={{color:netImpact<0?"#b91c1c":"#166534"}}>
               {netImpact<0?"-":"+"}₱{Math.abs(netImpact).toLocaleString(undefined,{minimumFractionDigits:2})}
@@ -7969,7 +8026,7 @@ function WiseApiDialog({ rows, total, period, onClose }){
           </div>
         )}
 
-        <div style={{display:"flex",justifyContent:"space-between",marginTop:14}}>
+        <div className="actions" style={{display:"flex",justifyContent:"space-between",marginTop:14}}>
           <button className="btn ghost" onClick={step===1?onClose:()=>setStep(s=>s-1)}>
             {step===1?"Cancel":"Back"}</button>
           {step<3
