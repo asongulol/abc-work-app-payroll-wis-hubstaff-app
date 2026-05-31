@@ -16,6 +16,7 @@ values (1, '[
   "mobile","ph_address","permanent_address","address_landmark","postal_code","date_of_birth",
   "emergency_name","emergency_relationship","emergency_mobile",
   "marital_status","education_level","course","year_graduated","school",
-  "gcash","paymaya","paypal","wise_tag"
+  "gcash","paymaya","paypal","wise_tag",
+  "favorite_color","favorite_food","motto"
 ]'::jsonb)
 on conflict (id) do update set editable_fields = excluded.editable_fields;

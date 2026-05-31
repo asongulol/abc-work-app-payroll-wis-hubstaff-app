@@ -811,6 +811,7 @@ function PortalSettingsModal({ client, onClose }){
     {k:"emergency_name",label:"Emergency contact name"},{k:"emergency_relationship",label:"Emergency relationship"},{k:"emergency_mobile",label:"Emergency mobile"},
     {k:"permanent_address",label:"Permanent address"},{k:"address_landmark",label:"Landmark"},{k:"postal_code",label:"Postal code"},
     {k:"marital_status",label:"Marital status"},{k:"education_level",label:"Education level"},{k:"course",label:"Course"},{k:"year_graduated",label:"Year graduated"},{k:"school",label:"School"},
+    {k:"favorite_color",label:"Favorite color"},{k:"favorite_food",label:"Favorite food"},{k:"motto",label:"Personal motto"},
   ];
   const [sel,setSel]=useState(null); const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
   useEffect(()=>{ client.from("portal_settings").select("editable_fields").eq("id",1).maybeSingle()
@@ -1115,7 +1116,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
       .select("first_name,middle_name,last_name,email,work_email,mobile,work_number,work_extension,ph_address,hire_date,date_of_birth,"+
         "payout_method,wise_recipient_id,wise_recipient_uuid,wise_recipients,photo_url,"+
         "health_allowance_eligible,thirteenth_month_eligible,"+
-        "emergency_name,emergency_relationship,emergency_mobile,permanent_address,address_landmark,postal_code,marital_status,education_level,course,year_graduated,school")
+        "emergency_name,emergency_relationship,emergency_mobile,permanent_address,address_landmark,postal_code,marital_status,education_level,course,year_graduated,school,profile_extras")
       .eq("id", w.id).single();
     if(error || !data) return;
     setPhoto(data.photo_url||"");
@@ -1129,6 +1130,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
       emergency_name:data.emergency_name||"", emergency_relationship:data.emergency_relationship||"", emergency_mobile:data.emergency_mobile||"",
       permanent_address:data.permanent_address||"", address_landmark:data.address_landmark||"", postal_code:data.postal_code||"",
       marital_status:data.marital_status||"", education_level:data.education_level||"", course:data.course||"", year_graduated:data.year_graduated||"", school:data.school||"",
+      favorite_color:(data.profile_extras||{}).favorite_color||"", favorite_food:(data.profile_extras||{}).favorite_food||"", motto:(data.profile_extras||{}).motto||"",
     });
     setPayMethod(data.payout_method||"");
     const list=Array.isArray(data.wise_recipients)?data.wise_recipients:[];
@@ -1241,6 +1243,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     emergency_name:w.emergency_name||"", emergency_relationship:w.emergency_relationship||"", emergency_mobile:w.emergency_mobile||"",
     permanent_address:w.permanent_address||"", address_landmark:w.address_landmark||"", postal_code:w.postal_code||"",
     marital_status:w.marital_status||"", education_level:w.education_level||"", course:w.course||"", year_graduated:w.year_graduated||"", school:w.school||"",
+    favorite_color:(w.profile_extras||{}).favorite_color||"", favorite_food:(w.profile_extras||{}).favorite_food||"", motto:(w.profile_extras||{}).motto||"",
   });
   const [contract,setContract]=useState(r.contract||"FT");
   const [role,setRole]=useState(r.role||"");
@@ -1362,7 +1365,17 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
        "emergency_name","emergency_relationship","emergency_mobile","permanent_address","address_landmark","postal_code","marital_status","education_level","course","year_graduated","school"]);
     const linkDiff=auditDiff({contract:r.contract,role:r.role,hubstaff_name:r.hubstaff_name},
       {contract,role:role||null,hubstaff_name:hubName||null},["contract","role","hubstaff_name"]);
+    // culture / fun facts live in the profile_extras jsonb — merge, don't clobber
+    const exOld=(w.profile_extras&&typeof w.profile_extras==="object")?w.profile_extras:{};
+    const exNew={...exOld};
+    [["favorite_color",f.favorite_color],["favorite_food",f.favorite_food],["motto",f.motto]]
+      .forEach(([k,v])=>{ if(v&&v.trim()) exNew[k]=v.trim(); else delete exNew[k]; });
+    const cultureDiff=auditDiff(
+      {favorite_color:exOld.favorite_color||null,favorite_food:exOld.favorite_food||null,motto:exOld.motto||null},
+      {favorite_color:f.favorite_color||null,favorite_food:f.favorite_food||null,motto:f.motto||null},
+      ["favorite_color","favorite_food","motto"]);
     const {error:e1}=await client.from("workers").update({
+      profile_extras:exNew,
       first_name:f.first_name, middle_name:f.middle_name||null, last_name:f.last_name, email:f.email||null, work_email:f.work_email||null, mobile:f.mobile||null,
       work_number:f.work_number||null, work_extension:f.work_extension||null,
       ph_address:f.ph_address||null, hire_date:f.hire_date||null, date_of_birth:f.date_of_birth||null,
@@ -1379,7 +1392,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     }
     if(e1||e2){setSavedMsg("Error: "+((e1||e2).message));return;}
     logEvent(client,{company_id:r.company_id,action:"edit_contractor",
-      entity:`${f.first_name} ${f.last_name}`,detail:{changed:{...wDiff,...linkDiff}}});
+      entity:`${f.first_name} ${f.last_name}`,detail:{changed:{...wDiff,...linkDiff,...cultureDiff}}});
     setSavedMsg("Details saved.");
     notifySaved();
   }
@@ -1590,10 +1603,13 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
             <div className="field"><label>Year graduated</label><input style={inp} value={f.year_graduated} onChange={e=>set("year_graduated",e.target.value)}/></div>
             <div className="field"><label>School</label><input style={inp} value={f.school} onChange={e=>set("school",e.target.value)}/></div>
           </div>
+          <div style={{fontWeight:600,fontSize:13,color:"var(--muted)",margin:"10px 0 2px"}}>About / culture <span style={{fontWeight:400}}>(fun facts — contractors can fill these in during onboarding)</span></div>
+          <div className="row">
+            <div className="field"><label>Favorite color</label><input style={inp} value={f.favorite_color} onChange={e=>set("favorite_color",e.target.value)}/></div>
+            <div className="field"><label>Favorite food</label><input style={inp} value={f.favorite_food} onChange={e=>set("favorite_food",e.target.value)}/></div>
+          </div>
+          <div className="field"><label>Personal motto</label><input style={inp} value={f.motto} onChange={e=>set("motto",e.target.value)}/></div>
           <div style={{marginTop:6}}><button className="btn" onClick={saveDetails}>Save details</button></div>
-          {(() => { const ex=(w.profile_extras&&typeof w.profile_extras==="object")?w.profile_extras:{};
-            const bits=[ex.favorite_color&&`Color: ${ex.favorite_color}`,ex.favorite_food&&`Food: ${ex.favorite_food}`,ex.motto&&`Motto: ${ex.motto}`].filter(Boolean);
-            return bits.length? <div className="sub" style={{marginTop:8}}>{bits.join(" · ")}</div> : null; })()}
         </details>
 
         </>}

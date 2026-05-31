@@ -33,7 +33,14 @@ const SAFE_FIELDS = new Set([
   "emergency_name", "emergency_relationship", "emergency_mobile",
   "permanent_address", "address_landmark", "postal_code",
   "marital_status", "education_level", "course", "year_graduated", "school",
+  // "Culture" / fun facts — routed into the profile_extras jsonb (see EXTRA_KEYS)
+  "favorite_color", "favorite_food", "motto",
 ]);
+
+// These live as keys inside the workers.profile_extras jsonb, not as flat
+// columns. We merge them into the existing object so a partial edit never
+// clobbers the other culture fields. Keep in sync with the admin reader.
+const EXTRA_KEYS = new Set(["favorite_color", "favorite_food", "motto"]);
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
@@ -68,10 +75,24 @@ Deno.serve(async (req) => {
 
     const inFields = (body.fields && typeof body.fields === "object") ? body.fields : {};
     const patch: Record<string, unknown> = {};
+    const extra: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(inFields)) {
       if (!allowed.has(k)) continue;                       // silently drop disallowed fields
-      patch[k] = (typeof v === "string" && v.trim() === "") ? null : v;
+      const val = (typeof v === "string" && v.trim() === "") ? null : v;
+      if (EXTRA_KEYS.has(k)) extra[k] = val;               // jsonb sub-key
+      else patch[k] = val;                                 // flat column
     }
+
+    // Merge culture fields into the existing profile_extras jsonb (don't clobber).
+    if (Object.keys(extra).length) {
+      const wRes = await fetch(`${SB}/rest/v1/workers?id=eq.${worker_id}&select=profile_extras`, { headers: svc });
+      const wRows = await wRes.json();
+      const cur = (Array.isArray(wRows) && wRows[0]?.profile_extras && typeof wRows[0].profile_extras === "object") ? wRows[0].profile_extras : {};
+      const merged: Record<string, unknown> = { ...cur };
+      for (const [k, v] of Object.entries(extra)) { if (v === null) delete merged[k]; else merged[k] = v; }
+      patch.profile_extras = merged;
+    }
+
     if (!Object.keys(patch).length) return json({ error: "no editable fields in request (check the admin's portal settings)" }, 400);
 
     const upd = await fetch(`${SB}/rest/v1/workers?id=eq.${worker_id}`, {
