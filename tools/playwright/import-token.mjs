@@ -50,12 +50,40 @@ function fromClipboard() {
 }
 async function getRawInput() {
   const fileArg = process.argv[2];
-  if (fileArg) return { raw: await readFile(fileArg, 'utf8'), source: `file ${fileArg}` };
+  if (fileArg && !fileArg.startsWith('--')) {
+    return { raw: await readFile(fileArg, 'utf8'), source: `file ${fileArg}` };
+  }
   const piped = await readStdin();
   if (piped.trim()) return { raw: piped, source: 'stdin (piped)' };
   const clip = fromClipboard();
   if (clip.trim()) return { raw: clip, source: 'clipboard (pbpaste)' };
   return { raw: '', source: 'none' };
+}
+
+// Safe summary of whatever we received — NEVER prints token VALUES, only
+// structure: byte length, JSON-parseability, and (safe) key NAMES. This is the
+// thing that ends a blind debug loop.
+function diagnose(raw) {
+  const t = String(raw || '');
+  const lines = [];
+  lines.push(`  bytes: ${t.length}`);
+  const head = t.replace(/\s+/g, ' ').trim().slice(0, 80);
+  lines.push(`  first 80 chars: ${JSON.stringify(head)}`);
+  let parsed;
+  try {
+    parsed = JSON.parse(t.trim().replace(/^['"]|['"]$/g, ''));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const keys = Object.keys(parsed);
+      lines.push(`  parsed JSON object, ${keys.length} key(s): [${keys.join(', ')}]`);
+      const hasAuth = keys.some((k) => /-auth-token(\.\d+)?$/.test(k));
+      lines.push(`  has an "…-auth-token" key: ${hasAuth ? 'YES' : 'NO'}`);
+    } else {
+      lines.push(`  parsed JSON, but it's a ${Array.isArray(parsed) ? 'array' : typeof parsed}, not an object map`);
+    }
+  } catch (e) {
+    lines.push(`  not valid JSON (${e.message.slice(0, 60)})`);
+  }
+  return lines.join('\n');
 }
 
 // Coerce whatever was pasted into a {key:value} localStorage entries map.
@@ -131,6 +159,14 @@ function describe(entries) {
 
 async function main() {
   const { raw, source } = await getRawInput();
+
+  // --inspect: just show what's on the clipboard (safe), don't save anything.
+  if (process.argv.includes('--inspect')) {
+    console.log(`Inspecting ${source}:`);
+    console.log(diagnose(raw));
+    process.exit(0);
+  }
+
   if (!raw.trim()) {
     console.error(
       '✗ Nothing to import.\n' +
@@ -143,10 +179,21 @@ async function main() {
 
   const entries = toEntries(raw);
   if (!entries || Object.keys(entries).length === 0) {
+    console.error(`✗ The ${source} content wasn't a recognizable Supabase session.\n`);
+    console.error('  --- what I actually received (safe diagnostic; token values redacted) ---');
+    console.error(diagnose(raw));
     console.error(
-      `✗ The ${source} content wasn't a recognizable Supabase session.\n` +
-        '  Make sure you copied the output of the localStorage snippet from a LOGGED-IN\n' +
-        '  payroll.abbilabs.com tab (copying "{}" means that tab is not signed in).'
+      '\n  Likely fixes:\n' +
+        '  • If "parsed JSON object, keys: []"  → that tab is NOT signed in, OR the\n' +
+        '    snippet ran on the wrong origin. Open https://payroll.abbilabs.com, make\n' +
+        '    sure you see the APP (not the "Sign in" screen), then re-run the snippet.\n' +
+        '  • If "not valid JSON" or the text looks like a command/these instructions →\n' +
+        "    copy() didn't reach the clipboard. Use the no-clipboard path instead:\n" +
+        '      1) In the Console run (it PRINTS the JSON; no copy needed):\n' +
+        "         JSON.stringify(Object.fromEntries(Object.entries(localStorage).filter(([k])=>k.startsWith('sb-'))))\n" +
+        '      2) Select the printed string, copy it, paste into a file, then:\n' +
+        '         npm run import -- /path/to/that-file.txt\n' +
+        '  • To just see the keys without importing:  npm run import -- --inspect'
     );
     process.exit(1);
   }
