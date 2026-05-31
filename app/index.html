@@ -57,6 +57,59 @@
   /* horizontal scroll wrapper for wide tables */
   .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
   .table-scroll table{min-width:560px}
+  /* ===== Phase 2: tables -> stacked cards on phones (<768px) ===============
+     Below the md breakpoint, wide data tables become a vertical stack of
+     label/value "cards" so they never force horizontal PAGE scroll on a
+     360px screen. Desktop (>=768px) keeps the real <table> untouched.
+     The transform is CSS-only: each <tr> becomes a card, each <td> a row of
+     [label][value]. Column labels come from `data-label` attributes added to
+     the primary list tables; tables without them degrade gracefully to a
+     readable label-less stack (still no horizontal page scroll).
+     Opt out per-table with class `keep-table` (stays tabular + side-scrolls). */
+  @media (max-width: 767px) {
+    .table-scroll:not(.keep-table){overflow-x:visible}
+    .table-scroll:not(.keep-table) table{min-width:0;width:100%}
+    /* Hide the desktop header row — labels move inline via data-label. */
+    .table-scroll:not(.keep-table) > table > thead,
+    .table-scroll:not(.keep-table) > table > thead tr{
+      position:absolute;width:1px;height:1px;padding:0;margin:-1px;
+      overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+    .table-scroll:not(.keep-table) > table,
+    .table-scroll:not(.keep-table) > table > tbody{display:block;width:100%}
+    .table-scroll:not(.keep-table) > table > tbody > tr{
+      display:block;background:var(--card);border:1px solid var(--border);
+      border-radius:var(--radius);padding:10px 12px;margin-bottom:10px}
+    .table-scroll:not(.keep-table) > table > tbody > tr > td{
+      display:flex;justify-content:space-between;align-items:flex-start;gap:12px;
+      width:auto;border:none;border-bottom:1px solid var(--border);
+      padding:7px 0;text-align:right}
+    .table-scroll:not(.keep-table) > table > tbody > tr > td:last-child{
+      border-bottom:none}
+    /* The data-label becomes the left-hand field name within each card row. */
+    .table-scroll:not(.keep-table) > table > tbody > tr > td[data-label]::before{
+      content:attr(data-label);flex:0 0 40%;text-align:left;color:var(--muted);
+      font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.03em;
+      padding-top:1px}
+    /* Cells acting as a card title or full-width action row: span the row. */
+    .table-scroll:not(.keep-table) > table > tbody > tr > td.card-title{
+      display:block;text-align:left;font-size:15px;padding-bottom:9px}
+    .table-scroll:not(.keep-table) > table > tbody > tr > td.card-title::before{
+      content:none}
+    /* Action cells: make tappable, full-width buttons (>=44px touch target). */
+    .table-scroll:not(.keep-table) > table > tbody > tr > td.card-action{
+      display:block;text-align:left;padding:7px 0}
+    .table-scroll:not(.keep-table) > table > tbody > tr > td.card-action::before{
+      content:none}
+    .table-scroll:not(.keep-table) > table > tbody > tr > td.card-action .btn{
+      width:100%;min-height:44px;font-size:14px}
+    /* Empty placeholder cells add no visible row on mobile. */
+    .table-scroll:not(.keep-table) > table > tbody > tr > td.card-skip{display:none}
+    /* Tables explicitly kept tabular get a subtle scroll affordance + tighter
+       min-width so the side-scroll is obvious but compact. */
+    .table-scroll.keep-table{
+      box-shadow:inset -14px 0 12px -12px rgba(0,0,0,.12)}
+    .table-scroll.keep-table table{min-width:520px}
+  }
   /* primary action bar within a card */
   .actionbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;
     padding-top:12px;border-top:1px solid var(--border)}
@@ -1130,16 +1183,16 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
             const w=r.workers; const active=isActive(r);
             return (
               <tr key={i} style={active?{}:{opacity:.6}}>
-                <td className="clickable" onClick={()=>setSelected({...r,w})}>
+                <td className="clickable card-title" onClick={()=>setSelected({...r,w})}>
                   <span style={{display:"inline-flex",alignItems:"center",gap:8}}>
                     <Avatar src={w.photo_url} name={fullName(w)} size={28}/><b>{fullName(w)}</b></span></td>
-                <td>{r.companies?.name||"—"}</td>
-                <td>{r.role||<span className="muted">—</span>}</td>
-                <td><span className={"pill "+(r.contract==="PT"?"pt":"ft")}>{r.contract}</span></td>
-                <td>{w.payout_method?methodLabel(w.payout_method):
+                <td data-label="Company">{r.companies?.name||"—"}</td>
+                <td data-label="Role">{r.role||<span className="muted">—</span>}</td>
+                <td data-label="Contract"><span className={"pill "+(r.contract==="PT"?"pt":"ft")}>{r.contract}</span></td>
+                <td data-label="Payout">{w.payout_method?methodLabel(w.payout_method):
                   <span className="pill warn">not set</span>}</td>
-                <td><span className={"pill "+(active?"active":"inactive")}>{active?"active":"inactive"}</span></td>
-                <td style={{textAlign:"right",whiteSpace:"nowrap"}}>
+                <td data-label="Status"><span className={"pill "+(active?"active":"inactive")}>{active?"active":"inactive"}</span></td>
+                <td className="card-action" style={{textAlign:"right",whiteSpace:"nowrap"}}>
                   <button className="btn ghost sm" onClick={()=>setSelected({...r,w})}>Edit</button>{" "}
                   {active
                     ? <button className="btn ghost sm" disabled={busyId===w.id}
@@ -3006,7 +3059,7 @@ function TimeImport({client,companyId,consolidated}){
           <p className="sub">{matchedN} matched · {unmatchedN} unmatched ·
             {" "}{parsed.dates.length} days in period.
             Unmatched members need their <code>hubstaff_name</code> set on the contractor.</p>
-          <table>
+          <div className="table-scroll"><table>
             <thead><tr>
               <th>Hubstaff member</th><th>Match</th><th>Days worked</th>
               <th title="Time clocked into Hubstaff timer">Tracked (h)</th>
@@ -3022,27 +3075,27 @@ function TimeImport({client,companyId,consolidated}){
                 const totalH=trackedH+ptoH;
                 return (
                 <tr key={i} style={m.inactive?{background:"var(--warn-soft)"}:{}}>
-                  <td>{m.name}{m.inactive && <span className="muted" style={{fontSize:11}}> · inactive</span>}</td>
-                  <td>{m.matched
+                  <td className="card-title">{m.name}{m.inactive && <span className="muted" style={{fontSize:11}}> · inactive</span>}</td>
+                  <td data-label="Match">{m.matched
                        ?(m.inactive
                           ?<span className="pill" style={{background:"#fde68a",color:"#92400e"}}>matched · inactive</span>
                           :<span className="pill active">matched</span>)
                        :<span className="pill warn">no match</span>}</td>
-                  <td>{daysWorked} <span className="muted">/ {parsed.dates.length}</span></td>
-                  <td>{trackedH.toFixed(2)}</td>
-                  <td style={ptoH>0?{color:"var(--accent)",fontWeight:600}:{color:"var(--muted)"}}>
+                  <td data-label="Days worked">{daysWorked} <span className="muted">/ {parsed.dates.length}</span></td>
+                  <td data-label="Tracked (h)">{trackedH.toFixed(2)}</td>
+                  <td data-label="PTO (h)" style={ptoH>0?{color:"var(--accent)",fontWeight:600}:{color:"var(--muted)"}}>
                     {ptoH>0?ptoH.toFixed(2):"—"}
                   </td>
-                  <td style={{fontWeight:600}}>{totalH.toFixed(2)}</td>
-                  <td>{m.activity||"—"}</td>
-                  <td style={{textAlign:"right"}}>
+                  <td data-label="Total (h)" style={{fontWeight:600}}>{totalH.toFixed(2)}</td>
+                  <td data-label="Activity">{m.activity||"—"}</td>
+                  <td className="card-action" style={{textAlign:"right"}}>
                     {!m.matched && !consolidated &&
                       <button className="btn ghost sm" onClick={()=>addContractor(m)}>+ Add contractor</button>}
                   </td>
                 </tr>
               );})}
             </tbody>
-          </table>
+          </table></div>
           <p className="muted" style={{fontSize:12,marginTop:8}}>
             Each contractor is stored as one row per day of the period ({matchedN} × {parsed.dates.length}
             {" "}= {matchedN*parsed.dates.length} daily entries), including zero-hour days — that's what the
@@ -3320,16 +3373,16 @@ function DeleteImports({client,companyId,consolidated,onDeleted}){
 
       <label style={{fontSize:11,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".03em"}}>By import batch (most recent)</label>
       {batchList.length===0?<div className="empty" style={{padding:20}}>No imports recorded.</div>:
-      <table style={{marginTop:6}}>
+      <div className="table-scroll"><table style={{marginTop:6}}>
         <thead><tr><th>Imported</th><th>Date range</th><th>Rows</th><th></th></tr></thead>
         <tbody>
           {batchList.map((b,i)=>(
             <React.Fragment key={i}>
             <tr>
-              <td>{b.when?new Date(b.when).toLocaleString():"—"}</td>
-              <td>{b.min} → {b.max}</td>
-              <td>{b.rows}</td>
-              <td style={{textAlign:"right"}}>
+              <td className="card-title">{b.when?new Date(b.when).toLocaleString():"—"}</td>
+              <td data-label="Date range">{b.min} → {b.max}</td>
+              <td data-label="Rows">{b.rows}</td>
+              <td className="card-action" style={{textAlign:"right"}}>
                 <button className="btn ghost sm" disabled={!b.id} onClick={()=>viewBatch(b)}>
                   {viewing&&viewing.batchId===b.id?"Hide":"View"}</button>{" "}
                 {armed&&armed.type==="batch"&&armed.i===i
@@ -3353,7 +3406,7 @@ function DeleteImports({client,companyId,consolidated,onDeleted}){
             </React.Fragment>
           ))}
         </tbody>
-      </table>}
+      </table></div>}
       <Banner msg={msg} tone={msgTone||undefined} style={{marginTop:12}} />
     </div>
   );
@@ -4041,18 +4094,18 @@ function HolidayEditor({year, onChange}){
           <button className="btn ghost sm" onClick={reset}>Reset to defaults</button>
         </div>
       </div>
-      <table>
+      <div className="table-scroll"><table>
         <thead><tr><th>Holiday</th><th>Date</th><th></th></tr></thead>
         <tbody>
           {list.map((h,i)=>(
             <tr key={i}>
-              <td><input value={h.name} onChange={e=>edit(i,"name",e.target.value)} style={{width:"100%",border:"none",fontSize:13}}/></td>
-              <td><input type="date" value={h.date} onChange={e=>edit(i,"date",e.target.value)}/></td>
-              <td style={{textAlign:"right"}}><button className="btn ghost sm" onClick={()=>del(i)}>Remove</button></td>
+              <td data-label="Holiday"><input value={h.name} onChange={e=>edit(i,"name",e.target.value)} style={{width:"100%",border:"none",fontSize:13}}/></td>
+              <td data-label="Date"><input type="date" value={h.date} onChange={e=>edit(i,"date",e.target.value)}/></td>
+              <td className="card-action" style={{textAlign:"right"}}><button className="btn ghost sm" onClick={()=>del(i)}>Remove</button></td>
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
     </div>
   );
 }
@@ -4834,11 +4887,11 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
                 const finished = b.state==="locked" || b.state==="paid";
                 return (
                   <tr key={i} style={isCur?{background:"#eff6ff"}:{}}>
-                    <td><b>{b.start} → {b.end}</b></td>
-                    <td>{b.contractors}</td>
-                    <td>{b.hours.toLocaleString(undefined,{minimumFractionDigits:2})}</td>
-                    <td>{badge}</td>
-                    <td style={{textAlign:"right",whiteSpace:"nowrap"}}>
+                    <td className="card-title"><b>{b.start} → {b.end}</b></td>
+                    <td data-label="Contractors">{b.contractors}</td>
+                    <td data-label="Total hours">{b.hours.toLocaleString(undefined,{minimumFractionDigits:2})}</td>
+                    <td data-label="Status">{badge}</td>
+                    <td className="card-action" style={{textAlign:"right",whiteSpace:"nowrap"}}>
                       {finished
                         ? <button className="btn ghost sm" disabled={busy} onClick={()=>openBatch(b)}
                             title={b.state==="paid"?"Review this paid period (pay it in Process & Pay)":"Open to review / unlock below"}>Open</button>
@@ -5381,7 +5434,7 @@ function Documents({client,companyId,consolidated}){
         <h2>Tracked documents {consolidated?"· all companies":""}</h2>
         {loading?<div className="empty">Loading…</div>:
          list.length===0?<div className="empty">No documents yet. Add one above.</div>:
-        <table>
+        <div className="table-scroll"><table>
           <thead><tr><th>Contractor</th><th>Type</th><th>Title</th><th>Signed</th><th>Expires</th><th>Status</th></tr></thead>
           <tbody>
             {list.map(d=>{
@@ -5389,12 +5442,12 @@ function Documents({client,companyId,consolidated}){
               const overdue=n!=null&&n<0, soon=n!=null&&n>=0&&n<=30;
               return (
                 <tr key={d.id} style={overdue?{background:"#fee2e2"}:soon?{background:"var(--warn-soft)"}:{}}>
-                  <td><b>{nameById[d.worker_id]||"—"}</b></td>
-                  <td>{DOC_KINDS.find(k=>k[0]===d.kind)?.[1]||d.kind}</td>
-                  <td>{d.title||"—"}</td>
-                  <td>{d.signed_on||"—"}</td>
-                  <td>{d.expires_on||<span className="muted">no expiry</span>}</td>
-                  <td>{n==null?<span className="muted">—</span>:
+                  <td className="card-title"><b>{nameById[d.worker_id]||"—"}</b></td>
+                  <td data-label="Type">{DOC_KINDS.find(k=>k[0]===d.kind)?.[1]||d.kind}</td>
+                  <td data-label="Title">{d.title||"—"}</td>
+                  <td data-label="Signed">{d.signed_on||"—"}</td>
+                  <td data-label="Expires">{d.expires_on||<span className="muted">no expiry</span>}</td>
+                  <td data-label="Status">{n==null?<span className="muted">—</span>:
                        overdue?<span className="pill bad">overdue {Math.abs(n)}d</span>:
                        soon?<span className="pill warn">in {n}d</span>:
                        <span className="pill active">ok</span>}</td>
@@ -5402,7 +5455,7 @@ function Documents({client,companyId,consolidated}){
               );
             })}
           </tbody>
-        </table>}
+        </table></div>}
       </div>
     </div>
   );
@@ -5490,14 +5543,14 @@ function Reports({client,companyId,consolidated}){
               <React.Fragment key={p.key}>
               <tr className="clickable" onClick={()=>setOpenKey(open?null:p.key)}
                   style={{cursor:"pointer", background:open?"#f1f5f9":undefined}}>
-                <td style={{color:"var(--muted)"}}>{open?"▾":"▸"}</td>
-                {consolidated&&<td>{p.company||"—"}</td>}
-                <td>{p.start} → {p.end}</td>
-                <td>{p.pay_date||"—"}</td>
-                <td>{p.count}</td>
-                <td><b>{money(p.net,"PHP")}</b></td>
-                <td className="muted">{p.fx?money(p.usdRef,"USD"):"—"}</td>
-                <td style={p.unpaid>0?{color:"var(--warn)",fontWeight:600}:{}}>{money(p.unpaid,"PHP")}</td>
+                <td className="card-skip" style={{color:"var(--muted)"}}>{open?"▾":"▸"}</td>
+                {consolidated&&<td data-label="Company">{p.company||"—"}</td>}
+                <td className="card-title">{p.start} → {p.end}</td>
+                <td data-label="Pay date">{p.pay_date||"—"}</td>
+                <td data-label="Contractors">{p.count}</td>
+                <td data-label="Net ₱"><b>{money(p.net,"PHP")}</b></td>
+                <td className="muted" data-label="≈ USD ref">{p.fx?money(p.usdRef,"USD"):"—"}</td>
+                <td data-label="Unpaid ₱" style={p.unpaid>0?{color:"var(--warn)",fontWeight:600}:{}}>{money(p.unpaid,"PHP")}</td>
               </tr>
               {open && (
                 <tr>
@@ -6031,15 +6084,15 @@ function UtilizationReport({client,companyId,consolidated}){
       <p className="sub">Total approved hours per contractor across all imported time (in scope).</p>
       {loading?<div className="empty">Loading…</div>:
        rows.length===0?<div className="empty">No approved time yet.</div>:
-      <table>
+      <div className="table-scroll"><table>
         <thead><tr><th>Contractor</th><th>Approved hours</th><th>Days tracked</th><th>Avg h/day</th></tr></thead>
         <tbody>
           {rows.map((r,i)=>(
-            <tr key={i}><td><b>{r.name}</b></td><td>{r.hours}</td><td>{r.days}</td>
-              <td>{r.days?(r.hours/r.days).toFixed(1):"—"}</td></tr>
+            <tr key={i}><td className="card-title"><b>{r.name}</b></td><td data-label="Approved hours">{r.hours}</td><td data-label="Days tracked">{r.days}</td>
+              <td data-label="Avg h/day">{r.days?(r.hours/r.days).toFixed(1):"—"}</td></tr>
           ))}
         </tbody>
-      </table>}
+      </table></div>}
     </div>
   );
 }
