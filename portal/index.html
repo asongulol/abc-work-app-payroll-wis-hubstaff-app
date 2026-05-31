@@ -108,13 +108,30 @@ const STRINGS = { en: {
   "ob.sign.button": "Sign",
   "ob.sign.signing": "Signing…",
   "ob.close": "Close",
-  "ob.stage2.placeholder": "Agreements signed. Your profile step appears here in the next update.",
-  "ob.stage3.placeholder": "Your document upload step appears here in a later update.",
+  "ob.stage2.intro": "Fill in each section and save. Fields marked * are required.",
+  "ob.stage2.continue": "Save & continue",
+  "ob.stage2.finish": "Save & finish profile",
+  "ob.stage3.title": "Upload your documents",
+  "ob.stage3.intro": "Upload each document as a PDF, JPG, or PNG (max 10 MB). Our HR team reviews each one.",
+  "ob.stage3.finish": "Finish onboarding",
+  "ob.stage3.waiting": "Waiting for HR review…",
+  "ob.doc.pending": "Pending review",
+  "ob.doc.approved": "Approved",
+  "ob.doc.needs": "Needs replacement",
+  "ob.doc.reason": "Reason",
+  "ob.doc.issued": "Date issued",
+  "ob.doc.upload": "Upload",
+  "ob.doc.replace": "Replace",
+  "ob.doc.uploading": "Uploading…",
   "ob.done.title": "You're all set!",
   "ob.err.scroll": "Please read to the end before signing.",
   "ob.err.name": "Enter your full legal name.",
   "ob.err.consent": "Please tick the consent box.",
   "ob.err.draw": "Please draw your signature.",
+  "ob.err.file": "Choose a file first.",
+  "ob.err.filetype": "Use a PDF, JPG, or PNG file.",
+  "ob.err.filesize": "File is larger than 10 MB.",
+  "ob.err.issued": "Enter the date the NBI clearance was issued.",
 }};
 let LOCALE = "en";
 function t(key, vars){
@@ -705,7 +722,7 @@ function Stage1Agreements({ client, cfg, signed, onSigned }){
   );
 }
 
-function OnboardingFlow({ client, cfg, prog:prog0, onDone }){
+function OnboardingFlow({ client, session, cfg, prog:prog0, onDone }){
   const [prog,setProg]=useState(prog0||null);
   const [signed,setSigned]=useState([]);
   const [intro,setIntro]=useState(false);
@@ -727,9 +744,176 @@ function OnboardingFlow({ client, cfg, prog:prog0, onDone }){
       {!intro && <WelcomeIntro onStart={()=>setIntro(true)}/>}
       {intro && stage==="stage1_sign" &&
         <Stage1Agreements client={client} cfg={cfg} signed={signed} onSigned={refresh}/>}
-      {intro && stage==="stage2_profile" && <div className="card"><p className="sub">{t("ob.stage2.placeholder")}</p></div>}
-      {intro && stage==="stage3_docs"   && <div className="card"><p className="sub">{t("ob.stage3.placeholder")}</p></div>}
+      {intro && stage==="stage2_profile" && <Stage2Profile client={client} onAdvance={refresh}/>}
+      {intro && stage==="stage3_docs"   && <Stage3Docs client={client} session={session} cfg={cfg} onAdvance={refresh}/>}
       {intro && stage==="complete"      && <div className="card"><h2 style={{marginTop:0}}>{t("ob.done.title")}</h2></div>}
+    </div>
+  );
+}
+
+// ---- Stage 2: profile tabs (client validation mirrors portal-self) ----
+const STAGE2_SECTIONS = [["contact","Contact"],["personal","Personal"],["payout","Payout"],["about","About you"]];
+const REQUIRED_S2 = { first_name:1,last_name:1,mobile:1,ph_address:1,date_of_birth:1,emergency_name:1,emergency_relationship:1,emergency_mobile:1,marital_status:1 };
+function validateTabClient(tab, f){
+  const e={}; const ne=v=>v!=null&&String(v).trim()!==""; const PHM=/^(\+63|0)9\d{9}$/;
+  if(tab==="contact"){
+    if(!ne(f.first_name)) e.first_name="Required";
+    if(!ne(f.last_name)) e.last_name="Required";
+    if(!ne(f.ph_address)) e.ph_address="Required";
+    if(!ne(f.mobile)) e.mobile="Required"; else if(!PHM.test(String(f.mobile).replace(/\s/g,""))) e.mobile="Use 09XXXXXXXXX or +639XXXXXXXXX";
+    if(ne(f.postal_code)&&!/^\d{4}$/.test(String(f.postal_code).trim())) e.postal_code="PH postal code is 4 digits";
+    if(!ne(f.date_of_birth)) e.date_of_birth="Required";
+    else { const d=new Date(f.date_of_birth); if(isNaN(d.getTime())) e.date_of_birth="Invalid date";
+      else { const n=new Date(); let a=n.getFullYear()-d.getFullYear(); const m=n.getMonth()-d.getMonth(); if(m<0||(m===0&&n.getDate()<d.getDate()))a--; if(a<18)e.date_of_birth="You must be at least 18"; } }
+  } else if(tab==="personal"){
+    if(!ne(f.emergency_name)) e.emergency_name="Required";
+    if(!ne(f.emergency_relationship)) e.emergency_relationship="Required";
+    if(!ne(f.emergency_mobile)) e.emergency_mobile="Required"; else if(!PHM.test(String(f.emergency_mobile).replace(/\s/g,""))) e.emergency_mobile="Use 09XXXXXXXXX or +639XXXXXXXXX";
+    if(!ne(f.marital_status)) e.marital_status="Required";
+  } else if(tab==="payout"){
+    if(!["gcash","paymaya","paypal","wise_tag"].some(k=>ne(f[k]))) e._="Add at least one payout method";
+  }
+  return e;
+}
+function Stage2Profile({ client, onAdvance }){
+  const [form,setForm]=useState(null); const [sec,setSec]=useState("contact");
+  const [errs,setErrs]=useState({}); const [busy,setBusy]=useState(false); const [serverErr,setServerErr]=useState("");
+  useEffect(()=>{
+    const cols = FIELD_DEFS.map(f=>f.ex?null:f.k).filter(Boolean).join(",")+",profile_extras";
+    client.from("workers").select(cols).maybeSingle().then(({data})=>{
+      const row=data||{}; const ex=(row.profile_extras&&typeof row.profile_extras==="object")?row.profile_extras:{};
+      const f=Object.fromEntries(FIELD_DEFS.map(d=>[d.k,(d.ex?ex[d.k]:row[d.k])||""]));
+      setForm(f);
+      const firstBad=["contact","personal","payout"].find(t=>Object.keys(validateTabClient(t,f)).length);
+      setSec(firstBad||"about");
+    });
+  },[]);
+  if(!form) return <div className="card"><div className="empty">Loading…</div></div>;
+  const set=(k,v)=>setForm(x=>({...x,[k]:v}));
+  const order=STAGE2_SECTIONS.map(s=>s[0]); const idx=order.indexOf(sec); const isLast=idx===order.length-1;
+  const secFields=FIELD_DEFS.filter(d=>d.s===sec);
+  async function saveSection(){
+    setServerErr("");
+    const ce=validateTabClient(sec,form);
+    if(Object.keys(ce).length){ setErrs(ce); return; }
+    setErrs({}); setBusy(true);
+    const fields=Object.fromEntries(secFields.map(d=>[d.k,form[d.k]]));
+    const { data, error } = await client.functions.invoke("portal-self",{body:{action:"complete_tab",tab:sec,fields}});
+    setBusy(false);
+    if(error||(data&&data.error)){ setServerErr((data&&data.error)||error.message); return; }
+    if(data.field_errors&&data.field_errors.length){ const fe={}; data.field_errors.forEach(x=>fe[x.field]=x.msg); setErrs(fe); return; }
+    if(data.stage2_complete){ onAdvance && onAdvance(); return; }
+    if(!isLast) setSec(order[idx+1]); else onAdvance && onAdvance();
+  }
+  return (
+    <div className="card">
+      <div className="ptabs" style={{marginTop:0}}>
+        {STAGE2_SECTIONS.map(([k,lbl])=>(
+          <button key={k} className={sec===k?"on":""} onClick={()=>{ setErrs({}); setServerErr(""); setSec(k); }}>{lbl}</button>
+        ))}
+      </div>
+      <p className="sub" style={{marginTop:0}}>{t("ob.stage2.intro")}</p>
+      {secFields.map(d=>(
+        <div key={d.k} style={{margin:"8px 0"}}>
+          <label className="sub" style={{display:"block"}}>{d.label}{REQUIRED_S2[d.k]?" *":""}</label>
+          <input type={d.type||"text"} value={form[d.k]||""} onChange={e=>set(d.k,e.target.value)}
+            aria-invalid={errs[d.k]?"true":"false"} placeholder={d.wise?"@yourtag":""}/>
+          {errs[d.k] && <div className="err" style={{padding:"2px 0"}}>{errs[d.k]}</div>}
+        </div>
+      ))}
+      {sec==="payout" && errs._ && <div className="err">{errs._}</div>}
+      {serverErr && <div className="err">{serverErr}</div>}
+      <button className="btn" style={{width:"100%",marginTop:8}} disabled={busy} onClick={saveSection}>
+        {busy?t("ob.sign.signing"):(isLast?t("ob.stage2.finish"):t("ob.stage2.continue"))}
+      </button>
+    </div>
+  );
+}
+
+// ---- Stage 3: document uploads (HR-reviewed) ----
+function UploadSlot({ client, session, wid, slot, doc, onChange }){
+  const [file,setFile]=useState(null); const [issued,setIssued]=useState((doc&&doc.issued_on)||"");
+  const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
+  const status=doc&&doc.review_status;
+  async function doUpload(){
+    setMsg("");
+    if(!file){ setMsg(t("ob.err.file")); return; }
+    if(!wid){ setMsg("Couldn't find your profile — contact admin."); return; }
+    if(!["application/pdf","image/jpeg","image/png"].includes(file.type)){ setMsg(t("ob.err.filetype")); return; }
+    if(file.size>10*1024*1024){ setMsg(t("ob.err.filesize")); return; }
+    if(slot.kind==="nbi_clearance" && !issued){ setMsg(t("ob.err.issued")); return; }
+    setBusy(true);
+    try{
+      const uid=session&&session.user&&session.user.id;
+      const path=`${uid}/${slot.kind}/${Date.now()}-${slot.side?slot.side+"-":""}${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
+      const up=await client.storage.from("contractor-docs").upload(path,file,{upsert:false});
+      if(up.error) throw up.error;
+      const row={worker_id:wid,kind:slot.kind,storage_path:path,title:file.name,mime_type:file.type,file_size_bytes:file.size,review_status:"pending"};
+      if(slot.side) row.side=slot.side;
+      if(slot.kind==="nbi_clearance"&&issued) row.issued_on=issued;
+      const ins=await client.from("documents").insert(row);
+      if(ins.error) throw ins.error;
+      setFile(null); onChange&&onChange();
+    }catch(ex){ setMsg("Upload failed: "+(ex.message||ex)); }
+    finally{ setBusy(false); }
+  }
+  const badge = status==="approved"?{cls:"paid",txt:t("ob.doc.approved")}
+    : status==="needs_replacement"?{cls:"pending",txt:t("ob.doc.needs")}
+    : status?{cls:"pending",txt:t("ob.doc.pending")}:null;
+  return (
+    <div style={{borderTop:"1px solid var(--line)",padding:"10px 0"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div style={{fontWeight:600}}>{slot.label}</div>
+        {badge && <span className={"pill "+badge.cls}>{badge.txt}</span>}
+      </div>
+      {status==="needs_replacement" && doc&&doc.review_reason &&
+        <div className="err" style={{marginTop:4}}>{t("ob.doc.reason")}: {doc.review_reason}</div>}
+      {status!=="approved" && <div>
+        {slot.kind==="nbi_clearance" && <div>
+          <label className="sub" style={{display:"block",marginTop:6}}>{t("ob.doc.issued")}</label>
+          <input type="date" value={issued} onChange={e=>setIssued(e.target.value)}/>
+        </div>}
+        <input type="file" accept="application/pdf,image/jpeg,image/png" capture="environment"
+          onChange={e=>setFile(e.target.files&&e.target.files[0]||null)} style={{margin:"6px 0"}}/>
+        {msg && <div className="err">{msg}</div>}
+        <button className="btn ghost" style={{color:"var(--accent)",borderColor:"var(--accent)",padding:"6px 12px"}} disabled={busy} onClick={doUpload}>
+          {busy?t("ob.doc.uploading"):(status?t("ob.doc.replace"):t("ob.doc.upload"))}
+        </button>
+      </div>}
+      {status==="approved" && doc&&doc.title && <div className="sub" style={{marginTop:4}}>✓ {doc.title}</div>}
+    </div>
+  );
+}
+function Stage3Docs({ client, session, cfg, onAdvance }){
+  const [wid,setWid]=useState(null); const [docs,setDocs]=useState(null); const [err,setErr]=useState("");
+  function load(){
+    client.from("workers").select("id").maybeSingle().then(({data})=>setWid(data&&data.id||null));
+    client.from("documents").select("id,kind,side,title,storage_path,issued_on,review_status,review_reason,created_at")
+      .order("created_at",{ascending:false})
+      .then(({data,error})=>{ if(error) setErr(error.message); setDocs(data||[]); });
+  }
+  useEffect(load,[]);
+  const reqDocs=(cfg&&cfg.documents)||[];
+  const byKey={}; (docs||[]).forEach(d=>{ const key=d.kind+"|"+(d.side||""); (byKey[key]=byKey[key]||[]).push(d); });
+  const latest=(kind,side)=>{ const a=byKey[kind+"|"+(side||"")]; return a&&a[0]; };
+  const slots=[];
+  reqDocs.filter(d=>d.required!==false).forEach(d=>{
+    if(Array.isArray(d.sides)) d.sides.forEach(side=>slots.push({kind:d.kind,side,label:d.title+" ("+side+")"}));
+    else slots.push({kind:d.kind,side:null,label:d.title});
+  });
+  const allApproved = slots.length>0 && slots.every(s=>{ const l=latest(s.kind,s.side); return l&&l.review_status==="approved"; });
+  if(docs===null) return <div className="card"><div className="empty">Loading…</div></div>;
+  return (
+    <div className="card">
+      <div style={{fontWeight:700,marginBottom:4}}>{t("ob.stage3.title")}</div>
+      <p className="sub" style={{marginTop:0}}>{t("ob.stage3.intro")}</p>
+      {err && <div className="err">{err}</div>}
+      {slots.map(s=>(
+        <UploadSlot key={s.kind+(s.side||"")} client={client} session={session} wid={wid} slot={s} doc={latest(s.kind,s.side)} onChange={load}/>
+      ))}
+      <button className="btn" style={{width:"100%",marginTop:10}} disabled={!allApproved} onClick={()=>onAdvance&&onAdvance()}>
+        {allApproved? t("ob.stage3.finish") : t("ob.stage3.waiting")}
+      </button>
     </div>
   );
 }
@@ -758,7 +942,7 @@ function App(){
   if(ob===undefined) return loading;
   // Gate: only when the feature is enabled AND this contractor hasn't finished.
   if(ob.enabled && !ob.done)
-    return <OnboardingFlow client={client} cfg={ob.cfg} prog={ob.prog} onDone={()=>setOb(x=>({...x,done:true}))}/>;
+    return <OnboardingFlow client={client} session={session} cfg={ob.cfg} prog={ob.prog} onDone={()=>setOb(x=>({...x,done:true}))}/>;
   return <Portal client={client} session={session}/>;
 }
 
