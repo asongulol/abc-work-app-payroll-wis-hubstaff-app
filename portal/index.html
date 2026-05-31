@@ -32,6 +32,26 @@
   .ptabs button{flex:1; background:none; border:0; border-bottom:2px solid transparent;
        padding:9px 4px; font-size:14px; font-weight:600; color:var(--muted); cursor:pointer;}
   .ptabs button.on{color:var(--accent); border-bottom-color:var(--accent);}
+  /* ---- onboarding flow (M2) ---- */
+  .ob-wrap{padding-bottom:24px;}
+  .ob-progress{margin:8px 0 14px;}
+  .ob-bar{height:8px; background:var(--line); border-radius:999px; overflow:hidden; margin-top:6px;}
+  .ob-bar-fill{height:100%; background:var(--accent); transition:width .3s;}
+  .ob-agr{display:flex; align-items:center; gap:10px; padding:12px 0; border-top:1px solid var(--line);}
+  .ob-agr.locked{opacity:.5;}
+  .ob-check{color:#16a34a; font-weight:800; font-size:18px;}
+  .ob-lock{font-size:16px;}
+  .ob-modal-bg{position:fixed; inset:0; background:rgba(0,0,0,.5); display:flex; align-items:flex-end; justify-content:center; z-index:50;}
+  .ob-modal{background:#fff; width:100%; max-width:560px; max-height:92vh; border-radius:16px 16px 0 0; display:flex; flex-direction:column; overflow:hidden;}
+  .ob-modal-head{display:flex; justify-content:space-between; align-items:center; padding:14px; border-bottom:1px solid var(--line);}
+  .ob-doc{overflow-y:auto; padding:14px; flex:1; min-height:160px; background:#fafafa;}
+  .ob-scrollhint{padding:8px 14px; font-size:13px; color:#92400e; background:#fef3c7;}
+  .ob-scrollhint.ok{background:#dcfce7; color:#166534;}
+  .ob-sign{padding:14px; border-top:1px solid var(--line);}
+  .ob-canvas{border:1px dashed var(--line); border-radius:8px; width:100%; height:120px; touch-action:none; background:#fff;}
+  .ob-consent{display:flex; gap:8px; align-items:flex-start; font-size:13px; margin:10px 0;}
+  .ob-consent input{width:auto; margin-top:2px;}
+  .ob-toggle{flex:1; padding:8px;}
   .card{background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
         padding:14px; margin:12px 0;}
   .sub{color:var(--muted); font-size:13px; margin:2px 0;}
@@ -65,6 +85,79 @@ const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const peso = n => (n==null||isNaN(n)) ? "—" : "₱"+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 const hrs  = s => ((Number(s||0))/3600);
 const fullName = w => w ? [w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ") : "";
+
+// ---- i18n: English now; add STRINGS.tl for Tagalog later (legal text stays in its authoritative language) ----
+const STRINGS = { en: {
+  "ob.welcome.title": "Welcome to Ability Builders",
+  "ob.welcome.body": "Before you can use your portal, please complete a quick one-time onboarding: sign your agreements, complete your profile, and upload a few documents. It takes about 15–20 minutes. You can pause and come back anytime — your progress is saved.",
+  "ob.welcome.start": "Get started",
+  "ob.step": "Step {n} of 3",
+  "ob.pct": "{p}% complete",
+  "ob.stage1.title": "Sign your agreements",
+  "ob.stage1.intro": "Read each document to the end, then sign. Please sign them in order.",
+  "ob.locked": "Locked — finish the one above first",
+  "ob.signed": "Signed",
+  "ob.reviewsign": "Review & sign",
+  "ob.viewer.scrollhint": "Scroll to the end of the document to enable signing.",
+  "ob.viewer.reachedend": "You've reached the end — you can sign below.",
+  "ob.sign.legalname": "Your full legal name",
+  "ob.sign.type": "Type",
+  "ob.sign.draw": "Draw",
+  "ob.sign.clear": "Clear",
+  "ob.sign.consent": "I have read and agree to this agreement, and I am signing it electronically.",
+  "ob.sign.button": "Sign",
+  "ob.sign.signing": "Signing…",
+  "ob.close": "Close",
+  "ob.stage2.placeholder": "Agreements signed. Your profile step appears here in the next update.",
+  "ob.stage3.placeholder": "Your document upload step appears here in a later update.",
+  "ob.done.title": "You're all set!",
+  "ob.err.scroll": "Please read to the end before signing.",
+  "ob.err.name": "Enter your full legal name.",
+  "ob.err.consent": "Please tick the consent box.",
+  "ob.err.draw": "Please draw your signature.",
+}};
+let LOCALE = "en";
+function t(key, vars){
+  let s = (STRINGS[LOCALE] && STRINGS[LOCALE][key]) || STRINGS.en[key] || key;
+  if(vars) for(const k in vars) s = s.split("{"+k+"}").join(vars[k]);
+  return s;
+}
+
+// Placeholder agreement bodies — REPLACE with the executed legal text + real
+// version before go-live. Long enough that the scroll-to-end gate is meaningful.
+const AGREEMENT_TEXT = {
+  ic_agreement: "INDEPENDENT CONTRACTOR AGREEMENT\n\n[PLACEHOLDER — replace with the executed Independent Contractor Agreement before go-live.]\n\n1. ENGAGEMENT. The Contractor is engaged as an independent contractor and not as an employee. Nothing in this Agreement creates an employment, partnership, or agency relationship.\n\n2. SERVICES. The Contractor will perform the services as agreed from time to time, exercising independent professional judgment as to the manner and means of performance.\n\n3. COMPENSATION. The Contractor will be paid the agreed rate, in PHP via the chosen payout method. The Contractor is responsible for their own taxes and statutory contributions.\n\n4. INDEPENDENT STATUS. The Contractor controls their own schedule, tools, and methods, and may provide services to others, subject to the separate Non-Compete and Confidentiality terms.\n\n5. TERM & TERMINATION. Either party may end the engagement on written notice. Accrued amounts for work performed remain payable.\n\n6. MISCELLANEOUS. This Agreement is governed by the applicable laws of the State of New York, USA. The parties agree to electronic signature.\n\n[End of placeholder text.]",
+  non_compete:  "NON-COMPETE AGREEMENT\n\n[PLACEHOLDER — replace with the executed Non-Compete Agreement before go-live.]\n\n1. SCOPE. During the engagement and for the agreed period afterward, the Contractor will not directly compete with the Company's specific clients on matters they worked on, to the extent permitted by law.\n\n2. NON-SOLICITATION. The Contractor will not solicit the Company's clients or contractors for a competing purpose during the restricted period.\n\n3. REASONABLENESS. The restrictions are limited in time, scope, and geography to what is reasonable to protect legitimate business interests.\n\n4. SEVERABILITY. If any restriction is found unenforceable, it will be reduced to the maximum enforceable extent rather than voided.\n\n[End of placeholder text.]",
+  confidentiality_nda: "CONFIDENTIALITY / NON-DISCLOSURE AGREEMENT\n\n[PLACEHOLDER — replace with the executed NDA before go-live.]\n\n1. CONFIDENTIAL INFORMATION. The Contractor will receive confidential information including client data, business processes, and personal information of third parties.\n\n2. OBLIGATIONS. The Contractor will keep all confidential information strictly private, use it only for the engagement, and not disclose it to anyone without authorization.\n\n3. PERSONAL DATA. The Contractor will handle any personal data in accordance with applicable privacy laws, including the Philippine Data Privacy Act of 2012.\n\n4. RETURN. On request or at the end of the engagement, the Contractor will return or securely destroy all confidential information.\n\n5. SURVIVAL. These obligations survive the end of the engagement.\n\n[End of placeholder text.]",
+  baa: "BUSINESS ASSOCIATE AGREEMENT (BAA)\n\n[PLACEHOLDER — replace with the executed BAA before go-live.]\n\n1. PURPOSE. To the extent the Contractor handles protected health information (PHI) on behalf of the Company, this BAA sets out the required safeguards.\n\n2. PERMITTED USES. The Contractor will use or disclose PHI only as permitted by the engagement and applicable law.\n\n3. SAFEGUARDS. The Contractor will implement reasonable administrative, physical, and technical safeguards to protect PHI.\n\n4. INCIDENTS. The Contractor will report any suspected unauthorized use or disclosure promptly.\n\n5. RETURN OR DESTRUCTION. On termination, the Contractor will return or destroy all PHI where feasible.\n\n[End of placeholder text.]",
+};
+
+// best-effort SHA-256 + device fingerprint (never throw — capture is best-effort, §6.8)
+async function sha256Hex(str){
+  try{
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str||""));
+    return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+  }catch(_e){ return null; }
+}
+function deviceFingerprint(){
+  try{
+    const n = navigator;
+    return [n.userAgent, n.language, (n.languages||[]).join(","), (screen.width+"x"+screen.height), new Date().getTimezoneOffset()].join("|");
+  }catch(_e){ return null; }
+}
+
+// progress: each stage = 1/3; within a stage, tasks are equal-weight.
+function overallPct(prog, cfg, signedCount){
+  const nAgr = (cfg && cfg.agreements && cfg.agreements.length) || 4;
+  const s1 = prog && prog.stage1_complete ? 1 : Math.min(1, (signedCount||0)/nAgr);
+  const s2 = prog && prog.stage2_complete ? 1 : 0;
+  const s3 = prog && prog.stage3_complete ? 1 : 0;
+  return Math.round((s1+s2+s3)/3*100);
+}
+function stepOf(prog){
+  const st = (prog && prog.current_stage) || "stage1_sign";
+  return st==="stage1_sign" ? 1 : st==="stage2_profile" ? 2 : 3;
+}
 
 function useClient(){
   const [client]=useState(()=> window.__createClient ? window.__createClient(SUPABASE_URL,SUPABASE_ANON) : null);
@@ -458,11 +551,214 @@ function Portal({ client, session }){
   );
 }
 
+// ============================ Onboarding flow (M2) ============================
+function ProgressHeader({ prog, cfg, signedCount }){
+  const pct = overallPct(prog, cfg, signedCount);
+  return (
+    <div className="ob-progress">
+      <div className="row" style={{padding:0}}>
+        <span style={{fontWeight:700}}>{t("ob.step",{n:stepOf(prog)})}</span>
+        <span className="sub" role="status" aria-live="polite">{t("ob.pct",{p:pct})}</span>
+      </div>
+      <div className="ob-bar" aria-hidden="true"><div className="ob-bar-fill" style={{width:pct+"%"}}/></div>
+    </div>
+  );
+}
+
+function WelcomeIntro({ onStart }){
+  return (
+    <div className="card">
+      <h2 style={{marginTop:0}}>{t("ob.welcome.title")}</h2>
+      <p className="sub" style={{fontSize:14}}>{t("ob.welcome.body")}</p>
+      <button className="btn" style={{width:"100%"}} onClick={onStart}>{t("ob.welcome.start")}</button>
+    </div>
+  );
+}
+
+function SignaturePad({ client, agreement, text, canSign, onSigned }){
+  const [mode,setMode]=useState("type"); const [name,setName]=useState("");
+  const [consent,setConsent]=useState(false); const [busy,setBusy]=useState(false);
+  const [err,setErr]=useState(""); const [drawn,setDrawn]=useState(false);
+  const canvasRef = React.useRef(null);
+  useEffect(()=>{ client.from("workers").select("first_name,middle_name,last_name").maybeSingle()
+    .then(({data})=>{ if(data) setName(fullName(data)); }); },[]);
+  useEffect(()=>{
+    if(mode!=="draw") return;
+    const c = canvasRef.current; if(!c) return;
+    const ctx = c.getContext("2d"); ctx.lineWidth=2.2; ctx.lineCap="round"; ctx.strokeStyle="#1F3A68";
+    let drawing=false;
+    const pos=(e)=>{ const r=c.getBoundingClientRect(); const p=e.touches?e.touches[0]:e;
+      return [ (p.clientX-r.left)*(c.width/r.width), (p.clientY-r.top)*(c.height/r.height) ]; };
+    const down=(e)=>{ drawing=true; const [x,y]=pos(e); ctx.beginPath(); ctx.moveTo(x,y); e.preventDefault(); };
+    const move=(e)=>{ if(!drawing) return; const [x,y]=pos(e); ctx.lineTo(x,y); ctx.stroke(); setDrawn(true); e.preventDefault(); };
+    const up=()=>{ drawing=false; };
+    c.addEventListener("mousedown",down); c.addEventListener("mousemove",move); window.addEventListener("mouseup",up);
+    c.addEventListener("touchstart",down,{passive:false}); c.addEventListener("touchmove",move,{passive:false}); window.addEventListener("touchend",up);
+    return ()=>{ c.removeEventListener("mousedown",down); c.removeEventListener("mousemove",move); window.removeEventListener("mouseup",up);
+      c.removeEventListener("touchstart",down); c.removeEventListener("touchmove",move); window.removeEventListener("touchend",up); };
+  },[mode]);
+  function clearCanvas(){ const c=canvasRef.current; if(c){ c.getContext("2d").clearRect(0,0,c.width,c.height); setDrawn(false); } }
+  async function doSign(){
+    setErr("");
+    if(!canSign){ setErr(t("ob.err.scroll")); return; }
+    if(!name.trim()){ setErr(t("ob.err.name")); return; }
+    if(!consent){ setErr(t("ob.err.consent")); return; }
+    let signature_data = name.trim();
+    if(mode==="draw"){ if(!drawn){ setErr(t("ob.err.draw")); return; } signature_data = canvasRef.current.toDataURL("image/png"); }
+    setBusy(true);
+    const doc_sha256 = await sha256Hex(text);
+    const { data, error } = await client.functions.invoke("portal-sign", { body: {
+      action:"sign", agreement_kind:agreement.kind, doc_version:agreement.version||"1.0",
+      doc_sha256, signed_legal_name:name.trim(), signature_method:mode,
+      signature_data, scrolled_to_end:true, device_fingerprint:deviceFingerprint(),
+    }});
+    setBusy(false);
+    if(error||(data&&data.error)){ setErr((data&&data.error)||error.message); return; }
+    onSigned && onSigned();
+  }
+  const ghost = { color:"var(--accent)", borderColor:"var(--accent)" };
+  return (
+    <div className="ob-sign">
+      <div style={{display:"flex",gap:6,marginBottom:8}}>
+        <button className={"btn ob-toggle "+(mode==="type"?"":"ghost")} style={mode==="type"?{}:ghost} onClick={()=>setMode("type")}>{t("ob.sign.type")}</button>
+        <button className={"btn ob-toggle "+(mode==="draw"?"":"ghost")} style={mode==="draw"?{}:ghost} onClick={()=>setMode("draw")}>{t("ob.sign.draw")}</button>
+      </div>
+      <label className="sub" style={{display:"block"}}>{t("ob.sign.legalname")}</label>
+      <input value={name} onChange={e=>setName(e.target.value)} aria-label={t("ob.sign.legalname")} />
+      {mode==="draw" && <div style={{margin:"6px 0"}}>
+        <canvas ref={canvasRef} width={520} height={120} className="ob-canvas" aria-label="Signature drawing area"/>
+        <button className="btn link" onClick={clearCanvas} style={{padding:"4px 0"}}>{t("ob.sign.clear")}</button>
+      </div>}
+      <label className="ob-consent">
+        <input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)} />
+        <span>{t("ob.sign.consent")}</span>
+      </label>
+      {err && <div className="err">{err}</div>}
+      <button className="btn" style={{width:"100%",marginTop:4}} disabled={busy||!canSign||!consent||!name.trim()} onClick={doSign}>
+        {busy ? t("ob.sign.signing") : t("ob.sign.button")}
+      </button>
+    </div>
+  );
+}
+
+function AgreementViewer({ client, agreement, onClose, onSigned }){
+  const [reached,setReached]=useState(false);
+  const scrollRef = React.useRef(null); const bottomRef = React.useRef(null);
+  useEffect(()=>{
+    const el = bottomRef.current; if(!el) return;
+    const obs = new IntersectionObserver((entries)=>{ if(entries.some(e=>e.isIntersecting)) setReached(true); },
+      { root: scrollRef.current, threshold: 0.9 });
+    obs.observe(el);
+    return ()=>obs.disconnect();
+  },[]);
+  const text = AGREEMENT_TEXT[agreement.kind] || "";
+  return (
+    <div className="ob-modal-bg" role="dialog" aria-modal="true" aria-label={agreement.title}>
+      <div className="ob-modal">
+        <div className="ob-modal-head">
+          <b>{agreement.title}</b>
+          <button className="btn ghost" style={{padding:"4px 10px",fontSize:13,color:"var(--accent)",borderColor:"var(--accent)"}} onClick={onClose}>{t("ob.close")}</button>
+        </div>
+        <div className="ob-doc" ref={scrollRef} tabIndex={0}>
+          <pre style={{whiteSpace:"pre-wrap",fontFamily:"inherit",fontSize:14,lineHeight:1.5,margin:0}}>{text}</pre>
+          <div ref={bottomRef} style={{height:1}}/>
+        </div>
+        <div className={"ob-scrollhint "+(reached?"ok":"")} role="status" aria-live="polite">
+          {reached ? t("ob.viewer.reachedend") : t("ob.viewer.scrollhint")}
+        </div>
+        <SignaturePad client={client} agreement={agreement} text={text} canSign={reached} onSigned={onSigned}/>
+      </div>
+    </div>
+  );
+}
+
+function Stage1Agreements({ client, cfg, signed, onSigned }){
+  const [openK,setOpenK]=useState(null);
+  const agreements = (cfg && cfg.agreements ? cfg.agreements.slice() : []).sort((a,b)=>(a.order||0)-(b.order||0));
+  const signedSet = new Set(signed||[]);
+  const nextKind = (agreements.find(a=>!signedSet.has(a.kind))||{}).kind;
+  return (
+    <div className="card">
+      <div style={{fontWeight:700,marginBottom:4}}>{t("ob.stage1.title")}</div>
+      <p className="sub" style={{marginTop:0}}>{t("ob.stage1.intro")}</p>
+      {agreements.map(a=>{
+        const isSigned = signedSet.has(a.kind);
+        const isNext = a.kind===nextKind;
+        const locked = !isSigned && !isNext;
+        return (
+          <div key={a.kind} className={"ob-agr "+(isSigned?"done":locked?"locked":"active")}>
+            <div style={{flex:1}}>
+              <div style={{fontWeight:600}}>{a.title}</div>
+              <div className="sub">{isSigned ? "✓ "+t("ob.signed") : locked ? t("ob.locked") : "v"+(a.version||"1.0")}</div>
+            </div>
+            {isSigned ? <span className="ob-check" aria-label={t("ob.signed")}>✓</span>
+              : locked ? <span className="ob-lock" aria-hidden="true">🔒</span>
+              : <button className="btn" style={{padding:"8px 12px"}} onClick={()=>setOpenK(a.kind)}>{t("ob.reviewsign")}</button>}
+          </div>
+        );
+      })}
+      {openK && <AgreementViewer client={client}
+        agreement={agreements.find(a=>a.kind===openK)}
+        onClose={()=>setOpenK(null)}
+        onSigned={()=>{ setOpenK(null); onSigned && onSigned(); }}/>}
+    </div>
+  );
+}
+
+function OnboardingFlow({ client, cfg, prog:prog0, onDone }){
+  const [prog,setProg]=useState(prog0||null);
+  const [signed,setSigned]=useState([]);
+  const [intro,setIntro]=useState(false);
+  async function refresh(){
+    const [{data:p},{data:sg}] = await Promise.all([
+      client.from("onboarding_progress").select("current_stage,stage1_complete,stage2_complete,stage3_complete,completed_at").maybeSingle(),
+      client.from("onboarding_signatures").select("agreement_kind").eq("status","signed"),
+    ]);
+    setProg(p||null);
+    setSigned((sg||[]).map(r=>r.agreement_kind));
+    if(p && p.completed_at) onDone && onDone();
+  }
+  useEffect(()=>{ refresh(); },[]);
+  const signedCount = new Set(signed).size;
+  const stage = (prog && prog.current_stage) || "stage1_sign";
+  return (
+    <div className="wrap ob-wrap">
+      <ProgressHeader prog={prog} cfg={cfg} signedCount={signedCount}/>
+      {!intro && <WelcomeIntro onStart={()=>setIntro(true)}/>}
+      {intro && stage==="stage1_sign" &&
+        <Stage1Agreements client={client} cfg={cfg} signed={signed} onSigned={refresh}/>}
+      {intro && stage==="stage2_profile" && <div className="card"><p className="sub">{t("ob.stage2.placeholder")}</p></div>}
+      {intro && stage==="stage3_docs"   && <div className="card"><p className="sub">{t("ob.stage3.placeholder")}</p></div>}
+      {intro && stage==="complete"      && <div className="card"><h2 style={{marginTop:0}}>{t("ob.done.title")}</h2></div>}
+    </div>
+  );
+}
+
 function App(){
   const { client, session, ready } = useClient();
-  if(!client) return <div className="wrap"><div className="empty">Loading…</div></div>;
-  if(!ready)  return <div className="wrap"><div className="empty">Loading…</div></div>;
+  const [ob,setOb]=useState(undefined);   // undefined=loading | {enabled,done,prog,cfg}
+  useEffect(()=>{
+    if(!client || !session){ return; }
+    let cancelled=false;
+    (async()=>{
+      const [{data:ps},{data:prog}] = await Promise.all([
+        client.from("portal_settings").select("onboarding_config").eq("id",1).maybeSingle(),
+        client.from("onboarding_progress").select("current_stage,stage1_complete,stage2_complete,stage3_complete,completed_at").maybeSingle(),
+      ]);
+      if(cancelled) return;
+      const cfg = (ps && ps.onboarding_config) || {};
+      setOb({ enabled: !!cfg.onboarding_enabled, done: !!(prog && prog.completed_at), prog: prog||null, cfg });
+    })().catch(()=>{ if(!cancelled) setOb({ enabled:false, done:true, prog:null, cfg:{} }); });
+    return ()=>{ cancelled=true; };
+  },[client,session]);
+
+  const loading = <div className="wrap"><div className="empty">Loading…</div></div>;
+  if(!client || !ready) return loading;
   if(!session) return <Login client={client}/>;
+  if(ob===undefined) return loading;
+  // Gate: only when the feature is enabled AND this contractor hasn't finished.
+  if(ob.enabled && !ob.done)
+    return <OnboardingFlow client={client} cfg={ob.cfg} prog={ob.prog} onDone={()=>setOb(x=>({...x,done:true}))}/>;
   return <Portal client={client} session={session}/>;
 }
 
