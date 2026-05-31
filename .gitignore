@@ -1,45 +1,5 @@
-# Node / npm
 node_modules/
-npm-debug.log*
-package-lock.json.bak
-
-# macOS
+tools/node_modules/
+tools/baseline.json
 .DS_Store
-.AppleDouble
-.LSOverride
-
-# Secrets — never commit
-.env
-.env.*
-*.key
-*.pem
-secrets/
-
-# Ad-hoc diagnostic scripts (often contain anon keys)
-diagnose_*.sh
-*_diagnostic_output.txt
-
-# Historical Excel exports and CSV query results — PII (contractor names + rates).
-# Keep these in a private cloud folder (Google Drive / iCloud), not in git.
-payroll_history/
-*_extracted_rows.csv
-# Catch-all for ad-hoc DBeaver / app query exports — they're all underscore-
-# prefixed (_select_*, _All_*, _Step_2_*, etc.). This supersedes the specific
-# patterns below but they're kept for clarity.
-_*.csv
-_select_*.csv
-_All_*.csv
-
-# Editor / IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Supabase CLI
-.supabase/
-supabase/.temp/
-
-# Logs
 *.log

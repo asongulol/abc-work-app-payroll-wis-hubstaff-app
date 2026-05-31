@@ -1,0 +1,9 @@
+{
+  "name": "mobile-smoke-test",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "dependencies": {
+    "puppeteer-core": "^23.0.0"
+  }
+}
