@@ -26,6 +26,8 @@
           border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}
   .brand{font-weight:700;font-size:16px;margin-right:8px}
   .brand small{color:var(--muted);font-weight:400;font-size:12px;display:block}
+  .topbar-actions{display:flex;align-items:center;gap:8px}
+  .company-switcher{min-width:220px}
   select,input,button,textarea{font-family:inherit;font-size:14px}
   select,input,textarea{padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:#fff}
   .tabs{display:flex;gap:4px;padding:0 20px;background:var(--card);border-bottom:1px solid var(--border)}
@@ -93,12 +95,38 @@
   .x{float:right;border:none;background:none;font-size:20px;cursor:pointer;color:var(--muted)}
   .muted{color:var(--muted)}
   .stub{border:2px dashed var(--border);border-radius:var(--radius);padding:36px;text-align:center;color:var(--muted)}
+  /* ===== Phase 0 responsive foundation (additive; no visual change) =====
+     Breakpoint + spacing tokens documented as CSS custom properties so the
+     inline CSS below stays in sync with the Tailwind md:/lg: classes used in
+     the JSX. Tailwind defaults: sm=640, md=768, lg=1024, xl=1280.
+     Desktop (>=1024px / lg:) behavior is intentionally left untouched. */
+  :root{
+    --bp-sm:640px;   /* phones / small-tablet boundary */
+    --bp-md:768px;   /* tablet boundary (Tailwind md) */
+    --bp-lg:1024px;  /* desktop boundary (Tailwind lg) — preserve >=1024px */
+    --space-1:4px; --space-2:8px; --space-3:12px;   /* 4px-base spacing scale */
+    --space-4:16px; --space-5:24px; --space-6:32px;
+  }
+  /* Mobile utility classes — only take effect below the sm breakpoint, so they
+     are inert (and thus visually no-op) on tablet/desktop. */
+  @media (max-width: 640px) {
+    .hide-mobile{display:none !important}      /* hidden on phones only */
+    .stack-mobile{flex-direction:column !important}        /* flex rows -> column */
+    .stack-mobile.stack-grid{display:block !important}     /* grids -> single column */
+  }
+  .show-mobile{display:none}                   /* hidden by default ... */
+  @media (max-width: 640px) {
+    .show-mobile{display:block !important}      /* ... shown on phones only */
+  }
   @media (max-width: 820px) {
     .wrap{margin:14px auto;padding:0 12px}
     .card{padding:14px}
-    .tabs{overflow-x:auto;white-space:nowrap}
+    .topbar{flex-wrap:wrap;gap:8px;align-items:flex-start}
+    .brand{flex:1 1 100%;margin-right:0}
+    .topbar-actions{width:100%;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+    .topbar-actions > *{flex:1 1 auto;min-width:140px}
+    .company-switcher{width:100%}
     .grid-2{grid-template-columns:1fr !important}
-    .topbar{flex-wrap:wrap;gap:8px}
   }
   /* two-column responsive grid used by Time Import options */
   .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
@@ -8050,9 +8078,11 @@ function App() {
     <div>
       <div className="topbar">
         <div className="brand">HR &amp; Payroll<small>PH independent contractors</small></div>
-        <CompanySwitcher {...{client:sb.client,companyId,setCompanyId,consolidated,setConsolidated}} />
-        {sb.session?.user?.email && <span className="sub" style={{fontSize:12,whiteSpace:"nowrap"}} title="Signed in">{sb.session.user.email}</span>}
-        <button className="btn ghost sm" onClick={sb.signOut}>Sign out</button>
+        <div className="topbar-actions">
+          <div className="company-switcher"><CompanySwitcher {...{client:sb.client,companyId,setCompanyId,consolidated,setConsolidated}} /></div>
+          {sb.session?.user?.email && <span className="sub" style={{fontSize:12,whiteSpace:"nowrap"}} title="Signed in">{sb.session.user.email}</span>}
+          <button className="btn ghost sm" onClick={sb.signOut}>Sign out</button>
+        </div>
       </div>
       <div className="tabs">
         {tabGroups.map(([label,items],gi)=>(
