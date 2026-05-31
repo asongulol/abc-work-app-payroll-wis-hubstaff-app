@@ -24,9 +24,58 @@ function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 }
 
-function monthsBetween(fromISO: string, to: Date): number {
-  const f = new Date(fromISO);
-  return (to.getFullYear() - f.getFullYear()) * 12 + (to.getMonth() - f.getMonth());
+// Day-accurate freshness: add N months (UTC) and compare, so issue day matters.
+function addMonths(d: Date, n: number): Date { const r = new Date(d); r.setUTCMonth(r.getUTCMonth() + n); return r; }
+function isStale(issuedISO: string, months: number, now: Date): boolean {
+  const issued = new Date(issuedISO + "T00:00:00Z");
+  if (isNaN(issued.getTime())) return false;          // unparseable -> don't hard-fail (HR decides)
+  return addMonths(issued, months).getTime() < now.getTime();
+}
+
+// Recompute Stage-3 completion from the AUTHORITATIVE approved-doc state and
+// reconcile onboarding_progress. Used by BOTH approve and needs_replacement so
+// completion is a pure function of current approvals (a rejection flips
+// stage3_complete back to false). completed_at is MONOTONIC here: set once fully
+// onboarded, never CLEARED by a review — a later rejection surfaces as
+// "action needed" for HR but does not silently revoke a contractor's portal
+// access; an admin re-locks explicitly via reopen_stage (M1 step 5).
+//
+// NOTE (gov_id sides): we count DISTINCT evidence (storage_path) per kind, which
+// stops a single uploaded row from satisfying a 2-side requirement. True
+// front/back labelling lands with the Stage-3 upload UI via a `side` column;
+// until then no gov_id uploads exist (gate is off), so this is the correct floor.
+async function reEvalStage3(SB: string, svc: any, worker_id: string, cfg: any, now: Date) {
+  const reqDocs: any[] = (Array.isArray(cfg.documents) && cfg.documents.length
+    ? cfg.documents
+    : [{ kind: "resume" }, { kind: "diploma" }, { kind: "nbi_clearance" }, { kind: "gov_id", sides: ["front", "back"] }]
+  ).filter((d: any) => d.required !== false);          // honor optional docs
+
+  const apRes = await fetch(`${SB}/rest/v1/documents?worker_id=eq.${worker_id}&review_status=eq.approved&select=id,kind,storage_path`, { headers: svc });
+  const apRows = (await apRes.json()) || [];
+  const distinct: Record<string, Set<string>> = {};
+  for (const r of apRows) (distinct[r.kind] ||= new Set()).add(r.storage_path || r.id);
+  const stage3_complete = reqDocs.every((d: any) => {
+    const need = Array.isArray(d.sides) ? d.sides.length : 1;
+    return (distinct[d.kind]?.size || 0) >= need;
+  });
+
+  const opRes = await fetch(`${SB}/rest/v1/onboarding_progress?worker_id=eq.${worker_id}&select=stage1_complete,stage2_complete,completed_at,current_stage`, { headers: svc });
+  const op = (await opRes.json())?.[0] || {};
+  const fully = !!(op.stage1_complete && op.stage2_complete && stage3_complete);
+  const onboarding_complete = fully && !op.completed_at;
+
+  const patch: Record<string, unknown> = { stage3_complete, updated_at: now.toISOString() };
+  if (fully) {
+    patch.completed_at = op.completed_at || now.toISOString();   // set once; coalesce existing
+    patch.current_stage = "complete";
+  } else if (!op.completed_at && op.stage1_complete && op.stage2_complete) {
+    patch.current_stage = "stage3_docs";                         // only when genuinely in stage 3
+  }                                                              // else: leave stage/completed_at untouched (no regression)
+  await fetch(`${SB}/rest/v1/onboarding_progress?worker_id=eq.${worker_id}`, {
+    method: "PATCH", headers: { ...svc, Prefer: "return=minimal" },
+    body: JSON.stringify(patch),
+  });
+  return { stage3_complete, onboarding_complete };
 }
 
 Deno.serve(async (req) => {
@@ -62,6 +111,10 @@ Deno.serve(async (req) => {
     const worker_id = doc.worker_id;
     const now = new Date();
 
+    // onboarding_config drives required docs, sides, and NBI freshness window
+    const psRes = await fetch(`${SB}/rest/v1/portal_settings?id=eq.1&select=onboarding_config`, { headers: svc });
+    const cfg = ((await psRes.json())?.[0]?.onboarding_config) || {};
+
     // ---- needs_replacement ----
     if (action === "needs_replacement") {
       const reason = String(body.reason || "").trim();
@@ -74,15 +127,20 @@ Deno.serve(async (req) => {
       if (!upd.ok) return json({ error: `update failed: ${await upd.text()}` }, 500);
       await fetch(`${SB}/rest/v1/audit_log`, {
         method: "POST", headers: { ...svc, Prefer: "return=minimal" },
-        body: JSON.stringify({ action: "document.needs_replacement", entity: `${doc.kind} · ${worker_id}`, detail: { document_id, kind: doc.kind, reason } }),
+        body: JSON.stringify({ action: "document.needs_replacement", actor: caller.email ?? null, entity: `${doc.kind} · ${worker_id}`, detail: { document_id, kind: doc.kind, reason } }),
       });
-      return json({ ok: true, review_status: "needs_replacement" });
+      // recompute so a rejected doc flips stage3_complete back to false for HR
+      const re = await reEvalStage3(SB, svc, worker_id, cfg, now);
+      return json({ ok: true, review_status: "needs_replacement", stage3_complete: re.stage3_complete });
     }
 
     // ---- approve ----
-    // NBI freshness guard: refuse approval if issued_on is set and older than 6 months.
-    if (doc.kind === "nbi_clearance" && doc.issued_on && monthsBetween(doc.issued_on, now) > 6) {
-      return json({ error: "NBI clearance is older than 6 months — request a replacement instead", code: "nbi_stale" }, 422);
+    // NBI freshness guard: day-accurate, using the configured freshness window.
+    if (doc.kind === "nbi_clearance" && doc.issued_on) {
+      const months = Number((cfg.documents || []).find((d: any) => d.kind === "nbi_clearance")?.freshness_months) || 6;
+      if (isStale(doc.issued_on, months, now)) {
+        return json({ error: `NBI clearance is older than ${months} months — request a replacement instead`, code: "nbi_stale" }, 422);
+      }
     }
     const upd = await fetch(`${SB}/rest/v1/documents?id=eq.${document_id}`, {
       method: "PATCH",
@@ -92,54 +150,17 @@ Deno.serve(async (req) => {
     if (!upd.ok) return json({ error: `update failed: ${await upd.text()}` }, 500);
     await fetch(`${SB}/rest/v1/audit_log`, {
       method: "POST", headers: { ...svc, Prefer: "return=minimal" },
-      body: JSON.stringify({ action: "document.approved", entity: `${doc.kind} · ${worker_id}`, detail: { document_id, kind: doc.kind } }),
+      body: JSON.stringify({ action: "document.approved", actor: caller.email ?? null, entity: `${doc.kind} · ${worker_id}`, detail: { document_id, kind: doc.kind } }),
     });
 
-    // ---- re-evaluate Stage 3 for this worker ----
-    // Required docs come from portal_settings.onboarding_config (fallback default).
-    const psRes = await fetch(`${SB}/rest/v1/portal_settings?id=eq.1&select=onboarding_config`, { headers: svc });
-    const ps = await psRes.json();
-    const cfg = (Array.isArray(ps) && ps[0]?.onboarding_config) || {};
-    const reqDocs: any[] = Array.isArray(cfg.documents) && cfg.documents.length
-      ? cfg.documents
-      : [{ kind: "resume" }, { kind: "diploma" }, { kind: "nbi_clearance" }, { kind: "gov_id", sides: ["front", "back"] }];
-
-    // approved docs for this worker, grouped by kind
-    const apRes = await fetch(`${SB}/rest/v1/documents?worker_id=eq.${worker_id}&review_status=eq.approved&select=kind`, { headers: svc });
-    const apRows = await apRes.json();
-    const approvedCount: Record<string, number> = {};
-    for (const r of (Array.isArray(apRows) ? apRows : [])) approvedCount[r.kind] = (approvedCount[r.kind] || 0) + 1;
-
-    const stage3_complete = reqDocs.every((d) => {
-      const need = Array.isArray(d.sides) ? d.sides.length : 1;   // gov_id needs front+back
-      return (approvedCount[d.kind] || 0) >= need;
-    });
-
-    let onboarding_complete = false;
-    if (stage3_complete) {
-      // only finalize if stages 1 & 2 are already complete
-      const opRes = await fetch(`${SB}/rest/v1/onboarding_progress?worker_id=eq.${worker_id}&select=stage1_complete,stage2_complete,completed_at`, { headers: svc });
-      const op = (await opRes.json())?.[0] || {};
-      const finalize = op.stage1_complete && op.stage2_complete;
-      onboarding_complete = !!finalize && !op.completed_at;
-      await fetch(`${SB}/rest/v1/onboarding_progress?worker_id=eq.${worker_id}`, {
-        method: "PATCH", headers: { ...svc, Prefer: "return=minimal" },
-        body: JSON.stringify({
-          stage3_complete: true,
-          current_stage: finalize ? "complete" : "stage3_docs",
-          completed_at: finalize ? (op.completed_at || now.toISOString()) : null,
-          updated_at: now.toISOString(),
-        }),
+    const re = await reEvalStage3(SB, svc, worker_id, cfg, now);
+    if (re.onboarding_complete) {
+      await fetch(`${SB}/rest/v1/audit_log`, {
+        method: "POST", headers: { ...svc, Prefer: "return=minimal" },
+        body: JSON.stringify({ action: "onboarding.completed", actor: caller.email ?? null, entity: `${worker_id}`, detail: { worker_id } }),
       });
-      if (onboarding_complete) {
-        await fetch(`${SB}/rest/v1/audit_log`, {
-          method: "POST", headers: { ...svc, Prefer: "return=minimal" },
-          body: JSON.stringify({ action: "onboarding.completed", entity: `${worker_id}`, detail: { worker_id } }),
-        });
-      }
     }
-
-    return json({ ok: true, review_status: "approved", stage3_complete, onboarding_complete });
+    return json({ ok: true, review_status: "approved", stage3_complete: re.stage3_complete, onboarding_complete: re.onboarding_complete });
   } catch (e) {
     return json({ error: String((e as any)?.message ?? e) }, 500);
   }
