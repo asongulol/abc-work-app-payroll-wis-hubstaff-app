@@ -997,6 +997,23 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
     setBusyId(null); reload();
   }
 
+  // Permanently delete a contractor. Hard delete is intentionally rare in a
+  // payroll app — the server (portal-admin) refuses it for anyone with pay/time
+  // history (deactivate those instead). Used to remove mistakes / test accounts.
+  async function deleteContractor(r){
+    const w=r.workers; const wid=w.id; const nm=fullName(w)||"this contractor";
+    const typed=window.prompt(
+      `Permanently delete ${nm}?\n\nThis removes their profile, onboarding records, documents, uploaded files, and portal login — and CANNOT be undone. (Contractors with any pay or time history are blocked; deactivate those instead.)\n\nType the contractor's full name to confirm:`);
+    if(typed===null) return;
+    if(typed.trim()!==nm.trim()){ window.alert("Name didn't match — nothing was deleted."); return; }
+    setBusyId(wid);
+    const { data, error } = await client.functions.invoke("portal-admin",{body:{action:"delete_contractor",worker_id:wid}});
+    setBusyId(null);
+    if(error||(data&&data.error)){ window.alert("Couldn't delete: "+((data&&data.error)||await fnErrorMessage(error))); return; }
+    logEvent(client,{company_id:r.company_id,action:"delete_contractor",entity:nm,detail:{worker_id:wid}});
+    reload();
+  }
+
   // create a new contractor in THIS company, then open their profile to fill in
   // the rest (rate, payout method, etc.). Reuses the proven create + edit flow.
   const [adding,setAdding]=useState(false);
@@ -1099,7 +1116,11 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
                     ? <button className="btn ghost sm" disabled={busyId===w.id}
                         onClick={()=>setActive(r,false)}>Deactivate</button>
                     : <button className="btn sm" disabled={busyId===w.id}
-                        onClick={()=>setActive(r,true)}>Reactivate</button>}
+                        onClick={()=>setActive(r,true)}>Reactivate</button>}{" "}
+                  <button className="btn ghost sm" disabled={busyId===w.id}
+                    style={{color:"#b91c1c",borderColor:"#fca5a5"}}
+                    title="Permanently delete (blocked if they have pay/time history)"
+                    onClick={()=>deleteContractor(r)}>Delete</button>
                 </td>
               </tr>
             );
@@ -7870,7 +7891,7 @@ const AUDIT_LABELS={import:"Import",delete_import:"Delete import",approve:"Appro
   wise_recipient_sync:"Wise recipient sync",
   wise_lock_release:"Unlock Wise-locked row",
   wise_lock_warning:"Edit attempted on locked row",
-  add_contractor:"Add contractor",edit_contractor:"Edit contractor",set_rate:"Set rate",
+  add_contractor:"Add contractor",edit_contractor:"Edit contractor",delete_contractor:"Delete contractor",set_rate:"Set rate",
   recalculate:"Recalculate (reset overrides)",undo:"Undo",
   "override.gross":"Gross override"};
 function AuditLog({client,companyId,consolidated}){

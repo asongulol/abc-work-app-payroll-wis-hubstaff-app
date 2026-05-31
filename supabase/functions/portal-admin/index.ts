@@ -93,6 +93,56 @@ Deno.serve(async (req) => {
       return json({ ok: true });
     }
 
+    // Permanently delete a contractor — ONLY if they have NO payroll history.
+    // Payroll records (payments / time entries) must be retained, so a worker
+    // with any is refused here (the UI offers Deactivate instead). The guard is
+    // server-side so it can't be bypassed. Also cleans up the things the admin
+    // client cannot: the contractor's Storage files and their auth login.
+    if (body.action === "delete_contractor") {
+      const worker_id = body.worker_id;
+      if (!worker_id) return json({ error: "need worker_id" }, 400);
+
+      // GUARD: block if any payroll history exists.
+      const payRes = await fetch(`${SB}/rest/v1/payments?worker_id=eq.${worker_id}&select=id&limit=1`, { headers: svc });
+      const pays = await payRes.json();
+      const teRes = await fetch(`${SB}/rest/v1/time_entries?worker_id=eq.${worker_id}&select=work_date&limit=1`, { headers: svc });
+      const tes = await teRes.json();
+      if ((Array.isArray(pays) && pays.length) || (Array.isArray(tes) && tes.length)) {
+        return json({ error: "This contractor has payroll history (payments or time entries) and can't be deleted — deactivate them instead.", code: "has_history" }, 409);
+      }
+
+      // Gather storage files + auth login BEFORE the cascade removes those rows.
+      const docRes = await fetch(`${SB}/rest/v1/documents?worker_id=eq.${worker_id}&select=storage_path`, { headers: svc });
+      const docs = await docRes.json();
+      const paths = (Array.isArray(docs) ? docs : []).map((d: any) => d.storage_path).filter(Boolean);
+      const clRes = await fetch(`${SB}/rest/v1/contractor_logins?worker_id=eq.${worker_id}&select=auth_user_id`, { headers: svc });
+      const cl = await clRes.json();
+      const auth_user_id = (Array.isArray(cl) && cl[0]?.auth_user_id) || null;
+
+      // Remove storage objects (best-effort; never block the delete on these).
+      if (paths.length) {
+        await fetch(`${SB}/storage/v1/object/contractor-docs`, {
+          method: "DELETE", headers: svc, body: JSON.stringify({ prefixes: paths }),
+        }).catch(() => {});
+      }
+      // Remove the auth login (best-effort).
+      if (auth_user_id) {
+        await fetch(`${SB}/auth/v1/admin/users/${auth_user_id}`, { method: "DELETE", headers: svc }).catch(() => {});
+      }
+      // Delete the worker — FK ON DELETE CASCADE removes worker_companies, rates,
+      // documents, onboarding_progress, onboarding_signatures, contractor_logins.
+      const delRes = await fetch(`${SB}/rest/v1/workers?id=eq.${worker_id}`, {
+        method: "DELETE", headers: { ...svc, Prefer: "return=minimal" },
+      });
+      if (!delRes.ok) return json({ error: `delete failed: ${await delRes.text()}` }, 500);
+
+      await fetch(`${SB}/rest/v1/audit_log`, {
+        method: "POST", headers: { ...svc, Prefer: "return=minimal" },
+        body: JSON.stringify({ action: "delete_contractor", actor: caller.email ?? null, entity: worker_id, detail: { worker_id, files_removed: paths.length, login_removed: !!auth_user_id } }),
+      });
+      return json({ ok: true, files_removed: paths.length, login_removed: !!auth_user_id });
+    }
+
     return json({ error: "unknown action" }, 400);
   } catch (e) {
     return json({ error: String((e as any)?.message ?? e) }, 500);
