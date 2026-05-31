@@ -7995,6 +7995,13 @@ function onbStatus(p, pending){
   return {txt:"In progress",color:"#1e40af",bg:"#dbeafe"};
 }
 function Badge({s}){ return <span style={{padding:"2px 8px",borderRadius:999,fontSize:11,fontWeight:600,color:s.color,background:s.bg,whiteSpace:"nowrap"}}>{s.txt}</span>; }
+// supabase-js v2 puts non-2xx edge-fn error bodies on error.context (a Response),
+// NOT in data. Pull the server's {error} message out so HR sees the real cause.
+async function edgeErr(error, data){
+  if(data && data.error) return data.error;
+  try { if(error && error.context && typeof error.context.json==="function"){ const j=await error.context.json(); if(j && j.error) return j.error; } } catch(_e){}
+  return (error && error.message) || "Something went wrong — please try again.";
+}
 
 function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
   const { data:wRows } = useQuery(client, c=>c.from("workers")
@@ -8009,14 +8016,20 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
   const w=(wRows||[])[0]||{};
   const ex=(w.profile_extras&&typeof w.profile_extras==="object")?w.profile_extras:{};
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
-  async function view(d){ if(!d.storage_path)return; const {data,error}=await client.storage.from("contractor-docs").createSignedUrl(d.storage_path,120); if(error){setMsg("Open failed: "+error.message);return;} window.open(data.signedUrl,"_blank"); }
+  async function view(d){
+    if(!d.storage_path) return;
+    const win=window.open("about:blank","_blank");   // open synchronously (popup-blocker safe), then redirect
+    const {data,error}=await client.storage.from("contractor-docs").createSignedUrl(d.storage_path,120);
+    if(error||!data){ if(win)win.close(); setMsg("Open failed: "+((error&&error.message)||"no url")); return; }
+    if(win) win.location=data.signedUrl; else window.open(data.signedUrl,"_blank");
+  }
   async function review(d,action){
     let reason=null;
     if(action==="needs_replacement"){ reason=window.prompt("Reason the contractor will see (e.g. blurry, expired, wrong document):"); if(reason===null)return; if(!reason.trim()){setMsg("A reason is required.");return;} }
     setBusy(true); setMsg("");
     const { data, error } = await client.functions.invoke("portal-review",{body:{action,document_id:d.id,reason}});
     setBusy(false);
-    if(error||(data&&data.error)){ setMsg((data&&data.error)||error.message); return; }
+    if(error||(data&&data.error)){ setMsg(await edgeErr(error,data)); return; }
     logEvent(client,{action:"document_review",entity:(ONB_DOC_LABEL[d.kind]||d.kind),detail:{document_id:d.id,action,reason}});
     reloadDocs(); onChange&&onChange();
   }
@@ -8088,10 +8101,14 @@ function OnboardingAdmin({ client }){
     _name:[w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ")||w.email||p.worker_id,
     _email:w.email||"", _pending:pendBy[p.worker_id]||0, _pct:onbPct(p) }; });
   const visible=all.filter(r=> showDone || !r.completed_at || r._pending>0 );
-  const needReview=all.filter(r=>r._pending>0).length;
+  // count from the pending docs directly so a worker with a pending doc but no
+  // onboarding_progress row still gets counted (orphans = uploaded outside onboarding).
+  const progIds=new Set((progs||[]).map(p=>p.worker_id));
+  const needReview=Object.keys(pendBy).length;
+  const orphanReview=Object.keys(pendBy).filter(id=>!progIds.has(id)).length;
   const { rows, Th, q, setQ } = useSortFilter(visible, {
     name:r=>r._name, stage:r=>r.current_stage, pct:r=>r._pct,
-    status:r=>(r._pending>0?0:r.stalled?1:r.completed_at?3:2), updated:r=>r.updated_at,
+    status:r=>(r._pending>0?0:r.completed_at?3:r.stalled?1:2), updated:r=>r.updated_at,
   }, ["_name","_email"]);
   function refresh(){ reload(); reloadPend(); }
   return (
@@ -8103,10 +8120,10 @@ function OnboardingAdmin({ client }){
           <button className="btn ghost sm" onClick={refresh}>Refresh</button>
         </div>
       </div>
-      {needReview>0 && <div className="banner" style={{background:"#fef3c7",borderColor:"#fcd34d"}}>{needReview} contractor{needReview>1?"s have":" has"} documents waiting for review.</div>}
+      {needReview>0 && <div className="banner" style={{background:"#fef3c7",borderColor:"#fcd34d"}}>{needReview} contractor{needReview>1?"s have":" has"} documents waiting for review.{orphanReview>0?` (${orphanReview} uploaded outside onboarding — not listed below.)`:""}</div>}
       <FilterBox q={q} setQ={setQ} placeholder="Filter by name or email…" />
       {loading? <div className="empty">Loading…</div> :
-       rows.length===0? <div className="empty">No onboarding in progress.{(!showDone && all.length>0)?" (Completed are hidden — tick “Show completed”.)":""}</div> :
+       rows.length===0? <div className="empty">{q?"No matches for your filter.":"No onboarding in progress."}{(!q && !showDone && all.length>0)?" (Completed are hidden — tick “Show completed”.)":""}</div> :
        <div className="table-scroll"><table>
          <thead><tr><Th k="name">Contractor</Th><Th k="stage">Stage</Th><Th k="pct">Progress</Th><Th k="status">Status</Th><Th k="updated">Updated</Th><th></th></tr></thead>
          <tbody>
