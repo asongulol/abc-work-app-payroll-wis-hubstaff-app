@@ -79,6 +79,14 @@ Deno.serve(async (req) => {
       });
       if (!lRes.ok) return json({ error: `login created but linking failed: ${await lRes.text()}` }, 500);
 
+      // Provisioning hook: seed an onboarding row so the new hire is gated from
+      // session 1 and shows in the admin Onboarding queue immediately. Idempotent.
+      await fetch(`${SB}/rest/v1/onboarding_progress`, {
+        method: "POST",
+        headers: { ...svc, Prefer: "resolution=ignore-duplicates,return=minimal" },
+        body: JSON.stringify({ worker_id, current_stage: "stage1_sign" }),
+      }).catch(() => {});
+
       return json({ ok: true, email, password: pw });
     }
 
