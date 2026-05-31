@@ -1114,7 +1114,8 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     const { data, error } = await client.from("workers")
       .select("first_name,middle_name,last_name,email,work_email,mobile,work_number,work_extension,ph_address,hire_date,date_of_birth,"+
         "payout_method,wise_recipient_id,wise_recipient_uuid,wise_recipients,photo_url,"+
-        "health_allowance_eligible,thirteenth_month_eligible")
+        "health_allowance_eligible,thirteenth_month_eligible,"+
+        "emergency_name,emergency_relationship,emergency_mobile,permanent_address,address_landmark,postal_code,marital_status,education_level,course,year_graduated,school")
       .eq("id", w.id).single();
     if(error || !data) return;
     setPhoto(data.photo_url||"");
@@ -1125,6 +1126,9 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
       hire_date:data.hire_date||"", date_of_birth:data.date_of_birth||"",
       health_allowance_eligible:!!data.health_allowance_eligible,
       thirteenth_month_eligible:!!data.thirteenth_month_eligible,
+      emergency_name:data.emergency_name||"", emergency_relationship:data.emergency_relationship||"", emergency_mobile:data.emergency_mobile||"",
+      permanent_address:data.permanent_address||"", address_landmark:data.address_landmark||"", postal_code:data.postal_code||"",
+      marital_status:data.marital_status||"", education_level:data.education_level||"", course:data.course||"", year_graduated:data.year_graduated||"", school:data.school||"",
     });
     setPayMethod(data.payout_method||"");
     const list=Array.isArray(data.wise_recipients)?data.wise_recipients:[];
@@ -1234,6 +1238,9 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     hire_date:w.hire_date||"", date_of_birth:w.date_of_birth||"",
     health_allowance_eligible:!!w.health_allowance_eligible,
     thirteenth_month_eligible:!!w.thirteenth_month_eligible,
+    emergency_name:w.emergency_name||"", emergency_relationship:w.emergency_relationship||"", emergency_mobile:w.emergency_mobile||"",
+    permanent_address:w.permanent_address||"", address_landmark:w.address_landmark||"", postal_code:w.postal_code||"",
+    marital_status:w.marital_status||"", education_level:w.education_level||"", course:w.course||"", year_graduated:w.year_graduated||"", school:w.school||"",
   });
   const [contract,setContract]=useState(r.contract||"FT");
   const [role,setRole]=useState(r.role||"");
@@ -1347,8 +1354,12 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
       hire_date:f.hire_date||null, date_of_birth:f.date_of_birth||null,
       health_allowance_eligible:f.health_allowance_eligible,
       thirteenth_month_eligible:f.thirteenth_month_eligible,
+      emergency_name:f.emergency_name||null, emergency_relationship:f.emergency_relationship||null, emergency_mobile:f.emergency_mobile||null,
+      permanent_address:f.permanent_address||null, address_landmark:f.address_landmark||null, postal_code:f.postal_code||null,
+      marital_status:f.marital_status||null, education_level:f.education_level||null, course:f.course||null, year_graduated:f.year_graduated||null, school:f.school||null,
     },["first_name","middle_name","last_name","email","work_email","mobile","work_number","work_extension","ph_address","hire_date",
-       "date_of_birth","health_allowance_eligible","thirteenth_month_eligible"]);
+       "date_of_birth","health_allowance_eligible","thirteenth_month_eligible",
+       "emergency_name","emergency_relationship","emergency_mobile","permanent_address","address_landmark","postal_code","marital_status","education_level","course","year_graduated","school"]);
     const linkDiff=auditDiff({contract:r.contract,role:r.role,hubstaff_name:r.hubstaff_name},
       {contract,role:role||null,hubstaff_name:hubName||null},["contract","role","hubstaff_name"]);
     const {error:e1}=await client.from("workers").update({
@@ -1356,7 +1367,10 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
       work_number:f.work_number||null, work_extension:f.work_extension||null,
       ph_address:f.ph_address||null, hire_date:f.hire_date||null, date_of_birth:f.date_of_birth||null,
       health_allowance_eligible:f.health_allowance_eligible,
-      thirteenth_month_eligible:f.thirteenth_month_eligible}).eq("id",w.id);
+      thirteenth_month_eligible:f.thirteenth_month_eligible,
+      emergency_name:f.emergency_name||null, emergency_relationship:f.emergency_relationship||null, emergency_mobile:f.emergency_mobile||null,
+      permanent_address:f.permanent_address||null, address_landmark:f.address_landmark||null, postal_code:f.postal_code||null,
+      marital_status:f.marital_status||null, education_level:f.education_level||null, course:f.course||null, year_graduated:f.year_graduated||null, school:f.school||null}).eq("id",w.id);
     let e2=null;
     if(r.company_id){
       ({error:e2}=await client.from("worker_companies")
@@ -1544,29 +1558,31 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
           <Banner msg={portalMsg} tone="error" style={{marginTop:8}} />
         </div>
 
-        {/* --- Personal / HR (from 201 import or contractor self-edit; read-only here) --- */}
-        {(() => {
-          const ex = (w.profile_extras && typeof w.profile_extras==="object") ? w.profile_extras : {};
-          const items = [
-            ["Emergency contact", [w.emergency_name, w.emergency_relationship && `(${w.emergency_relationship})`, w.emergency_mobile].filter(Boolean).join(" ")],
-            ["Permanent address", w.permanent_address], ["Landmark", w.address_landmark], ["Postal code", w.postal_code],
-            ["Marital status", w.marital_status],
-            ["Education", [w.education_level, w.course, w.school, w.year_graduated].filter(Boolean).join(" · ")],
-            ["Favorite color", ex.favorite_color], ["Favorite food", ex.favorite_food], ["Motto", ex.motto],
-          ].filter(([,v]) => v);
-          if(!items.length) return null;
-          return (
-            <details style={{borderTop:"1px solid var(--border)",paddingTop:10,marginTop:8}}>
-              <summary style={{cursor:"pointer",fontWeight:600}}>Personal / HR details <span className="muted" style={{fontWeight:400,fontSize:12}}>(from 201 / portal — contractors self-maintain)</span></summary>
-              <div style={{marginTop:8}}>
-                {items.map(([k,v],i)=>(
-                  <div key={i} style={{display:"flex",gap:10,padding:"3px 0",fontSize:13}}>
-                    <span className="muted" style={{minWidth:140}}>{k}</span><span>{v}</span></div>
-                ))}
-              </div>
-            </details>
-          );
-        })()}
+        {/* --- Personal / HR details (editable here; contractors can also self-maintain in the portal) --- */}
+        <details style={{borderTop:"1px solid var(--border)",paddingTop:10,marginTop:8}}>
+          <summary style={{cursor:"pointer",fontWeight:600}}>Personal / HR details <span className="muted" style={{fontWeight:400,fontSize:12}}>(editable · also self-maintained via the portal)</span></summary>
+          <div className="row" style={{marginTop:8}}>
+            <div className="field"><label>Emergency contact</label><input style={inp} value={f.emergency_name} onChange={e=>set("emergency_name",e.target.value)}/></div>
+            <div className="field"><label>Relationship</label><input style={inp} value={f.emergency_relationship} onChange={e=>set("emergency_relationship",e.target.value)}/></div>
+            <div className="field"><label>Emergency mobile</label><input style={inp} type="tel" value={f.emergency_mobile} onChange={e=>set("emergency_mobile",e.target.value)}/></div>
+          </div>
+          <div className="field"><label>Permanent address</label><input style={inp} value={f.permanent_address} onChange={e=>set("permanent_address",e.target.value)}/></div>
+          <div className="row">
+            <div className="field"><label>Landmark</label><input style={inp} value={f.address_landmark} onChange={e=>set("address_landmark",e.target.value)}/></div>
+            <div className="field"><label>Postal code</label><input style={inp} value={f.postal_code} onChange={e=>set("postal_code",e.target.value)}/></div>
+            <div className="field"><label>Marital status</label><input style={inp} value={f.marital_status} onChange={e=>set("marital_status",e.target.value)}/></div>
+          </div>
+          <div className="row">
+            <div className="field"><label>Education level</label><input style={inp} value={f.education_level} onChange={e=>set("education_level",e.target.value)}/></div>
+            <div className="field"><label>Course</label><input style={inp} value={f.course} onChange={e=>set("course",e.target.value)}/></div>
+            <div className="field"><label>Year graduated</label><input style={inp} value={f.year_graduated} onChange={e=>set("year_graduated",e.target.value)}/></div>
+            <div className="field"><label>School</label><input style={inp} value={f.school} onChange={e=>set("school",e.target.value)}/></div>
+          </div>
+          <div style={{marginTop:6}}><button className="btn" onClick={saveDetails}>Save details</button></div>
+          {(() => { const ex=(w.profile_extras&&typeof w.profile_extras==="object")?w.profile_extras:{};
+            const bits=[ex.favorite_color&&`Color: ${ex.favorite_color}`,ex.favorite_food&&`Food: ${ex.favorite_food}`,ex.motto&&`Motto: ${ex.motto}`].filter(Boolean);
+            return bits.length? <div className="sub" style={{marginTop:8}}>{bits.join(" · ")}</div> : null; })()}
+        </details>
 
         {/* --- Rate (effective-dated) --- */}
         <div className="row" style={{alignItems:"flex-end",borderTop:"1px solid var(--border)",paddingTop:12,marginTop:8}}>
