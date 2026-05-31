@@ -8473,9 +8473,9 @@ function App() {
 
   // Tabs grouped by workflow stage so the bar reads as the real process order.
   const tabGroups = [
-    ["Setup",   [["contractors","Contractors"],["documents","Documents"]]],
+    ["Setup",   [["contractors","Contractors"],["onboarding","Onboarding"],["documents","Documents"]]],
     ["Run payroll", [["time","Time & Approval"],["payroll","Calculate"],["process","Process and Pay"]]],
-    ["Review",  [["onboarding","Onboarding"],["batches","Review & Recon Batches"],["reports","Reports"],["imports","Imports"],["audit","Audit Log"]]],
+    ["Review",  [["batches","Review & Recon Batches"],["reports","Reports"],["imports","Imports"],["audit","Audit Log"]]],
   ];
   function go(id){ setTab(id); const w=document.querySelector(".wrap"); if(w) w.scrollIntoView({block:"start"}); window.scrollTo(0,0); }
   // Flattened tab list for the mobile bottom nav (same ids/handler as the top
