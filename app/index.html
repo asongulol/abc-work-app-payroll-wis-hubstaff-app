@@ -1001,16 +1001,34 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
   // payroll app — the server (portal-admin) refuses it for anyone with pay/time
   // history (deactivate those instead). Used to remove mistakes / test accounts.
   async function deleteContractor(r){
-    const w=r.workers; const wid=w.id; const nm=fullName(w)||"this contractor";
-    const typed=window.prompt(
-      `Permanently delete ${nm}?\n\nThis removes their profile, onboarding records, documents, uploaded files, and portal login — and CANNOT be undone. (Contractors with any pay or time history are blocked; deactivate those instead.)\n\nType the contractor's full name to confirm:`);
-    if(typed===null) return;
-    if(typed.trim()!==nm.trim()){ window.alert("Name didn't match — nothing was deleted."); return; }
+    const w=r.workers; const wid=w.id;
+    const nm=fullName(w)||w.email||"this contractor";
+    const token=fullName(w)||w.email||wid;   // a knowable thing to type, even for a nameless row
+    // Pre-check counts for the right confirmation prompt. The SERVER guard is the
+    // real authority (fail-closed) — this is only to shape the UX / set `force`.
     setBusyId(wid);
-    const { data, error } = await client.functions.invoke("portal-admin",{body:{action:"delete_contractor",worker_id:wid}});
+    const [pay,te,sig,doc]=await Promise.all([
+      client.from("payments").select("id",{count:"exact",head:true}).eq("worker_id",wid),
+      client.from("time_entries").select("work_date",{count:"exact",head:true}).eq("worker_id",wid),
+      client.from("onboarding_signatures").select("id",{count:"exact",head:true}).eq("worker_id",wid),
+      client.from("documents").select("id",{count:"exact",head:true}).eq("worker_id",wid),
+    ]);
+    setBusyId(null);
+    if((pay.count||0)>0 || (te.count||0)>0){
+      window.alert(`${nm} has payroll history (${pay.count||0} payment(s), ${te.count||0} time entr${(te.count||0)===1?"y":"ies"}) and can't be deleted. Deactivate them instead.`);
+      return;
+    }
+    const records=(sig.count||0)+(doc.count||0);
+    let msg=`Permanently delete ${nm}?\n\nRemoves their profile, onboarding records, documents, uploaded files, and portal login — and CANNOT be undone.`;
+    if(records>0) msg+=`\n\n⚠ This ALSO destroys ${sig.count||0} signed agreement(s) and ${doc.count||0} uploaded document(s).`;
+    const typed=window.prompt(msg+`\n\nType "${token}" to confirm:`);
+    if(typed===null) return;
+    if(typed.trim()!==String(token).trim()){ window.alert("Confirmation didn't match — nothing was deleted."); return; }
+    setBusyId(wid);
+    const { data, error } = await client.functions.invoke("portal-admin",{body:{action:"delete_contractor",worker_id:wid,force:records>0}});
     setBusyId(null);
     if(error||(data&&data.error)){ window.alert("Couldn't delete: "+((data&&data.error)||await fnErrorMessage(error))); return; }
-    logEvent(client,{company_id:r.company_id,action:"delete_contractor",entity:nm,detail:{worker_id:wid}});
+    logEvent(client,{company_id:r.company_id,action:"delete_contractor",entity:nm,detail:{worker_id:wid,signatures:sig.count||0,documents:doc.count||0}});
     reload();
   }
 
