@@ -197,6 +197,27 @@ async function logEvent(client, {company_id, action, entity, detail}){
   }catch(e){ /* auditing must never break the user's action */ }
 }
 
+// Supabase JS v2 wraps a non-2xx edge-function response as FunctionsHttpError with
+// the unhelpful message "Edge Function returned a non-2xx status code"; the real
+// upstream error is on err.context (a Response). Module-scope so EVERY component
+// (create-login, Wise external-sources panel, onboarding review) can surface the
+// actual cause. (Was previously nested in ExternalSourcesPanel, which made the
+// create-login handler throw "fnErrorMessage is not defined".)
+async function fnErrorMessage(err){
+  const fallback = String(err?.message||err||"Edge function error");
+  try{
+    const ctx = err?.context;
+    if(ctx && typeof ctx.text==="function"){
+      const body = await ctx.text();
+      if(body){
+        try{ const j=JSON.parse(body); if(j?.error) return String(j.error); }catch{}
+        return body.length>300 ? body.slice(0,300)+"…" : body;
+      }
+    }
+  }catch{/* fall through */}
+  return fallback;
+}
+
 // Reusable sort + text-filter for a list of row objects.
 // `cols` maps a sort key -> accessor fn. Returns helpers for a clickable header
 // and the processed (filtered+sorted) array.
@@ -1786,25 +1807,6 @@ function ExternalSourcesPanel({ w, f, r, client, onBillingChange, onSaved }){
 
   const wiseId = w.wise_recipient_id;
   const hubUserId = r?.hubstaff_user_id;
-
-  // Supabase JS v2 wraps a non-2xx edge-function response as FunctionsHttpError
-  // with the unhelpful message "Edge Function returned a non-2xx status code".
-  // The real upstream error (e.g. Wise "404: account not found") is on
-  // err.context as a Response. Read it so the panel surfaces the actual cause.
-  async function fnErrorMessage(err){
-    const fallback = String(err?.message||err||"Edge function error");
-    try{
-      const ctx = err?.context;
-      if(ctx && typeof ctx.text==="function"){
-        const body = await ctx.text();
-        if(body){
-          try{ const j=JSON.parse(body); if(j?.error) return String(j.error); }catch{}
-          return body.length>300 ? body.slice(0,300)+"…" : body;
-        }
-      }
-    }catch{/* fall through */}
-    return fallback;
-  }
 
   async function loadWise(){
     if(!wiseId) return;
@@ -7995,13 +7997,8 @@ function onbStatus(p, pending){
   return {txt:"In progress",color:"#1e40af",bg:"#dbeafe"};
 }
 function Badge({s}){ return <span style={{padding:"2px 8px",borderRadius:999,fontSize:11,fontWeight:600,color:s.color,background:s.bg,whiteSpace:"nowrap"}}>{s.txt}</span>; }
-// supabase-js v2 puts non-2xx edge-fn error bodies on error.context (a Response),
-// NOT in data. Pull the server's {error} message out so HR sees the real cause.
-async function edgeErr(error, data){
-  if(data && data.error) return data.error;
-  try { if(error && error.context && typeof error.context.json==="function"){ const j=await error.context.json(); if(j && j.error) return j.error; } } catch(_e){}
-  return (error && error.message) || "Something went wrong — please try again.";
-}
+// (fnErrorMessage is defined once at module scope — see below — so create-login,
+//  the Wise panel, and onboarding review all share one edge-error extractor.)
 
 function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
   const { data:wRows } = useQuery(client, c=>c.from("workers")
@@ -8029,7 +8026,7 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
     setBusy(true); setMsg("");
     const { data, error } = await client.functions.invoke("portal-review",{body:{action,document_id:d.id,reason}});
     setBusy(false);
-    if(error||(data&&data.error)){ setMsg(await edgeErr(error,data)); return; }
+    if(error||(data&&data.error)){ setMsg((data&&data.error)||await fnErrorMessage(error)); return; }
     logEvent(client,{action:"document_review",entity:(ONB_DOC_LABEL[d.kind]||d.kind),detail:{document_id:d.id,action,reason}});
     reloadDocs(); onChange&&onChange();
   }
