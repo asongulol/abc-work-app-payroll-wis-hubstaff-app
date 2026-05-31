@@ -308,6 +308,32 @@
     .modal .actions .btn{width:100%;min-height:44px;font-size:15px}
   }
   @keyframes sheetUp{from{transform:translateY(100%)}to{transform:none}}
+  /* ===== Phase 5: Polish & QA (final pass) ===================================
+     Additive, mobile-only refinements. Everything here is gated behind
+     max-width media queries, so the desktop experience at >=1024px (and the
+     tablet/desktop tabular layouts) is byte-for-byte unchanged.
+     Goals: (1) every interactive control clears the 44px tap-target floor on
+     phones; (2) long unbreakable strings (emails, Wise tags, UUIDs) wrap
+     instead of forcing horizontal page scroll; (3) slightly more legible small
+     button text. */
+  @media (max-width: 640px) {
+    /* Tap-target floor: any standalone button (incl. .btn.sm rendered outside
+       tables/modals, which already have their own 44px rules) gets a 44px min
+       height and vertically-centered label. inline-flex keeps inline siblings
+       (e.g. "Save"{" "}"Cancel") flowing naturally. */
+    .btn{min-height:44px;display:inline-flex;align-items:center;justify-content:center;gap:6px}
+    .btn.sm{font-size:13px;padding:8px 12px}
+    /* The bottom-nav buttons are already 56px; the .x close button is handled
+       in the Phase 3 modal block. Native form controls already get 44px in the
+       modal block; mirror that for inline (non-modal) selects/inputs so on-page
+       editors (rate tables, recipient rows) are comfortably tappable too. */
+    select,input,textarea{min-height:44px}
+    /* Long unbreakable values must never push the page wider than the viewport.
+       Applies to the stacked-card value cells and generic value spans. */
+    .table-scroll:not(.keep-table) > table > tbody > tr > td,
+    .field .val,
+    .modal .field .val{overflow-wrap:anywhere;word-break:break-word}
+  }
   @media print {
     body{background:#fff}
     .topbar,.tabs,.bottom-nav,.no-print{display:none !important}
