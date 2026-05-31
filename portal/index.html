@@ -272,17 +272,17 @@ function DocsView({ client, session }){
 }
 
 const FIELD_DEFS = [
-  {k:"first_name",label:"First name"}, {k:"middle_name",label:"Middle name"}, {k:"last_name",label:"Last name"},
-  {k:"mobile",label:"Mobile",type:"tel"}, {k:"ph_address",label:"PH address"}, {k:"date_of_birth",label:"Date of birth",type:"date"},
-  {k:"gcash",label:"GCash"}, {k:"paymaya",label:"PayMaya"}, {k:"paypal",label:"PayPal"},
-  {k:"wise_tag",label:"Wise Tag",wise:true},
-  {k:"emergency_name",label:"Emergency contact name"}, {k:"emergency_relationship",label:"Emergency contact relationship"}, {k:"emergency_mobile",label:"Emergency contact mobile",type:"tel"},
-  {k:"permanent_address",label:"Permanent address"}, {k:"address_landmark",label:"Landmark"}, {k:"postal_code",label:"Postal code"},
-  {k:"marital_status",label:"Marital status"}, {k:"education_level",label:"Education level"}, {k:"course",label:"Course"}, {k:"year_graduated",label:"Year graduated"}, {k:"school",label:"School"},
+  {k:"first_name",label:"First name",s:"contact"}, {k:"middle_name",label:"Middle name",s:"contact"}, {k:"last_name",label:"Last name",s:"contact"},
+  {k:"mobile",label:"Mobile",type:"tel",s:"contact"}, {k:"ph_address",label:"Current PH address",s:"contact"}, {k:"permanent_address",label:"Permanent address",s:"contact"},
+  {k:"address_landmark",label:"Landmark",s:"contact"}, {k:"postal_code",label:"Postal code",s:"contact"}, {k:"date_of_birth",label:"Date of birth",type:"date",s:"contact"},
+  {k:"emergency_name",label:"Emergency contact name",s:"personal"}, {k:"emergency_relationship",label:"Emergency contact relationship",s:"personal"}, {k:"emergency_mobile",label:"Emergency contact mobile",type:"tel",s:"personal"},
+  {k:"marital_status",label:"Marital status",s:"personal"}, {k:"education_level",label:"Education level",s:"personal"}, {k:"course",label:"Course",s:"personal"}, {k:"year_graduated",label:"Year graduated",s:"personal"}, {k:"school",label:"School",s:"personal"},
+  {k:"gcash",label:"GCash",s:"payout"}, {k:"paymaya",label:"PayMaya",s:"payout"}, {k:"paypal",label:"PayPal",s:"payout"}, {k:"wise_tag",label:"Wise Tag",wise:true,s:"payout"},
 ];
 function ProfileView({ client, session, onSignOut }){
   const [w,setW]=useState(null); const [editable,setEditable]=useState([]); const [form,setForm]=useState({});
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [err,setErr]=useState("");
+  const [psec,setPsec]=useState("contact");
   function load(){
     client.from("workers").select("first_name,middle_name,last_name,email,work_email,mobile,work_number,work_extension,ph_address,date_of_birth,gcash,paymaya,paypal,wise_tag,hire_date,payout_method,emergency_name,emergency_relationship,emergency_mobile,permanent_address,address_landmark,postal_code,marital_status,education_level,course,year_graduated,school")
       .then(({data})=>{ const row=(data||[])[0]||{}; setW(row);
@@ -305,6 +305,9 @@ function ProfileView({ client, session, onSignOut }){
   }
   if(!w) return <div className="wrap"><div className="empty">Loading…</div></div>;
   const anyEditable=FIELD_DEFS.some(f=>isEditable(f.k));
+  const SECS=[["contact","Contact"],["personal","Personal"],["payout","Payout"]];
+  const secFields=FIELD_DEFS.filter(f=>f.s===psec);
+  const secEditable=secFields.some(f=>isEditable(f.k));
   return (
     <div className="wrap">
       <h2>Profile</h2>
@@ -316,12 +319,18 @@ function ProfileView({ client, session, onSignOut }){
         <div className="row"><span className="k">Engaged since</span><span>{w.hire_date||"—"}</span></div>
         <div className="row"><span className="k">Paid via</span><span>{w.payout_method||"—"}</span></div>
       </div>
+      <div style={{display:"flex",gap:6,margin:"4px 0 10px"}}>
+        {SECS.map(([k,lbl])=>(
+          <button key={k} className={"btn "+(psec===k?"":"ghost")}
+            style={{flex:1,padding:"9px 4px",fontSize:14,...(psec===k?{}:{color:"var(--accent)",borderColor:"var(--accent)"})}}
+            onClick={()=>setPsec(k)}>{lbl}</button>
+        ))}
+      </div>
       <div className="card">
-        <div style={{fontWeight:700,marginBottom:6}}>Your details</div>
         <p className="sub" style={{marginTop:0}}>{anyEditable
           ? "Update your info and Save. Fields shown as plain text are managed by payroll."
           : "Editing is currently turned off by your payroll admin."}</p>
-        {FIELD_DEFS.map(f=>(
+        {secFields.map(f=>(
           <div key={f.k} style={{margin:"8px 0"}}>
             <label className="sub" style={{display:"block"}}>{f.label}</label>
             {isEditable(f.k)
@@ -336,6 +345,7 @@ function ProfileView({ client, session, onSignOut }){
           {err && <div className="err">{err}</div>}
           {msg && <div style={{color:"var(--good)",fontSize:14,padding:"4px 0"}}>{msg}</div>}
           <button className="btn" style={{width:"100%",marginTop:8}} disabled={busy} onClick={save}>{busy?"Saving…":"Save changes"}</button>
+          {!secEditable && <p className="sub" style={{marginTop:6,marginBottom:0}}>Nothing on this tab is editable right now — your changes on other tabs still save.</p>}
         </>}
       </div>
       <p className="sub">Questions about your pay? Contact your payroll admin.</p>
