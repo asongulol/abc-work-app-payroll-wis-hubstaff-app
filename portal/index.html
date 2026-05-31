@@ -28,6 +28,10 @@
   .btn:disabled{opacity:.5}
   .btn.ghost{background:transparent; color:#fff; border:1px solid rgba(255,255,255,.5);}
   .btn.link{background:transparent; color:var(--accent); padding:6px; font-weight:600;}
+  .ptabs{display:flex; gap:6px; border-bottom:1px solid var(--line); margin:6px 0 12px;}
+  .ptabs button{flex:1; background:none; border:0; border-bottom:2px solid transparent;
+       padding:9px 4px; font-size:14px; font-weight:600; color:var(--muted); cursor:pointer;}
+  .ptabs button.on{color:var(--accent); border-bottom-color:var(--accent);}
   .card{background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
         padding:14px; margin:12px 0;}
   .sub{color:var(--muted); font-size:13px; margin:2px 0;}
@@ -319,11 +323,9 @@ function ProfileView({ client, session, onSignOut }){
         <div className="row"><span className="k">Engaged since</span><span>{w.hire_date||"—"}</span></div>
         <div className="row"><span className="k">Paid via</span><span>{w.payout_method||"—"}</span></div>
       </div>
-      <div style={{display:"flex",gap:6,margin:"4px 0 10px"}}>
+      <div className="ptabs">
         {SECS.map(([k,lbl])=>(
-          <button key={k} className={"btn "+(psec===k?"":"ghost")}
-            style={{flex:1,padding:"9px 4px",fontSize:14,...(psec===k?{}:{color:"var(--accent)",borderColor:"var(--accent)"})}}
-            onClick={()=>setPsec(k)}>{lbl}</button>
+          <button key={k} className={psec===k?"on":""} onClick={()=>setPsec(k)}>{lbl}</button>
         ))}
       </div>
       <div className="card">
