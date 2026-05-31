@@ -1,0 +1,7 @@
+# Never commit the captured prod session token.
+.auth/
+# Playwright build artifacts.
+node_modules/
+report/
+test-results/
+playwright-report/

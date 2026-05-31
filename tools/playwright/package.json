@@ -1,0 +1,16 @@
+{
+  "name": "mobile-authed-tests",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "Playwright authed mobile tests for app/index.html — runs against local branch code with a real (read-only) prod Supabase session.",
+  "scripts": {
+    "capture": "node capture-login.mjs",
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}
