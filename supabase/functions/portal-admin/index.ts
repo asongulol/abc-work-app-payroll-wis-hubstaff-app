@@ -93,6 +93,70 @@ Deno.serve(async (req) => {
       return json({ ok: true });
     }
 
+    // Permanently delete a contractor. Two tiers of protection, enforced here
+    // (server-side, unbypassable):
+    //   - ABSOLUTE block if any payments / time_entries exist (financial records
+    //     must be retained — the UI offers Deactivate instead).
+    //   - Signed legal records (onboarding_signatures eSign ledger, documents)
+    //     are destroyed only with an explicit { force: true } (a stronger UI confirm).
+    // Both probes FAIL CLOSED: any non-ok / non-array response aborts the delete,
+    // so a transient read error can never be mistaken for "no history".
+    if (body.action === "delete_contractor") {
+      const worker_id = body.worker_id;
+      if (!worker_id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(worker_id)))
+        return json({ error: "valid worker_id (uuid) required" }, 400);
+      const force = body.force === true;
+
+      // probe a table for ANY row for this worker; { ok:false } on a non-2xx or
+      // non-array body so the caller can abort rather than assume "empty".
+      const probe = async (table: string, sel: string) => {
+        const res = await fetch(`${SB}/rest/v1/${table}?worker_id=eq.${worker_id}&select=${sel}&limit=1`, { headers: svc });
+        if (!res.ok) return { ok: false, n: 0 };
+        const j = await res.json().catch(() => null);
+        if (!Array.isArray(j)) return { ok: false, n: 0 };
+        return { ok: true, n: j.length };
+      };
+
+      // tier 1 — payroll history: absolute block (and abort on probe failure).
+      const pay = await probe("payments", "id");
+      const te = await probe("time_entries", "work_date");
+      if (!pay.ok || !te.ok) return json({ error: "couldn't verify payroll history — delete aborted, please retry", code: "guard_error" }, 502);
+      if (pay.n || te.n) return json({ error: "This contractor has payroll history (payments or time entries) and can't be deleted — deactivate them instead.", code: "has_history" }, 409);
+
+      // tier 2 — signed legal / compliance records: require explicit force.
+      const sig = await probe("onboarding_signatures", "id");
+      const doc = await probe("documents", "id");
+      if (!sig.ok || !doc.ok) return json({ error: "couldn't verify contractor records — delete aborted, please retry", code: "guard_error" }, 502);
+      if (!force && (sig.n || doc.n))
+        return json({ error: "This contractor has signed agreements / uploaded documents.", code: "has_records", signatures: sig.n, documents: doc.n }, 409);
+
+      // gather external artifacts BEFORE the cascade removes their rows
+      const docRes = await fetch(`${SB}/rest/v1/documents?worker_id=eq.${worker_id}&select=storage_path`, { headers: svc });
+      const docs = await docRes.json().catch(() => []);
+      const paths = (Array.isArray(docs) ? docs : []).map((d: any) => d.storage_path).filter(Boolean);
+      const clRes = await fetch(`${SB}/rest/v1/contractor_logins?worker_id=eq.${worker_id}&select=auth_user_id`, { headers: svc });
+      const cl = await clRes.json().catch(() => []);
+      const auth_user_id = (Array.isArray(cl) && cl[0]?.auth_user_id) || null;
+
+      // Delete the worker FIRST and confirm it — FK ON DELETE CASCADE removes
+      // worker_companies, rates, documents, onboarding_progress/signatures,
+      // contractor_logins. ONLY after it succeeds do we best-effort clean the
+      // external artifacts, so a failed delete can't orphan a live contractor.
+      const delRes = await fetch(`${SB}/rest/v1/workers?id=eq.${worker_id}`, {
+        method: "DELETE", headers: { ...svc, Prefer: "return=minimal" },
+      });
+      if (!delRes.ok) return json({ error: `delete failed: ${await delRes.text()}` }, 500);
+
+      if (paths.length) await fetch(`${SB}/storage/v1/object/contractor-docs`, { method: "DELETE", headers: svc, body: JSON.stringify({ prefixes: paths }) }).catch(() => {});
+      if (auth_user_id) await fetch(`${SB}/auth/v1/admin/users/${auth_user_id}`, { method: "DELETE", headers: svc }).catch(() => {});
+
+      await fetch(`${SB}/rest/v1/audit_log`, {
+        method: "POST", headers: { ...svc, Prefer: "return=minimal" },
+        body: JSON.stringify({ action: "delete_contractor", actor: caller.email ?? null, entity: worker_id, detail: { worker_id, force, signatures: sig.n, documents: doc.n, files_removed: paths.length, login_removed: !!auth_user_id } }),
+      });
+      return json({ ok: true, files_removed: paths.length, login_removed: !!auth_user_id });
+    }
+
     return json({ error: "unknown action" }, 400);
   } catch (e) {
     return json({ error: String((e as any)?.message ?? e) }, 500);
