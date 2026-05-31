@@ -36,6 +36,34 @@ npm run capture
 
 # 2. Run the authed mobile tests at 360 / 390 / 414 / 768 px.
 npm test
+```
+
+### If `npm run capture` gets stuck on Cloudflare ("verify you are human")
+
+Cloudflare's bot challenge trips on the Playwright-automated browser and can
+loop forever. Sidestep it — grab the session from your **normal** Chrome (which
+already passed Cloudflare and is logged in). The tests load from localhost, so
+they never touch Cloudflare; they only need the Supabase JWT.
+
+1. In your normal Chrome, on **https://payroll.abbilabs.com** (logged in), open
+   DevTools (`Cmd+Opt+J`) → **Console**, paste this one line, press Enter:
+
+   ```js
+   copy(JSON.stringify({tokenKey:Object.keys(localStorage).find(k=>/^sb-.*-auth-token$/.test(k)),token:localStorage.getItem(Object.keys(localStorage).find(k=>/^sb-.*-auth-token$/.test(k)))}))
+   ```
+
+   (It copies the session to your clipboard. If it copies `undefined`, that tab
+   isn't signed in — sign in, then re-run the line.)
+
+2. In the terminal:
+
+   ```bash
+   npm run import     # reads the clipboard (macOS pbpaste) and saves the session
+   npm test
+   ```
+
+   Fallbacks if clipboard reading is blocked: `pbpaste | npm run import`, or
+   paste into a file and `npm run import -- that-file.txt`.
 
 # Watch it drive the browser:
 npm run test:headed
@@ -64,7 +92,8 @@ run, but if a run fails with "still on the sign-in screen", just re-run
 |------|---------|
 | `playwright.config.mjs` | Projects for the 4 viewports; starts `server.mjs`; system Chrome |
 | `server.mjs` | Serves `../../app` locally |
-| `capture-login.mjs` | One-time prod login → saves session token (gitignored) |
+| `capture-login.mjs` | One-time prod login via Playwright → saves session token (gitignored) |
+| `import-token.mjs` | Cloudflare fallback: import a session token copied from your normal browser |
 | `authed-test.mjs` | Fixture: injects the session + enforces the read-only write-guard |
 | `mobile-authed.spec.mjs` | The read-only navigation + modal tests |
 
