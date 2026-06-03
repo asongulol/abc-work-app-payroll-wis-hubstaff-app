@@ -3,3 +3,10 @@ tools/node_modules/
 tools/baseline.json
 .DS_Store
 *.log
+
+# Local data exports / debug artifacts (may contain contractor PII — never commit)
+*.csv
+diagnose_jam.sh
+
+# Supabase CLI local cache
+supabase/.temp/
