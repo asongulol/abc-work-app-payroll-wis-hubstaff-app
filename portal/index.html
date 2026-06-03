@@ -642,7 +642,7 @@ function SignaturePad({ client, agreement, text, canSign, onSigned }){
     const doc_sha256 = await sha256Hex(text);
     const { data, error } = await client.functions.invoke("portal-sign", { body: {
       action:"sign", agreement_kind:agreement.kind, doc_version:agreement.version||"1.0",
-      doc_sha256, signed_legal_name:name.trim(), signature_method:mode,
+      doc_sha256, signed_legal_name:name.trim(), signature_method:(mode==="draw"?"drawn":"typed"),
       signature_data, scrolled_to_end:true, device_fingerprint:deviceFingerprint(),
     }});
     setBusy(false);
