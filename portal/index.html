@@ -467,7 +467,7 @@ function ProfileView({ client, session, onSignOut }){
             <label className="sub" style={{display:"block"}}>{f.label}</label>
             {isEditable(f.k)
               ? (f.opts
-                  ? <select value={form[f.k]||""} onChange={e=>set(f.k,e.target.value)}><option value="">Select…</option>{f.opts.map(o=><option key={o} value={o}>{o}</option>)}</select>
+                  ? <select value={form[f.k]||""} onChange={e=>set(f.k,e.target.value)}><option value="">Select…</option>{f.opts.map(o=><option key={o} value={o}>{o}</option>)}{form[f.k]&&!f.opts.includes(form[f.k])&&<option value={form[f.k]}>{form[f.k]}</option>}</select>
                   : <input type={f.type||"text"} value={form[f.k]||""} onChange={e=>set(f.k,e.target.value)} placeholder={f.wise?"@yourtag":""}/>)
               : <div style={{padding:"6px 0",fontSize:15}}>{curVal(f)||<span className="sub">—</span>}</div>}
             {f.wise && isEditable("wise_tag") &&
@@ -834,7 +834,7 @@ function Stage2Profile({ client, onAdvance }){
         <div key={d.k} style={{margin:"8px 0"}}>
           <label className="sub" style={{display:"block"}}>{d.label}{REQUIRED_S2[d.k]?" *":""}</label>
           {d.opts
-            ? <select value={form[d.k]||""} onChange={e=>set(d.k,e.target.value)} aria-invalid={errs[d.k]?"true":"false"}><option value="">Select…</option>{d.opts.map(o=><option key={o} value={o}>{o}</option>)}</select>
+            ? <select value={form[d.k]||""} onChange={e=>set(d.k,e.target.value)} aria-invalid={errs[d.k]?"true":"false"}><option value="">Select…</option>{d.opts.map(o=><option key={o} value={o}>{o}</option>)}{form[d.k]&&!d.opts.includes(form[d.k])&&<option value={form[d.k]}>{form[d.k]}</option>}</select>
             : <input type={d.type||"text"} value={form[d.k]||""} onChange={e=>set(d.k,e.target.value)}
                 aria-invalid={errs[d.k]?"true":"false"} placeholder={d.wise?"@yourtag":""}/>}
           {errs[d.k] && <div className="err" style={{padding:"2px 0"}}>{errs[d.k]}</div>}
