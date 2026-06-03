@@ -79,7 +79,10 @@ Deno.serve(async (req) => {
     const agreement_kind = String(body.agreement_kind || "");
     const doc_version = String(body.doc_version || "").trim();
     const signed_legal_name = String(body.signed_legal_name || "").trim();
-    const signature_method = String(body.signature_method || "");
+    // Normalize the signature method to the DB enum. Older portal builds sent
+    // the UI toggle values "type"/"draw"; accept those too so cached clients work.
+    const sm0 = String(body.signature_method || "").trim().toLowerCase();
+    const signature_method = sm0 === "type" ? "typed" : sm0 === "draw" ? "drawn" : sm0;
     if (!order.includes(agreement_kind)) return json({ error: "unknown agreement_kind" }, 400);
     if (!doc_version) return json({ error: "doc_version required" }, 400);
     if (!signed_legal_name) return json({ error: "signed_legal_name required" }, 400);
