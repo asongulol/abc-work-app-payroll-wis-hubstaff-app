@@ -55,7 +55,7 @@
   .card{background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
         padding:14px; margin:12px 0;}
   .sub{color:var(--muted); font-size:13px; margin:2px 0;}
-  input{width:100%; padding:12px; font-size:16px; border:1px solid var(--line); border-radius:10px; margin:6px 0;}
+  input,select{width:100%; padding:12px; font-size:16px; border:1px solid var(--line); border-radius:10px; margin:6px 0; background:#fff;}
   .pill{display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600;}
   .pill.paid{background:#dcfce7; color:#166534;} .pill.pending{background:#fef3c7; color:#92400e;}
   .net{font-size:28px; font-weight:800; color:var(--accent);}
@@ -406,10 +406,10 @@ const FIELD_DEFS = [
   {k:"mobile",label:"Mobile",type:"tel",s:"contact"}, {k:"ph_address",label:"Current PH address",s:"contact"}, {k:"permanent_address",label:"Permanent address",s:"contact"},
   {k:"address_landmark",label:"Landmark",s:"contact"}, {k:"postal_code",label:"Postal code",s:"contact"}, {k:"date_of_birth",label:"Date of birth",type:"date",s:"contact"},
   {k:"emergency_name",label:"Emergency contact name",s:"personal"}, {k:"emergency_relationship",label:"Emergency contact relationship",s:"personal"}, {k:"emergency_mobile",label:"Emergency contact mobile",type:"tel",s:"personal"},
-  {k:"marital_status",label:"Marital status",s:"personal"}, {k:"education_level",label:"Education level",s:"personal"}, {k:"course",label:"Course",s:"personal"}, {k:"year_graduated",label:"Year graduated",s:"personal"}, {k:"school",label:"School",s:"personal"},
+  {k:"marital_status",label:"Marital status",s:"personal"}, {k:"education_level",label:"Highest Degree Attained",s:"personal",opts:["Elementary","High School","Some College","College","Masters","Doctorate"]}, {k:"course",label:"Degree and Major",s:"personal"}, {k:"year_graduated",label:"Year graduated",s:"personal"}, {k:"school",label:"School",s:"personal"},
   {k:"gcash",label:"GCash",s:"payout"}, {k:"paymaya",label:"PayMaya",s:"payout"}, {k:"paypal",label:"PayPal",s:"payout"}, {k:"wise_tag",label:"Wise Tag",wise:true,s:"payout"},
   // "Culture" / fun facts — stored in the profile_extras jsonb (ex:true), not flat columns
-  {k:"favorite_color",label:"Favorite color",s:"about",ex:true}, {k:"favorite_food",label:"Favorite food",s:"about",ex:true}, {k:"motto",label:"Personal motto",s:"about",ex:true},
+  {k:"favorite_color",label:"Favorite color",s:"about",ex:true}, {k:"favorite_food",label:"Favorite food",s:"about",ex:true}, {k:"tshirt_size",label:"T-shirt size",s:"about",ex:true}, {k:"shoe_size",label:"Shoe size",s:"about",ex:true}, {k:"hobbies",label:"Hobbies",s:"about",ex:true}, {k:"motto",label:"Personal motto",s:"about",ex:true},
 ];
 function ProfileView({ client, session, onSignOut }){
   const [w,setW]=useState(null); const [editable,setEditable]=useState([]); const [form,setForm]=useState({});
@@ -466,7 +466,9 @@ function ProfileView({ client, session, onSignOut }){
           <div key={f.k} style={{margin:"8px 0"}}>
             <label className="sub" style={{display:"block"}}>{f.label}</label>
             {isEditable(f.k)
-              ? <input type={f.type||"text"} value={form[f.k]||""} onChange={e=>set(f.k,e.target.value)} placeholder={f.wise?"@yourtag":""}/>
+              ? (f.opts
+                  ? <select value={form[f.k]||""} onChange={e=>set(f.k,e.target.value)}><option value="">Select…</option>{f.opts.map(o=><option key={o} value={o}>{o}</option>)}</select>
+                  : <input type={f.type||"text"} value={form[f.k]||""} onChange={e=>set(f.k,e.target.value)} placeholder={f.wise?"@yourtag":""}/>)
               : <div style={{padding:"6px 0",fontSize:15}}>{curVal(f)||<span className="sub">—</span>}</div>}
             {f.wise && isEditable("wise_tag") &&
               <a href="https://wise.com/invite/dic/olivert410" target="_blank" rel="noreferrer"
@@ -831,8 +833,10 @@ function Stage2Profile({ client, onAdvance }){
       {secFields.map(d=>(
         <div key={d.k} style={{margin:"8px 0"}}>
           <label className="sub" style={{display:"block"}}>{d.label}{REQUIRED_S2[d.k]?" *":""}</label>
-          <input type={d.type||"text"} value={form[d.k]||""} onChange={e=>set(d.k,e.target.value)}
-            aria-invalid={errs[d.k]?"true":"false"} placeholder={d.wise?"@yourtag":""}/>
+          {d.opts
+            ? <select value={form[d.k]||""} onChange={e=>set(d.k,e.target.value)} aria-invalid={errs[d.k]?"true":"false"}><option value="">Select…</option>{d.opts.map(o=><option key={o} value={o}>{o}</option>)}</select>
+            : <input type={d.type||"text"} value={form[d.k]||""} onChange={e=>set(d.k,e.target.value)}
+                aria-invalid={errs[d.k]?"true":"false"} placeholder={d.wise?"@yourtag":""}/>}
           {errs[d.k] && <div className="err" style={{padding:"2px 0"}}>{errs[d.k]}</div>}
         </div>
       ))}
