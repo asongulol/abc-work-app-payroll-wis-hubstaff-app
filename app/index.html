@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 00:33 PHT · fbfaab2";
+const BUILD = "2026-06-05 00:40 PHT · 6fdb92c";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -5234,13 +5234,21 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       logEvent(client,{company_id:companyId,action:"delete_import",
         entity:`${b.start} → ${b.end}`,
         detail:{scope:"approved_batch",contractors:b.contractors,hours:b.hours}});
-      setMsg(`Deleted ${b.start} → ${b.end}. Opening Time & Approval to load or enter hours…`);
+      // Any other batch still waiting to calculate? (exclude the one just
+      // deleted; locked/paid don't count as "waiting".)
+      const remaining = (batches||[]).filter(x =>
+        !(x.start===b.start && x.end===b.end) && x.state!=="locked" && x.state!=="paid");
       // if the currently-loaded period is the one we deleted, clear the table
       if(start===b.start && end===b.end){ setRows([]); setPeriod(null); }
       loadBatches();
-      // The batch is gone — send the user to Time & Approval to import the
-      // correct times or enter manual hours, then recalculate.
-      if(typeof goTab==="function") goTab("time");
+      if(remaining.length===0){
+        // Nothing left to calculate — go to Time & Approval to load/enter hours.
+        // Clear the message so coming back to Calculate shows just the empty list.
+        setMsg("");
+        if(typeof goTab==="function") goTab("time");
+      } else {
+        setMsg(`Deleted ${b.start} → ${b.end}.`);
+      }
     }catch(ex){ setMsg("Couldn't delete batch: "+(ex.message||ex)); }
     finally{ setBusy(false); }
   }
