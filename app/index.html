@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-04 23:37 PHT · ec8ff00";
+const BUILD = "2026-06-04 23:43 PHT · 997061e";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -6887,6 +6887,45 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
     finally{ setBusy(false); }
   }
 
+  // Period-level UNLOCK from Process & Pay — flip pay_periods.state back to
+  // 'open' so it returns to the Calculate tab as an editable draft. Refuses a
+  // 'paid' period (mark unpaid first), warns if any rows are already sent/locked
+  // in Wise (recalculating can drift from what was actually paid), and records a
+  // reason in the audit log.
+  async function unlockPeriod(p){
+    if(!p) return;
+    if(!gate("Unlock period")) return;
+    if(p.state==="paid"){
+      setMsg("This period is PAID — use “Mark all unpaid” below first, then unlock."); return; }
+    const {data:pays}=await client.from("payments")
+      .select("status,paid_at,wise_locked_at").eq("pay_period_id",p.id);
+    const started=(pays||[]).filter(r=> r.paid_at || r.wise_locked_at || (r.status && r.status!=="draft"));
+    if(started.length && !window.confirm(
+      `⚠ ${started.length} payment(s) in this period are already sent / paid / locked in Wise.\n\n`+
+      `Unlocking returns it to Calculate for editing. Recalculating there REBUILDS amounts from hours and can drift from what was actually paid — sent Wise transfers are NOT reversed.\n\n`+
+      `Unlock anyway?`)) return;
+    const reason=window.prompt(
+      "Unlock this pay period for editing?\n\n"+
+      `Period: ${p.period_start} → ${p.period_end}\n\n`+
+      "It returns to the Calculate tab as a draft (recalculate / edit, then re-lock).\n\n"+
+      "Enter a reason (recorded in the audit log):");
+    if(reason==null) return;
+    if(!reason.trim()){ setMsg("Unlock requires a reason."); return; }
+    setBusy(true); setMsg("");
+    try{
+      const {error}=await client.from("pay_periods").update({state:"open",locked_at:null}).eq("id",p.id);
+      if(error) throw new Error(error.message);
+      logEvent(client,{company_id:companyId,action:"unlock_period",
+        entity:`${p.period_start} → ${p.period_end}`,
+        detail:{reason,previous_state:p.state,from:"process_and_pay"}});
+      setPeriods(prev=>prev.filter(x=>x.id!==p.id));   // no longer locked/paid
+      if(periodId===p.id){ setPeriodId(""); setPers(null); setRows(null); }
+      setMsg(`Unlocked ${p.period_start} → ${p.period_end} — opening Calculate…`);
+      if(typeof goTab==="function") goTab("payroll");
+    }catch(ex){ setMsg("Unlock failed: "+(ex.message||ex)); }
+    finally{ setBusy(false); }
+  }
+
   useEffect(()=>{
     if(!client||!companyId){setPeriods([]);return;}
     client.from("pay_periods").select("id,period_start,period_end,pay_date,state")
@@ -7656,9 +7695,13 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
                         <td className="card-title"><b>{p.period_start} → {p.period_end}</b></td>
                         <td data-label="Pay date">{p.pay_date||"—"}</td>
                         <td data-label="Status"><span className="pill" style={{background:"#eef2ff",color:"#3730a3"}}>locked · ready to pay</span></td>
-                        <td className="card-action" style={{textAlign:"right"}}>
+                        <td className="card-action" style={{textAlign:"right",whiteSpace:"nowrap"}}>
                           <button className="btn sm" disabled={busy} onClick={()=>load(p.id)}>
                             {periodId===p.id?"Loaded":"Open & pay"}</button>
+                          {!reconcileOnly && <>{" "}
+                            <button className="btn ghost sm" disabled={busy} onClick={()=>unlockPeriod(p)}
+                              title="Flip back to a draft and return to Calculate for editing. Requires a reason.">
+                              Unlock</button></>}
                         </td>
                       </tr>
                     ))}
