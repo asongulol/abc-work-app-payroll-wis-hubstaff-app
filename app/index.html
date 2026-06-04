@@ -125,6 +125,25 @@
   .pill.warn{background:var(--warn-soft);color:var(--warn)}
   .pill.bad{background:#fee2e2;color:var(--bad)}
   .pill.info{background:var(--accent-soft);color:var(--accent)}
+  /* ===== Phase 2: loading skeletons + step checklist ======================= */
+  .skel{display:flex;flex-direction:column;gap:10px;padding:8px 2px}
+  .skel-bar{height:14px;border-radius:6px;
+            background:linear-gradient(90deg,#eef1f5 25%,#e2e7ee 37%,#eef1f5 63%);
+            background-size:400% 100%;animation:skelshimmer 1.4s ease infinite}
+  @keyframes skelshimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}
+  @media (prefers-reduced-motion: reduce){.skel-bar{animation:none}}
+  .steps{border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;
+         background:var(--surface-2);max-width:440px}
+  .steps-head{display:flex;justify-content:space-between;align-items:baseline;
+              font-weight:700;margin-bottom:8px;font-size:13px}
+  .steps-time{color:var(--muted);font-variant-numeric:tabular-nums;font-weight:600;font-size:12px}
+  .step{display:flex;gap:9px;align-items:center;padding:4px 0;font-size:13px;color:var(--muted)}
+  .step-ico{width:18px;text-align:center;flex:none}
+  .step-active{color:var(--text);font-weight:600}
+  .step-active .step-ico{color:var(--navy)}
+  .step-done{color:var(--text)}
+  .step-done .step-ico{color:var(--good)}
+  .step-pending{color:var(--subtle)}
   /* horizontal scroll wrapper for wide tables */
   .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
   .table-scroll table{min-width:560px}
@@ -446,7 +465,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 06:59 PHT · 4dd0b60";
+const BUILD = "2026-06-05 07:02 PHT · 13d830d";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -503,6 +522,43 @@ function DstNudge(){
 function methodLabel(m){
   if(!m) return "";
   return m==="bpi" ? "BPI" : m.charAt(0).toUpperCase()+m.slice(1);
+}
+
+// Loading skeleton (Phase 2). Shimmer bars that reserve layout space so data
+// load causes no shift. Shimmer auto-disables under prefers-reduced-motion.
+function Skeleton({rows=4, style}){
+  return (
+    <div className="skel" aria-hidden="true" style={style}>
+      {Array.from({length:rows}).map((_,i)=>
+        <div key={i} className="skel-bar" style={{width:(68+((i*29)%30))+"%"}}/>)}
+    </div>
+  );
+}
+
+// Step checklist with elapsed time (Phase 2) for ops that can exceed ~10s
+// (imports, payroll calc, Wise drafting). Shows each step's state so the user
+// can decide whether to wait — the guideline's replacement for a bare spinner.
+// Pass steps:[labels], current:index, startedAt:ms, done:bool.
+function ProgressSteps({steps, current=0, startedAt, done=false}){
+  const [,tick]=useState(0);
+  useEffect(()=>{
+    if(done) return; const id=setInterval(()=>tick(t=>t+1),1000); return ()=>clearInterval(id);
+  },[done]);
+  const elapsed=startedAt? Math.max(0,Math.round((Date.now()-startedAt)/1000)) : 0;
+  return (
+    <div className="steps" role="status" aria-live="polite">
+      <div className="steps-head"><span>{done?"Done ✓":"Working…"}</span><span className="steps-time">{elapsed}s elapsed</span></div>
+      {steps.map((s,i)=>{
+        const state = done||i<current ? "done" : i===current ? "active" : "pending";
+        return (
+          <div key={i} className={"step step-"+state}>
+            <span className="step-ico" aria-hidden="true">{state==="done"?"✓":state==="active"?"●":"○"}</span>
+            <span>{s}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 // Prominent status banner. Auto-detects tone from the message text:
@@ -1226,7 +1282,7 @@ function PortalSettingsModal({ client, onClose }){
             <p className="sub" style={{margin:"4px 0 0"}}>Tick the profile fields contractors may edit themselves in the portal. Payout destination (Wise recipient ID/UUID) is always admin-only.</p></div>
           <button className="btn ghost sm" onClick={onClose}>Close</button>
         </div>
-        {sel===null ? <div className="empty">Loading…</div> :
+        {sel===null ? <Skeleton rows={4}/> :
         <div style={{marginTop:12}}>
           {CANDIDATES.map(c=>(
             <label key={c.k} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 0",fontSize:14}}>
@@ -1276,7 +1332,7 @@ function AnnouncementsModal({ client, onClose }){
           </div>
         </div>
         <div style={{marginTop:12}}>
-          {rows===null?<div className="empty">Loading…</div>: !rows.length?<div className="empty">No announcements yet.</div>:
+          {rows===null?<Skeleton rows={4}/>: !rows.length?<div className="empty">No announcements yet.</div>:
             rows.map(a=>(
               <div key={a.id} style={{borderBottom:"1px solid var(--border)",padding:"8px 0"}}>
                 <div style={{display:"flex",justifyContent:"space-between",gap:8}}>
@@ -1601,7 +1657,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
   // populated — show the existing table so the modal stays mounted and keeps
   // its local form state. Previously this returned early on every reload,
   // unmounting the modal and resetting all inputs.
-  if (loading && !data) return <div className="empty">Loading…</div>;
+  if (loading && !data) return <Skeleton rows={4}/>;
   return (
     <div>
     <div className="card">
@@ -4180,7 +4236,7 @@ function TimeApproval({client,companyId,consolidated,goTab,openPeriodForEdit}){
   // approve/delete, `loading` flips true briefly but data is already present —
   // keep the table rendered so the in-progress add-hours panel and scroll
   // position survive. (Same guard as the Contractors modal fix.)
-  if(loading && !data)return <div className="card"><div className="empty">Loading time entries…</div></div>;
+  if(loading && !data)return <div className="card"><Skeleton rows={5}/></div>;
   return (
     <div className="card">
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
@@ -5975,7 +6031,7 @@ function Documents({client,companyId,consolidated}){
 
       <div className="card">
         <h2>Tracked documents {consolidated?"· all companies":""}</h2>
-        {loading?<div className="empty">Loading…</div>:
+        {loading?<Skeleton rows={4}/>:
          list.length===0?<div className="empty">No documents yet. Add one above.</div>:
         <div className="table-scroll"><table>
           <thead><tr><th>Contractor</th><th>Type</th><th>Title</th><th>Signed</th><th>Expires</th><th>Status</th></tr></thead>
@@ -6107,7 +6163,7 @@ function Reports({client,companyId,consolidated}){
               {" "}<button className="btn link sm" onClick={()=>{setFYears(new Set());setFMonths(new Set());}}>clear</button></p>}
           </div>
         )}
-        {loading?<div className="empty">Loading…</div>:
+        {loading?<Skeleton rows={4}/>:
          periods.length===0?<div className="empty">No saved pay statements yet. Run &amp; lock a payroll first.</div>:
          shown.length===0?<div className="empty">No periods match this Year/Month filter.</div>:
         <div className="table-scroll"><table>
@@ -6276,7 +6332,7 @@ function PerContractorSummary({client,companyId,consolidated}){
         <span className="muted" style={{fontSize:12,marginLeft:"auto",alignSelf:"center"}}>
           {rows.length} contractor(s) · total net {money(totNet,"PHP")}</span>
       </div>
-      {loading?<div className="empty">Loading…</div>:
+      {loading?<Skeleton rows={4}/>:
        rows.length===0?<div className="empty">No pay statements in this date range.</div>:
       <div className="table-scroll"><table>
         <thead><tr>
@@ -6371,7 +6427,7 @@ function ContractorHistory({client,companyId,consolidated}){
         {workers.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}
       </select>
       {!wid ? null :
-       rows===null ? <div className="empty">Loading…</div> :
+       rows===null ? <Skeleton rows={4}/> :
        !rows.length ? <div className="empty">No hours or pay records for this contractor.</div> :
        <div className="table-scroll"><table>
          <thead><tr>
@@ -6779,7 +6835,7 @@ function UtilizationReport({client,companyId,consolidated}){
     <div className="card">
       <h2>Contractor utilization</h2>
       <p className="sub">Total approved hours per contractor across all imported time (in scope).</p>
-      {loading?<div className="empty">Loading…</div>:
+      {loading?<Skeleton rows={4}/>:
        rows.length===0?<div className="empty">No approved time yet.</div>:
       <div className="table-scroll"><table>
         <thead><tr><th>Contractor</th><th>Approved hours</th><th>Days tracked</th><th>Avg h/day</th></tr></thead>
@@ -8791,7 +8847,7 @@ function AuditLog({client,companyId,consolidated}){
         {(from||to) && <button className="btn ghost sm" onClick={()=>{setFrom("");setTo("");}}>Clear dates</button>}
       </div>
       <FilterBox q={q} setQ={setQ} placeholder="Filter by action, item (e.g. a contractor name), who…" />
-      {loading?<div className="empty">Loading…</div>:
+      {loading?<Skeleton rows={4}/>:
        rows.length===0?<div className="empty">No audit events {(from||to)?"in this date range":"yet"}.</div>:
       <div className="table-scroll"><table>
         <thead><tr><Th k="when">When</Th><Th k="action">Action</Th><Th k="entity">Item</Th><th>Detail</th><Th k="actor">By</Th></tr></thead>
@@ -9222,7 +9278,7 @@ function AgreementTemplatesModal({ client, onClose }){
   function load(){ client.from("agreement_templates").select("kind,title,version,body").then(({data})=>{
     const list=(data||[]); setRows(list); const cur=list.find(r=>r.kind===sel)||list[0]; if(cur){ setSel(cur.kind); setBody(cur.body||""); } }); }
   useEffect(load,[]);
-  if(rows===null) return <div className="modal-bg" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}><div className="empty">Loading…</div></div></div>;
+  if(rows===null) return <div className="modal-bg" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}><Skeleton rows={4}/></div></div>;
   const pick=(k)=>{ const r=rows.find(x=>x.kind===k); setSel(k); setBody((r&&r.body)||""); setMsg(""); };
   async function save(){
     setBusy(true); setMsg("");
@@ -9260,7 +9316,7 @@ function OnboardingConfigModal({ client, onClose }){
   function load(){ client.from("portal_settings").select("onboarding_config").eq("id",1).maybeSingle()
     .then(({data})=>{ const c=(data&&data.onboarding_config)||{}; setCfg(c); setEnabled(!!c.onboarding_enabled); setText(JSON.stringify(c,null,2)); }); }
   useEffect(load,[]);
-  if(cfg===null) return <div className="modal-bg" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}><div className="empty">Loading…</div></div></div>;
+  if(cfg===null) return <div className="modal-bg" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}><Skeleton rows={4}/></div></div>;
   async function save(){
     let parsed; try{ parsed=JSON.parse(text); }catch(ex){ setMsg("Invalid JSON: "+ex.message); return; }
     if(typeof parsed!=="object"||Array.isArray(parsed)){ setMsg("Config must be a JSON object."); return; }
@@ -9331,7 +9387,7 @@ function OnboardingAdmin({ client }){
       {showCfg && <OnboardingConfigModal client={client} onClose={()=>setShowCfg(false)}/>}
       {needReview>0 && <div className="banner" style={{background:"#fef3c7",borderColor:"#fcd34d"}}>{needReview} contractor{needReview>1?"s have":" has"} documents waiting for review.{orphanReview>0?` (${orphanReview} uploaded outside onboarding — not listed below.)`:""}</div>}
       <FilterBox q={q} setQ={setQ} placeholder="Filter by name or email…" />
-      {loading? <div className="empty">Loading…</div> :
+      {loading? <Skeleton rows={4}/> :
        rows.length===0? <div className="empty">{q?"No matches for your filter.":"No onboarding in progress."}{(!q && !showDone && all.length>0)?" (Completed are hidden — tick “Show completed”.)":""}</div> :
        <div className="table-scroll"><table>
          <thead><tr><Th k="name">Contractor</Th><Th k="stage">Stage</Th><Th k="pct">Progress</Th><Th k="status">Status</Th><Th k="updated">Updated</Th><th></th></tr></thead>
