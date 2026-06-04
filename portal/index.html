@@ -76,7 +76,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-04 22:44 PHT · 143eb62";
+const BUILD = "2026-06-04 22:50 PHT · a4cc53b";
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -686,6 +686,10 @@ function Home({ client, session }){
   // ~day start check-in so it still works before an admin enters a schedule.
   useEffect(()=>{
     const wid=w&&w.id; if(!wid) return;
+    const phDate=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Manila"}).format(new Date());
+    // sessionStorage guard: once a kind is answered today, don't reappear on
+    // refresh within this session (covers the gap before the DB write commits).
+    const ssDone=(k)=>{ try{ return sessionStorage.getItem(`mood:${k}:${phDate}`)==="1"; }catch{ return false; } };
     const phHM=new Intl.DateTimeFormat("en-GB",{timeZone:"Asia/Manila",hour12:false,hour:"2-digit",minute:"2-digit"}).format(new Date());
     const [hh,mm]=phHM.split(":").map(Number); const nowMin=hh*60+mm;
     const parse=(t)=>{ if(!t) return null; const [a,b]=String(t).split(":").map(Number); return (a||0)*60+(b||0); };
@@ -694,21 +698,25 @@ function Home({ client, session }){
     client.from("mood_checkins").select("kind,created_at").eq("worker_id",wid).gte("created_at",sinceIso)
       .then(({data})=>{
         const recent=data||[];
+        const hasStart=recent.some(r=>r.kind==="start")||ssDone("start");
+        const hasEnd  =recent.some(r=>r.kind==="end")  ||ssDone("end");
         if(start!=null && end!=null){
           const afterStart=(nowMin-start+1440)%1440, afterEnd=(nowMin-end+1440)%1440;
-          if(afterStart<=120 && !recent.some(r=>r.kind==="start")){ setMoodPrompt({kind:"start"}); return; }
-          if(afterEnd<=120   && !recent.some(r=>r.kind==="end"))  { setMoodPrompt({kind:"end"});   return; }
+          if(afterStart<=120 && !hasStart){ setMoodPrompt({kind:"start"}); return; }
+          if(afterEnd<=120   && !hasEnd)  { setMoodPrompt({kind:"end"});   return; }
           setMoodPrompt(null); return;
         }
-        // No shift configured -> the check-in is shift-anchored, so show nothing
-        // (otherwise it nags on every refresh). Admin sets a shift to enable it.
-        setMoodPrompt(null);
+        // No shift configured -> fall back to a single check-in on first open of
+        // the day ("start"), de-duped so it doesn't reappear on every refresh.
+        setMoodPrompt((recent.length || hasStart) ? null : {kind:"start"});
       });
   },[w]);  // eslint-disable-line
   async function logMood(m){
     const kind=(moodPrompt&&moodPrompt.kind)||"start"; const wid=w?.id;
     setMoodPrompt(null);               // tapping an emoji is the ONLY way to dismiss the pop-out
-    if(wid){ const { error }=await client.from("mood_checkins").insert({worker_id:wid,mood:m,kind});
+    try{ const phDate=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Manila"}).format(new Date());
+      sessionStorage.setItem(`mood:${kind}:${phDate}`,"1"); }catch{ /* ignore */ }   // don't re-show this kind today
+    if(wid){ const { error }=await client.from("mood_checkins").insert({worker_id:wid,mood:m,kind});   // mood = 1..5 Likert
       if(error) console.error("mood check-in failed:", error.message); }   // surfaced in DevTools if RLS/insert ever fails
   }
   const paid=s=>s==="sent"||s==="reconciled";
