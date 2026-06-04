@@ -1,0 +1,18 @@
+{
+  "name": "abc-work-app-payroll-tooling",
+  "private": true,
+  "description": "Dev tooling only (lint + syntax checks). The apps themselves are single-file in-browser-Babel HTML; the backend is Supabase Deno edge functions.",
+  "scripts": {
+    "lint": "eslint . && node tools/check-html-syntax.mjs",
+    "lint:js": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "lint:html": "node tools/check-html-syntax.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.13.0",
+    "esbuild": "^0.24.0",
+    "eslint": "^9.13.0",
+    "globals": "^15.11.0",
+    "typescript-eslint": "^8.11.0"
+  }
+}

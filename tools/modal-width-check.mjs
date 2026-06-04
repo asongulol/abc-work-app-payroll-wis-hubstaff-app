@@ -12,7 +12,8 @@ import puppeteer from 'puppeteer-core';
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const APP = new URL('../app/index.html', import.meta.url);
 const html = readFileSync(APP, 'utf8');
-const style = (html.match(/<style[^>]*>([\s\S]*?)<\/style>/) || [,''])[1];
+const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/);
+const style = styleMatch ? styleMatch[1] : '';
 
 // A faithful slice of the Contractors table card + an open modal, inside #root.
 const page = `<!doctype html><html><head><meta charset="utf-8">

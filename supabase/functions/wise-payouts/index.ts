@@ -520,7 +520,7 @@ Deno.serve(async (req) => {
         // Dedupe by transfer id since the index keys (numeric + UUID) can map to
         // the same transfer.
         const seenTransfers = new Set<string>();
-        let candidates: any[] = [];
+        const candidates: any[] = [];
         let matchedViaKey = "";
         for (const k of keys) {
           for (const t of (byRecipient.get(k) || [])) {
