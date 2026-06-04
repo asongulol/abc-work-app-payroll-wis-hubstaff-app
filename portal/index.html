@@ -676,17 +676,44 @@ function SignaturePad({ client, agreement, text, canSign, onSigned }){
   );
 }
 
+// Fill {{merge}} fields in an agreement body from the prepared instance + worker.
+function mergeAgreement(body, vals){
+  const v = vals||{};
+  const sub = { contractor_name:v.contractor_name||"", rate:v.rate||"________",
+    start_date:v.start_date||"________", position:v.position||"________",
+    countersigner_name:v.countersigner_name||"________", today:v.today||"" };
+  return String(body||"").replace(/\{\{\s*(\w+)\s*\}\}/g, (m,k)=> (k in sub ? sub[k] : m));
+}
 function AgreementViewer({ client, agreement, onClose, onSigned }){
   const [reached,setReached]=useState(false);
+  const [text,setText]=useState(null);   // null = loading
   const scrollRef = React.useRef(null); const bottomRef = React.useRef(null);
   useEffect(()=>{
+    let alive=true;
+    (async()=>{
+      const today=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Manila",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+      const [{data:tpl},{data:inst},{data:w}] = await Promise.all([
+        client.from("agreement_templates").select("body").eq("kind",agreement.kind).maybeSingle(),
+        client.from("onboarding_agreements").select("f_rate,f_start_date,f_position,countersigner_name").eq("agreement_kind",agreement.kind).maybeSingle(),
+        client.from("workers").select("first_name,middle_name,last_name").maybeSingle(),
+      ]);
+      if(!alive) return;
+      const body = (tpl&&tpl.body) || AGREEMENT_TEXT[agreement.kind] || "";   // fallback to legacy placeholder
+      const merged = mergeAgreement(body, {
+        contractor_name: w?fullName(w):"", rate:inst&&inst.f_rate, start_date:inst&&inst.f_start_date,
+        position:inst&&inst.f_position, countersigner_name:inst&&inst.countersigner_name, today });
+      setText(merged);
+    })();
+    return ()=>{ alive=false; };
+  },[agreement.kind]);
+  useEffect(()=>{
+    if(text==null) return;
     const el = bottomRef.current; if(!el) return;
     const obs = new IntersectionObserver((entries)=>{ if(entries.some(e=>e.isIntersecting)) setReached(true); },
       { root: scrollRef.current, threshold: 0.9 });
     obs.observe(el);
     return ()=>obs.disconnect();
-  },[]);
-  const text = AGREEMENT_TEXT[agreement.kind] || "";
+  },[text]);
   return (
     <div className="ob-modal-bg" role="dialog" aria-modal="true" aria-label={agreement.title}>
       <div className="ob-modal">
@@ -695,13 +722,15 @@ function AgreementViewer({ client, agreement, onClose, onSigned }){
           <button className="btn ghost" style={{padding:"4px 10px",fontSize:13,color:"var(--accent)",borderColor:"var(--accent)"}} onClick={onClose}>{t("ob.close")}</button>
         </div>
         <div className="ob-doc" ref={scrollRef} tabIndex={0}>
-          <pre style={{whiteSpace:"pre-wrap",fontFamily:"inherit",fontSize:14,lineHeight:1.5,margin:0}}>{text}</pre>
-          <div ref={bottomRef} style={{height:1}}/>
+          {text==null ? <div className="empty">Loading…</div> : <>
+            <pre style={{whiteSpace:"pre-wrap",fontFamily:"inherit",fontSize:14,lineHeight:1.5,margin:0}}>{text}</pre>
+            <div ref={bottomRef} style={{height:1}}/>
+          </>}
         </div>
         <div className={"ob-scrollhint "+(reached?"ok":"")} role="status" aria-live="polite">
           {reached ? t("ob.viewer.reachedend") : t("ob.viewer.scrollhint")}
         </div>
-        <SignaturePad client={client} agreement={agreement} text={text} canSign={reached} onSigned={onSigned}/>
+        <SignaturePad client={client} agreement={agreement} text={text||""} canSign={reached} onSigned={onSigned}/>
       </div>
     </div>
   );

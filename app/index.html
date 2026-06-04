@@ -8430,6 +8430,140 @@ function onbStatus(p, pending){
   return {txt:"In progress",color:"#1e40af",bg:"#dbeafe"};
 }
 function Badge({s}){ return <span style={{padding:"2px 8px",borderRadius:999,fontSize:11,fontWeight:600,color:s.color,background:s.bg,whiteSpace:"nowrap"}}>{s.txt}</span>; }
+
+const ONB_AGR_KINDS = ["ic_agreement","non_compete","confidentiality_nda","baa"];
+// Fill {{merge}} fields in an agreement body. Mirrors portal mergeAgreement().
+function mergeAgreement(body, v){
+  const s={ contractor_name:(v&&v.contractor_name)||"", rate:(v&&v.rate)||"________",
+    start_date:(v&&v.start_date)||"________", position:(v&&v.position)||"________",
+    countersigner_name:(v&&v.countersigner_name)||"________", today:(v&&v.today)||"" };
+  return String(body||"").replace(/\{\{\s*(\w+)\s*\}\}/g,(m,k)=> (k in s? s[k]: m));
+}
+function escapeHtml(x){ return String(x==null?"":x).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+// Per-contractor agreement preparation (prefill + assign countersigner),
+// admin countersignature, and printable output. Writes onboarding_agreements
+// directly (is_admin() RLS); the contractor signature stays in onboarding_signatures.
+function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
+  const [insts,setInsts]=useState(null); const [tpls,setTpls]=useState({});
+  const [admins,setAdmins]=useState([]); const [me,setMe]=useState(null);
+  const [edit,setEdit]=useState({}); const [busy,setBusy]=useState(""); const [msg,setMsg]=useState("");
+  const signedBy={}; (sigs||[]).filter(s=>s.status==="signed").forEach(s=>signedBy[s.agreement_kind]=s);
+  function load(){
+    client.from("onboarding_agreements").select("*").eq("worker_id",worker_id)
+      .then(({data})=>{ const m={}; (data||[]).forEach(r=>m[r.agreement_kind]=r); setInsts(m); });
+    client.from("agreement_templates").select("kind,body")
+      .then(({data})=>{ const m={}; (data||[]).forEach(r=>m[r.kind]=r.body); setTpls(m); });
+    client.from("admin_users").select("user_id,email").then(({data})=>setAdmins(data||[]));
+    client.auth.getUser().then(({data})=>setMe(data&&data.user||null));
+  }
+  useEffect(load,[worker_id]);
+  if(insts===null) return <p className="sub">Loading agreements…</p>;
+  const today=new Date().toISOString().slice(0,10);
+  const startEdit=(k)=>{ const r=insts[k]||{}; setEdit(e=>({...e,[k]:{f_position:r.f_position||"",f_rate:r.f_rate||"",f_start_date:r.f_start_date||"",countersigner_user_id:r.countersigner_user_id||"",countersigner_name:r.countersigner_name||""}})); };
+  const setF=(k,f,v)=>setEdit(e=>({...e,[k]:{...e[k],[f]:v}}));
+  async function savePrep(k){
+    const f=edit[k]; setBusy(k); setMsg("");
+    const adminRow=admins.find(a=>a.user_id===f.countersigner_user_id);
+    const row={ worker_id, agreement_kind:k,
+      f_position:f.f_position||null, f_rate:f.f_rate||null, f_start_date:f.f_start_date||null,
+      countersigner_user_id:f.countersigner_user_id||null,
+      countersigner_name:(f.countersigner_name||(adminRow&&adminRow.email))||null,
+      prepared_by:me&&me.id, prepared_at:new Date().toISOString(), updated_at:new Date().toISOString() };
+    const { error } = await client.from("onboarding_agreements").upsert(row,{onConflict:"worker_id,agreement_kind"});
+    setBusy("");
+    if(error){ setMsg("Save failed: "+error.message); return; }
+    logEvent(client,{action:"agreement_prepared",entity:`${workerName} · ${ONB_AGR_LABEL[k]||k}`,detail:{worker_id,agreement_kind:k}});
+    setEdit(e=>{ const n={...e}; delete n[k]; return n; }); load(); onChange&&onChange();
+  }
+  async function countersign(k){
+    const r=insts[k]||{};
+    const nm=window.prompt("Type your full legal name to countersign on behalf of ABC Kids NY:", (me&&me.email)||"");
+    if(nm===null) return; if(!nm.trim()){ setMsg("A name is required to countersign."); return; }
+    setBusy(k); setMsg("");
+    const row={ worker_id, agreement_kind:k,
+      f_position:r.f_position||null, f_rate:r.f_rate||null, f_start_date:r.f_start_date||null,
+      countersigner_user_id:r.countersigner_user_id||(me&&me.id),
+      countersigner_name:r.countersigner_name||nm.trim(),
+      countersigned_by:me&&me.id, countersigned_name:nm.trim(), countersign_method:"typed",
+      countersign_data:nm.trim(), countersigned_at:new Date().toISOString(), updated_at:new Date().toISOString() };
+    // upsert (the contractor may have signed before the admin prepared a row)
+    const { error } = await client.from("onboarding_agreements").upsert(row,{onConflict:"worker_id,agreement_kind"});
+    setBusy("");
+    if(error){ setMsg("Countersign failed: "+error.message); return; }
+    logEvent(client,{action:"agreement_countersigned",entity:`${workerName} · ${ONB_AGR_LABEL[k]||k}`,detail:{worker_id,agreement_kind:k,name:nm.trim()}});
+    load(); onChange&&onChange();
+  }
+  function printDoc(k){
+    const r=insts[k]||{}; const sig=signedBy[k];
+    const merged=mergeAgreement(tpls[k]||"",{ contractor_name:workerName, rate:r.f_rate, start_date:r.f_start_date,
+      position:r.f_position, countersigner_name:r.countersigner_name, today });
+    const sigBlock=
+      `<div style="margin-top:32px;display:flex;gap:48px;flex-wrap:wrap">`+
+      `<div><div style="border-bottom:1px solid #000;min-width:240px;padding-bottom:2px;font-family:cursive;font-size:18px">${sig?escapeHtml(sig.signed_legal_name):""}</div>`+
+      `<div style="font-size:12px;color:#444">Contractor — ${escapeHtml(workerName)}<br>${sig?("Signed "+new Date(sig.signed_at).toLocaleString()+(sig.ip_address?(" · IP "+escapeHtml(sig.ip_address)):"")):"<i>Not yet signed</i>"}</div></div>`+
+      `<div><div style="border-bottom:1px solid #000;min-width:240px;padding-bottom:2px;font-family:cursive;font-size:18px">${r.countersigned_name?escapeHtml(r.countersigned_name):""}</div>`+
+      `<div style="font-size:12px;color:#444">For ABC Kids NY${r.countersigner_name?(" — "+escapeHtml(r.countersigner_name)):""}<br>${r.countersigned_at?("Countersigned "+new Date(r.countersigned_at).toLocaleString()):"<i>Not yet countersigned</i>"}</div></div>`+
+      `</div>`;
+    const html=`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(ONB_AGR_LABEL[k]||k)} — ${escapeHtml(workerName)}</title>`+
+      `<style>body{font-family:Georgia,serif;color:#111;max-width:720px;margin:40px auto;padding:0 24px;line-height:1.55}pre{white-space:pre-wrap;font-family:inherit;font-size:14px;margin:0}@media print{body{margin:0}}</style></head>`+
+      `<body><pre>${escapeHtml(merged)}</pre>${sigBlock}<script>window.onload=function(){window.print();}<\/script></body></html>`;
+    const win=window.open("","_blank"); if(!win){ setMsg("Pop-up blocked — allow pop-ups to print."); return; }
+    win.document.write(html); win.document.close();
+  }
+  return (
+    <div style={{marginTop:6}}>
+      {msg && <div className="banner" style={{background:"#fee2e2",borderColor:"#fca5a5"}}>{msg}</div>}
+      {ONB_AGR_KINDS.map(k=>{
+        const r=insts[k]||{}; const sig=signedBy[k]; const e=edit[k]; const prepared=!!r.prepared_at;
+        return (
+          <div key={k} style={{borderTop:"1px solid #e5e7eb",padding:"8px 0"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+              <b>{ONB_AGR_LABEL[k]||k}</b>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                {sig? <Badge s={{txt:"Signed",color:"#166534",bg:"#dcfce7"}}/> : <Badge s={{txt:"Awaiting contractor",color:"#1e40af",bg:"#dbeafe"}}/>}
+                {r.countersigned_at && <Badge s={{txt:"Countersigned",color:"#166534",bg:"#dcfce7"}}/>}
+              </div>
+            </div>
+            <div className="muted" style={{fontSize:12,margin:"2px 0"}}>
+              {prepared? `${r.f_position||"—"} · ${r.f_rate||"—"} · start ${r.f_start_date||"—"} · countersigner ${r.countersigner_name||"unassigned"}` : <i>Not prepared yet</i>}
+            </div>
+            {e ? (
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,margin:"6px 0"}}>
+                <label className="muted" style={{fontSize:12}}>Position / Role
+                  <input value={e.f_position} onChange={ev=>setF(k,"f_position",ev.target.value)}/></label>
+                <label className="muted" style={{fontSize:12}}>Rate
+                  <input value={e.f_rate} onChange={ev=>setF(k,"f_rate",ev.target.value)} placeholder="e.g. ₱350/hr"/></label>
+                <label className="muted" style={{fontSize:12}}>Start date
+                  <input type="date" value={e.f_start_date} onChange={ev=>setF(k,"f_start_date",ev.target.value)}/></label>
+                <label className="muted" style={{fontSize:12}}>Countersigner
+                  <select value={e.countersigner_user_id} onChange={ev=>{ const a=admins.find(x=>x.user_id===ev.target.value); setF(k,"countersigner_user_id",ev.target.value); setF(k,"countersigner_name",a?a.email:""); }}>
+                    <option value="">— select admin —</option>
+                    {admins.map(a=><option key={a.user_id} value={a.user_id}>{a.email}</option>)}
+                  </select></label>
+                <label className="muted" style={{fontSize:12,gridColumn:"1 / span 2"}}>Countersigner name (shown on the document)
+                  <input value={e.countersigner_name} onChange={ev=>setF(k,"countersigner_name",ev.target.value)} placeholder="Full name for the signature line"/></label>
+                <div style={{gridColumn:"1 / span 2",display:"flex",gap:6}}>
+                  <button className="btn sm" disabled={busy===k} onClick={()=>savePrep(k)}>{busy===k?"Saving…":"Save"}</button>
+                  <button className="btn ghost sm" onClick={()=>setEdit(x=>{const n={...x};delete n[k];return n;})}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <div style={{display:"flex",gap:6,marginTop:4,flexWrap:"wrap"}}>
+                <button className="btn ghost sm" onClick={()=>startEdit(k)}>{prepared?"Edit prefill":"Prepare"}</button>
+                {sig && !r.countersigned_at && (
+                  (!r.countersigner_user_id || (me && me.id===r.countersigner_user_id))
+                    ? <button className="btn sm" disabled={busy===k} onClick={()=>countersign(k)}>Countersign</button>
+                    : <span className="muted" style={{fontSize:12,alignSelf:"center"}}>Awaiting countersign by {r.countersigner_name||"assigned admin"}</span>)}
+                <button className="btn ghost sm" disabled={!tpls[k]} onClick={()=>printDoc(k)}>Print</button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 // (fnErrorMessage is defined once at module scope — see below — so create-login,
 //  the Wise panel, and onboarding review all share one edge-error extractor.)
 
@@ -8486,6 +8620,9 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
              <td className="muted" style={{fontSize:11}}>{s.ip_address||"—"}</td>
              <td className="muted" style={{fontSize:11}} title={s.doc_sha256?("sha256 "+s.doc_sha256):""}>{s.doc_version}</td>
            </tr>))}</tbody></table></div>}
+        <AgreementsPanel client={client} worker_id={worker_id}
+          workerName={[w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ")||w.email||"Contractor"}
+          sigs={sigs} onChange={onChange}/>
 
         <h3 style={{marginBottom:4,marginTop:14}}>2 · Profile</h3>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px 16px",fontSize:13}}>
@@ -8519,8 +8656,47 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
   );
 }
 
+// Editor for the standard agreement bodies (merge-field templates). Paste the
+// executed legal text here; use {{contractor_name}} {{position}} {{rate}}
+// {{start_date}} {{countersigner_name}} {{today}} where values should be filled.
+function AgreementTemplatesModal({ client, onClose }){
+  const [rows,setRows]=useState(null); const [sel,setSel]=useState("ic_agreement");
+  const [body,setBody]=useState(""); const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
+  function load(){ client.from("agreement_templates").select("kind,title,version,body").then(({data})=>{
+    const list=(data||[]); setRows(list); const cur=list.find(r=>r.kind===sel)||list[0]; if(cur){ setSel(cur.kind); setBody(cur.body||""); } }); }
+  useEffect(load,[]);
+  if(rows===null) return <div className="modal-bg" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}><div className="empty">Loading…</div></div></div>;
+  const pick=(k)=>{ const r=rows.find(x=>x.kind===k); setSel(k); setBody((r&&r.body)||""); setMsg(""); };
+  async function save(){
+    setBusy(true); setMsg("");
+    const { error } = await client.from("agreement_templates").update({body,updated_at:new Date().toISOString()}).eq("kind",sel);
+    setBusy(false);
+    if(error){ setMsg("Save failed: "+error.message); return; }
+    setMsg("Saved."); logEvent(client,{action:"agreement_template_saved",entity:ONB_AGR_LABEL[sel]||sel,detail:{kind:sel}});
+    setRows(rs=>rs.map(r=>r.kind===sel?{...r,body}:r));
+  }
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:820}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <h2 style={{margin:0}}>Agreement templates</h2>
+          <button className="btn ghost sm" onClick={onClose}>Close</button>
+        </div>
+        <p className="sub">Paste the standard agreement text. Use <code>{"{{contractor_name}}"}</code>, <code>{"{{position}}"}</code>, <code>{"{{rate}}"}</code>, <code>{"{{start_date}}"}</code>, <code>{"{{countersigner_name}}"}</code>, <code>{"{{today}}"}</code> where the preparer's values should be filled in per contractor.</p>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
+          {rows.map(r=>(<button key={r.kind} className={"btn sm "+(sel===r.kind?"":"ghost")} onClick={()=>pick(r.kind)}>{ONB_AGR_LABEL[r.kind]||r.kind}</button>))}
+        </div>
+        <textarea value={body} onChange={e=>setBody(e.target.value)} style={{width:"100%",minHeight:340,fontFamily:"monospace",fontSize:13,padding:10}}/>
+        {msg && <div className="muted" style={{fontSize:13,marginTop:4}}>{msg}</div>}
+        <div style={{display:"flex",gap:8,marginTop:8}}>
+          <button className="btn" disabled={busy} onClick={save}>{busy?"Saving…":"Save template"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 function OnboardingAdmin({ client }){
-  const [showDone,setShowDone]=useState(false); const [sel,setSel]=useState(null);
+  const [showDone,setShowDone]=useState(false); const [sel,setSel]=useState(null); const [showTpl,setShowTpl]=useState(false);
   const { data:progs, loading, reload } = useQuery(client, c=>c.from("onboarding_progress")
     .select("worker_id,current_stage,stage1_complete,stage2_complete,stage3_complete,name_mismatch_flag,stalled,started_at,completed_at,updated_at,workers(first_name,middle_name,last_name,email)")
     .order("updated_at",{ascending:false}), [client]);
@@ -8547,9 +8723,11 @@ function OnboardingAdmin({ client }){
         <div><h2>Onboarding</h2><p className="sub">New-contractor onboarding — agreements signed, profile completed, documents reviewed.</p></div>
         <div style={{display:"flex",gap:10,alignItems:"center"}}>
           <label className="sub" style={{display:"flex",gap:4,alignItems:"center"}}><input type="checkbox" checked={showDone} onChange={e=>setShowDone(e.target.checked)}/> Show completed</label>
+          <button className="btn ghost sm" onClick={()=>setShowTpl(true)}>📄 Agreement templates</button>
           <button className="btn ghost sm" onClick={refresh}>Refresh</button>
         </div>
       </div>
+      {showTpl && <AgreementTemplatesModal client={client} onClose={()=>setShowTpl(false)}/>}
       {needReview>0 && <div className="banner" style={{background:"#fef3c7",borderColor:"#fcd34d"}}>{needReview} contractor{needReview>1?"s have":" has"} documents waiting for review.{orphanReview>0?` (${orphanReview} uploaded outside onboarding — not listed below.)`:""}</div>}
       <FilterBox q={q} setQ={setQ} placeholder="Filter by name or email…" />
       {loading? <div className="empty">Loading…</div> :
