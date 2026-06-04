@@ -8630,9 +8630,14 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
   const { data:docs, reload:reloadDocs } = useQuery(client, c=>c.from("documents")
     .select("id,kind,side,title,storage_path,issued_on,review_status,review_reason,reviewed_at,created_at")
     .eq("worker_id",worker_id).in("kind",ONB_DOC_KINDS).order("created_at",{ascending:false}), [client,worker_id]);
+  const { data:progRows, reload:reloadProg } = useQuery(client, c=>c.from("onboarding_progress")
+    .select("current_stage,stage1_complete,stage2_complete,stage3_complete,completed_at,started_at")
+    .eq("worker_id",worker_id).limit(1), [client,worker_id]);
+  const prog=(progRows||[])[0]||null;
   const w=(wRows||[])[0]||{};
+  const workerName=[w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ")||w.email||"Contractor";
   const ex=(w.profile_extras&&typeof w.profile_extras==="object")?w.profile_extras:{};
-  const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
+  const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [revDoc,setRevDoc]=useState(null);
   async function view(d){
     if(!d.storage_path) return;
     const win=window.open("about:blank","_blank");   // open synchronously (popup-blocker safe), then redirect
@@ -8640,16 +8645,36 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
     if(error||!data){ if(win)win.close(); setMsg("Open failed: "+((error&&error.message)||"no url")); return; }
     if(win) win.location=data.signedUrl; else window.open(data.signedUrl,"_blank");
   }
-  async function review(d,action){
-    let reason=null;
-    if(action==="needs_replacement"){ reason=window.prompt("Reason the contractor will see (e.g. blurry, expired, wrong document):"); if(reason===null)return; if(!reason.trim()){setMsg("A reason is required.");return;} }
+  async function review(d,action,reason){
     setBusy(true); setMsg("");
-    const { data, error } = await client.functions.invoke("portal-review",{body:{action,document_id:d.id,reason}});
+    const { data, error } = await client.functions.invoke("portal-review",{body:{action,document_id:d.id,reason:reason||null}});
     setBusy(false);
     if(error||(data&&data.error)){ setMsg((data&&data.error)||await fnErrorMessage(error)); return; }
-    logEvent(client,{action:"document_review",entity:(ONB_DOC_LABEL[d.kind]||d.kind),detail:{document_id:d.id,action,reason}});
+    logEvent(client,{action:"document_review",entity:(ONB_DOC_LABEL[d.kind]||d.kind),detail:{document_id:d.id,action,reason:reason||null}});
     reloadDocs(); onChange&&onChange();
   }
+  // Admin onboarding overrides (is_admin() write policy on onboarding_progress).
+  async function applyProg(patch, label, warn){
+    if(!window.confirm(`${label} for ${workerName}?`+(warn?`\n\n${warn}`:""))) return;
+    setBusy(true); setMsg("");
+    const { error } = await client.from("onboarding_progress")
+      .update({...patch, updated_at:new Date().toISOString()}).eq("worker_id",worker_id);
+    setBusy(false);
+    if(error){ setMsg("Failed: "+error.message); return; }
+    logEvent(client,{action:"onboarding_override",entity:workerName,detail:{worker_id,label}});
+    reloadProg(); onChange&&onChange();
+  }
+  function reopenTo(stage){
+    const p={ current_stage:stage, completed_at:null };
+    if(stage==="stage1_sign"){ p.stage1_complete=false; p.stage2_complete=false; p.stage3_complete=false; }
+    else if(stage==="stage2_profile"){ p.stage2_complete=false; p.stage3_complete=false; }
+    else if(stage==="stage3_docs"){ p.stage3_complete=false; }
+    applyProg(p, "Reopen to "+(ONB_STAGE_LABEL[stage]||stage), prog&&prog.completed_at?"This re-locks their pay-data access until they finish again.":null);
+  }
+  function markComplete(){ applyProg({ stage1_complete:true,stage2_complete:true,stage3_complete:true,current_stage:"complete",completed_at:new Date().toISOString() },
+    "Mark onboarding COMPLETE", "This unlocks their pay-data access immediately."); }
+  function revoke(){ applyProg({ current_stage:"stage1_sign",stage1_complete:false,stage2_complete:false,stage3_complete:false,completed_at:null },
+    "Revoke / reset onboarding", "This sends them back to Stage 1 and re-locks their pay-data access."); }
   const byKey={}; (docs||[]).forEach(d=>{ const k=d.kind+"|"+(d.side||""); (byKey[k]=byKey[k]||[]).push(d); });
   const FIELDS=[["Mobile","mobile"],["Current address","ph_address"],["Permanent address","permanent_address"],["Postal","postal_code"],["Date of birth","date_of_birth"],["Emergency contact","emergency_name"],["Relationship","emergency_relationship"],["Emergency mobile","emergency_mobile"],["Marital","marital_status"],["Highest Degree Attained","education_level"],["Degree and Major","course"],["Year grad.","year_graduated"],["School","school"],["GCash","gcash"],["PayMaya","paymaya"],["PayPal","paypal"],["Wise Tag","wise_tag"]];
   return (
@@ -8661,6 +8686,21 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
         </div>
         <p className="sub" style={{marginTop:2}}>{w.email}{w.work_email?` · ${w.work_email}`:""}</p>
         {msg && <div className="banner" style={{background:"#fee2e2",borderColor:"#fca5a5"}}>{msg}</div>}
+
+        {prog && <div style={{background:"#f8fafc",border:"1px solid #e5e7eb",borderRadius:8,padding:"8px 10px",margin:"6px 0"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            <div style={{fontSize:13}}><b>Stage:</b> {ONB_STAGE_LABEL[prog.current_stage]||prog.current_stage}
+              {prog.completed_at && <span style={{marginLeft:6,color:"#166534"}}>· completed {new Date(prog.completed_at).toLocaleDateString()}</span>}
+              <span className="muted" style={{marginLeft:6,fontSize:11}}>[{prog.stage1_complete?"1✓":"1"}/{prog.stage2_complete?"2✓":"2"}/{prog.stage3_complete?"3✓":"3"}]</span></div>
+            <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+              <button className="btn ghost sm" disabled={busy} title="Send back to signing" onClick={()=>reopenTo("stage1_sign")}>↺ Stage 1</button>
+              <button className="btn ghost sm" disabled={busy} title="Send back to profile" onClick={()=>reopenTo("stage2_profile")}>↺ Stage 2</button>
+              <button className="btn ghost sm" disabled={busy} title="Send back to documents" onClick={()=>reopenTo("stage3_docs")}>↺ Stage 3</button>
+              {!prog.completed_at && <button className="btn sm" disabled={busy} onClick={markComplete}>✓ Mark complete</button>}
+              <button className="btn ghost sm" disabled={busy} style={{color:"#b91c1c",borderColor:"#fca5a5"}} onClick={revoke}>Revoke</button>
+            </div>
+          </div>
+        </div>}
 
         <h3 style={{marginBottom:4}}>1 · Agreements</h3>
         {(sigs||[]).length===0? <p className="sub">No signatures yet.</p> :
@@ -8699,11 +8739,47 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
               <div style={{display:"flex",gap:6,marginTop:6}}>
                 <button className="btn ghost sm" onClick={()=>view(d)} disabled={!d.storage_path}>View</button>
                 {d.review_status!=="approved"&&<button className="btn sm" disabled={busy} onClick={()=>review(d,"approve")}>Approve</button>}
-                {d.review_status!=="needs_replacement"&&<button className="btn ghost sm" disabled={busy} onClick={()=>review(d,"needs_replacement")}>Needs replacement</button>}
+                {d.review_status!=="needs_replacement"&&<button className="btn ghost sm" disabled={busy} onClick={()=>setRevDoc(d)}>Needs replacement</button>}
               </div>
             </div>
            );
          })}
+      </div>
+      {revDoc && <ReasonPicker doc={revDoc} onCancel={()=>setRevDoc(null)}
+        onSubmit={(reason)=>{ const d=revDoc; setRevDoc(null); review(d,"needs_replacement",reason); }}/>}
+    </div>
+  );
+}
+
+// Reason picker for "needs replacement" — preset reasons + optional custom text,
+// replacing the old window.prompt. Returns the chosen reason string to onSubmit.
+function ReasonPicker({ doc, onCancel, onSubmit }){
+  const PRESETS=["Blurry / unreadable","Expired","Wrong document","Incomplete / missing pages","Name doesn't match profile","Photo of a screen / glare"];
+  const [pick,setPick]=useState(PRESETS[0]); const [custom,setCustom]=useState(""); const [err,setErr]=useState("");
+  function submit(){
+    const reason = pick==="Other" ? custom.trim() : pick;
+    if(!reason){ setErr("Enter a reason."); return; }
+    onSubmit(reason);
+  }
+  return (
+    <div className="modal-bg" onClick={onCancel}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:460}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <h2 style={{margin:0}}>Needs replacement</h2>
+          <button className="btn ghost sm" onClick={onCancel}>Close</button>
+        </div>
+        <p className="sub">{ONB_DOC_LABEL[doc.kind]||doc.kind}{doc.side?` (${doc.side})`:""} — the contractor will see this reason.</p>
+        {PRESETS.concat("Other").map(r=>(
+          <label key={r} style={{display:"flex",gap:8,alignItems:"center",padding:"4px 0",fontSize:14}}>
+            <input type="radio" name="reason" checked={pick===r} onChange={()=>setPick(r)}/> {r}
+          </label>
+        ))}
+        {pick==="Other" && <input value={custom} onChange={e=>setCustom(e.target.value)} placeholder="Describe the issue…" style={{width:"100%",marginTop:4}}/>}
+        {err && <div className="err" style={{marginTop:4}}>{err}</div>}
+        <div style={{display:"flex",gap:8,marginTop:10}}>
+          <button className="btn" onClick={submit}>Send back to contractor</button>
+          <button className="btn ghost" onClick={onCancel}>Cancel</button>
+        </div>
       </div>
     </div>
   );
@@ -8748,8 +8824,50 @@ function AgreementTemplatesModal({ client, onClose }){
     </div>
   );
 }
+// Editor for portal_settings.onboarding_config — the enabled gate + the
+// agreements/documents/profile_tabs config (raw JSON for power edits).
+function OnboardingConfigModal({ client, onClose }){
+  const [cfg,setCfg]=useState(null); const [text,setText]=useState(""); const [enabled,setEnabled]=useState(false);
+  const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
+  function load(){ client.from("portal_settings").select("onboarding_config").eq("id",1).maybeSingle()
+    .then(({data})=>{ const c=(data&&data.onboarding_config)||{}; setCfg(c); setEnabled(!!c.onboarding_enabled); setText(JSON.stringify(c,null,2)); }); }
+  useEffect(load,[]);
+  if(cfg===null) return <div className="modal-bg" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}><div className="empty">Loading…</div></div></div>;
+  async function save(){
+    let parsed; try{ parsed=JSON.parse(text); }catch(ex){ setMsg("Invalid JSON: "+ex.message); return; }
+    if(typeof parsed!=="object"||Array.isArray(parsed)){ setMsg("Config must be a JSON object."); return; }
+    parsed.onboarding_enabled=enabled;   // the toggle is authoritative for the gate
+    setBusy(true); setMsg("");
+    const { error } = await client.from("portal_settings").update({onboarding_config:parsed}).eq("id",1);
+    setBusy(false);
+    if(error){ setMsg("Save failed: "+error.message); return; }
+    setMsg("Saved."); logEvent(client,{action:"onboarding_config_saved",entity:"portal onboarding",detail:{onboarding_enabled:enabled}});
+    setText(JSON.stringify(parsed,null,2));
+  }
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:760}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <h2 style={{margin:0}}>Onboarding config</h2>
+          <button className="btn ghost sm" onClick={onClose}>Close</button>
+        </div>
+        <label style={{display:"flex",gap:8,alignItems:"center",margin:"8px 0",fontSize:14}}>
+          <input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/>
+          <b>Onboarding enabled</b> <span className="muted" style={{fontSize:12}}>— when on, non-grandfathered contractors are routed into onboarding at login.</span>
+        </label>
+        <p className="sub" style={{marginBottom:4}}>Advanced — the agreements / documents / profile_tabs config (JSON):</p>
+        <textarea value={text} onChange={e=>setText(e.target.value)} spellCheck={false}
+          style={{width:"100%",minHeight:300,fontFamily:"monospace",fontSize:12,padding:10}}/>
+        {msg && <div className="muted" style={{fontSize:13,marginTop:4}}>{msg}</div>}
+        <div style={{display:"flex",gap:8,marginTop:8}}>
+          <button className="btn" disabled={busy} onClick={save}>{busy?"Saving…":"Save config"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 function OnboardingAdmin({ client }){
-  const [showDone,setShowDone]=useState(false); const [sel,setSel]=useState(null); const [showTpl,setShowTpl]=useState(false);
+  const [showDone,setShowDone]=useState(false); const [sel,setSel]=useState(null); const [showTpl,setShowTpl]=useState(false); const [showCfg,setShowCfg]=useState(false);
   const { data:progs, loading, reload } = useQuery(client, c=>c.from("onboarding_progress")
     .select("worker_id,current_stage,stage1_complete,stage2_complete,stage3_complete,name_mismatch_flag,stalled,started_at,completed_at,updated_at,workers(first_name,middle_name,last_name,email)")
     .order("updated_at",{ascending:false}), [client]);
@@ -8777,10 +8895,12 @@ function OnboardingAdmin({ client }){
         <div style={{display:"flex",gap:10,alignItems:"center"}}>
           <label className="sub" style={{display:"flex",gap:4,alignItems:"center"}}><input type="checkbox" checked={showDone} onChange={e=>setShowDone(e.target.checked)}/> Show completed</label>
           <button className="btn ghost sm" onClick={()=>setShowTpl(true)}>📄 Agreement templates</button>
+          <button className="btn ghost sm" onClick={()=>setShowCfg(true)}>⚙ Onboarding config</button>
           <button className="btn ghost sm" onClick={refresh}>Refresh</button>
         </div>
       </div>
       {showTpl && <AgreementTemplatesModal client={client} onClose={()=>setShowTpl(false)}/>}
+      {showCfg && <OnboardingConfigModal client={client} onClose={()=>setShowCfg(false)}/>}
       {needReview>0 && <div className="banner" style={{background:"#fef3c7",borderColor:"#fcd34d"}}>{needReview} contractor{needReview>1?"s have":" has"} documents waiting for review.{orphanReview>0?` (${orphanReview} uploaded outside onboarding — not listed below.)`:""}</div>}
       <FilterBox q={q} setQ={setQ} placeholder="Filter by name or email…" />
       {loading? <div className="empty">Loading…</div> :
