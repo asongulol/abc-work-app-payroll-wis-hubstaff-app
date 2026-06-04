@@ -8441,13 +8441,68 @@ function mergeAgreement(body, v){
 }
 function escapeHtml(x){ return String(x==null?"":x).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
+// Countersignature capture — typed name or drawn (canvas). Returns
+// { method:"typed"|"drawn", data, name } to onSubmit.
+function CountersignModal({ defaultName, onCancel, onSubmit }){
+  const [mode,setMode]=useState("type"); const [name,setName]=useState(defaultName||"");
+  const [drawn,setDrawn]=useState(false); const [err,setErr]=useState(""); const canvasRef=React.useRef(null);
+  useEffect(()=>{
+    if(mode!=="draw") return;
+    const c=canvasRef.current; if(!c) return;
+    const ctx=c.getContext("2d"); ctx.lineWidth=2.2; ctx.lineCap="round"; ctx.strokeStyle="#1F3A68";
+    let drawing=false;
+    const pos=(e)=>{ const r=c.getBoundingClientRect(); const p=e.touches?e.touches[0]:e;
+      return [(p.clientX-r.left)*(c.width/r.width),(p.clientY-r.top)*(c.height/r.height)]; };
+    const down=(e)=>{ drawing=true; const [x,y]=pos(e); ctx.beginPath(); ctx.moveTo(x,y); e.preventDefault(); };
+    const move=(e)=>{ if(!drawing) return; const [x,y]=pos(e); ctx.lineTo(x,y); ctx.stroke(); setDrawn(true); e.preventDefault(); };
+    const up=()=>{ drawing=false; };
+    c.addEventListener("mousedown",down); c.addEventListener("mousemove",move); window.addEventListener("mouseup",up);
+    c.addEventListener("touchstart",down,{passive:false}); c.addEventListener("touchmove",move,{passive:false}); window.addEventListener("touchend",up);
+    return ()=>{ c.removeEventListener("mousedown",down); c.removeEventListener("mousemove",move); window.removeEventListener("mouseup",up);
+      c.removeEventListener("touchstart",down); c.removeEventListener("touchmove",move); window.removeEventListener("touchend",up); };
+  },[mode]);
+  function clearCanvas(){ const c=canvasRef.current; if(c){ c.getContext("2d").clearRect(0,0,c.width,c.height); setDrawn(false); } }
+  function submit(){
+    if(!name.trim()){ setErr("Type your full legal name (used on the signature line)."); return; }
+    if(mode==="draw"){ if(!drawn){ setErr("Draw your signature, or switch to Type."); return; }
+      onSubmit({ method:"drawn", data:canvasRef.current.toDataURL("image/png"), name:name.trim() }); }
+    else onSubmit({ method:"typed", data:name.trim(), name:name.trim() });
+  }
+  return (
+    <div className="modal-bg" onClick={onCancel}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <h2 style={{margin:0}}>Countersign</h2>
+          <button className="btn ghost sm" onClick={onCancel}>Close</button>
+        </div>
+        <p className="sub">Sign on behalf of ABC Kids NY.</p>
+        <div style={{display:"flex",gap:6,marginBottom:8}}>
+          <button className={"btn sm "+(mode==="type"?"":"ghost")} onClick={()=>setMode("type")}>Type</button>
+          <button className={"btn sm "+(mode==="draw"?"":"ghost")} onClick={()=>setMode("draw")}>Draw</button>
+        </div>
+        <label className="muted" style={{fontSize:12,display:"block"}}>Full legal name</label>
+        <input value={name} onChange={e=>setName(e.target.value)} style={{width:"100%"}}/>
+        {mode==="draw" && <div style={{margin:"8px 0"}}>
+          <canvas ref={canvasRef} width={520} height={140} style={{width:"100%",border:"1px solid #cbd5e1",borderRadius:8,touchAction:"none",background:"#fff"}} aria-label="Signature drawing area"/>
+          <button className="btn ghost sm" onClick={clearCanvas} style={{marginTop:4}}>Clear</button>
+        </div>}
+        {err && <div className="err" style={{marginTop:4}}>{err}</div>}
+        <div style={{display:"flex",gap:8,marginTop:10}}>
+          <button className="btn" onClick={submit}>Countersign</button>
+          <button className="btn ghost" onClick={onCancel}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Per-contractor agreement preparation (prefill + assign countersigner),
 // admin countersignature, and printable output. Writes onboarding_agreements
 // directly (is_admin() RLS); the contractor signature stays in onboarding_signatures.
 function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
   const [insts,setInsts]=useState(null); const [tpls,setTpls]=useState({});
   const [admins,setAdmins]=useState([]); const [me,setMe]=useState(null);
-  const [edit,setEdit]=useState({}); const [busy,setBusy]=useState(""); const [msg,setMsg]=useState("");
+  const [edit,setEdit]=useState({}); const [busy,setBusy]=useState(""); const [msg,setMsg]=useState(""); const [cs,setCs]=useState(null);
   const signedBy={}; (sigs||[]).filter(s=>s.status==="signed").forEach(s=>signedBy[s.agreement_kind]=s);
   function load(){
     client.from("onboarding_agreements").select("*").eq("worker_id",worker_id)
@@ -8476,28 +8531,30 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
     logEvent(client,{action:"agreement_prepared",entity:`${workerName} · ${ONB_AGR_LABEL[k]||k}`,detail:{worker_id,agreement_kind:k}});
     setEdit(e=>{ const n={...e}; delete n[k]; return n; }); load(); onChange&&onChange();
   }
-  async function countersign(k){
-    const nm=window.prompt("Type your full legal name to countersign on behalf of ABC Kids NY:", (me&&me.email)||"");
-    if(nm===null) return; if(!nm.trim()){ setMsg("A name is required to countersign."); return; }
-    setBusy(k); setMsg("");
-    // server-captured countersignature (verifies admin + assignment + contractor
-    // signed first; records IP/time/UA service-side). Parity with portal-sign.
+  // server-captured countersignature (verifies admin + assignment + contractor
+  // signed first; records IP/time/UA service-side). Parity with portal-sign.
+  async function doCountersign(k, sig){
+    setCs(null); setBusy(k); setMsg("");
     const { data, error } = await client.functions.invoke("portal-countersign",
-      { body:{ action:"countersign", worker_id, agreement_kind:k, signed_name:nm.trim() } });
+      { body:{ action:"countersign", worker_id, agreement_kind:k, signed_name:sig.name,
+        signature_method:sig.method, signature_data:sig.method==="drawn"?sig.data:undefined } });
     setBusy("");
     if(error||(data&&data.error)){ setMsg((data&&data.error)||await fnErrorMessage(error)); return; }
-    logEvent(client,{action:"agreement_countersigned",entity:`${workerName} · ${ONB_AGR_LABEL[k]||k}`,detail:{worker_id,agreement_kind:k,name:nm.trim()}});
+    logEvent(client,{action:"agreement_countersigned",entity:`${workerName} · ${ONB_AGR_LABEL[k]||k}`,detail:{worker_id,agreement_kind:k,name:sig.name,method:sig.method}});
     load(); onChange&&onChange();
   }
   function printDoc(k){
     const r=insts[k]||{}; const sig=signedBy[k];
     const merged=mergeAgreement(tpls[k]||"",{ contractor_name:workerName, rate:r.f_rate, start_date:r.f_start_date,
       position:r.f_position, countersigner_name:r.countersigner_name, today });
+    const mark=(method,data,name)=> (method==="drawn"&&data)
+      ? `<img src="${data}" alt="signature" style="height:46px;max-width:240px;object-fit:contain;display:block"/>`
+      : `<span style="font-family:cursive;font-size:18px">${escapeHtml(name||"")}</span>`;
     const sigBlock=
       `<div style="margin-top:32px;display:flex;gap:48px;flex-wrap:wrap">`+
-      `<div><div style="border-bottom:1px solid #000;min-width:240px;padding-bottom:2px;font-family:cursive;font-size:18px">${sig?escapeHtml(sig.signed_legal_name):""}</div>`+
+      `<div><div style="border-bottom:1px solid #000;min-width:240px;min-height:30px;padding-bottom:2px">${sig?mark(sig.signature_method,sig.signature_data,sig.signed_legal_name):""}</div>`+
       `<div style="font-size:12px;color:#444">Contractor — ${escapeHtml(workerName)}<br>${sig?("Signed "+new Date(sig.signed_at).toLocaleString()+(sig.ip_address?(" · IP "+escapeHtml(sig.ip_address)):"")):"<i>Not yet signed</i>"}</div></div>`+
-      `<div><div style="border-bottom:1px solid #000;min-width:240px;padding-bottom:2px;font-family:cursive;font-size:18px">${r.countersigned_name?escapeHtml(r.countersigned_name):""}</div>`+
+      `<div><div style="border-bottom:1px solid #000;min-width:240px;min-height:30px;padding-bottom:2px">${r.countersigned_at?mark(r.countersign_method,r.countersign_data,r.countersigned_name):""}</div>`+
       `<div style="font-size:12px;color:#444">For ABC Kids NY${r.countersigner_name?(" — "+escapeHtml(r.countersigner_name)):""}<br>${r.countersigned_at?("Countersigned "+new Date(r.countersigned_at).toLocaleString()+(r.countersign_ip?(" · IP "+escapeHtml(r.countersign_ip)):"")):"<i>Not yet countersigned</i>"}</div></div>`+
       `</div>`;
     const html=`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(ONB_AGR_LABEL[k]||k)} — ${escapeHtml(workerName)}</title>`+
@@ -8548,7 +8605,7 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
                 <button className="btn ghost sm" onClick={()=>startEdit(k)}>{prepared?"Edit prefill":"Prepare"}</button>
                 {sig && !r.countersigned_at && (
                   (!r.countersigner_user_id || (me && me.id===r.countersigner_user_id))
-                    ? <button className="btn sm" disabled={busy===k} onClick={()=>countersign(k)}>Countersign</button>
+                    ? <button className="btn sm" disabled={busy===k} onClick={()=>setCs(k)}>Countersign</button>
                     : <span className="muted" style={{fontSize:12,alignSelf:"center"}}>Awaiting countersign by {r.countersigner_name||"assigned admin"}</span>)}
                 <button className="btn ghost sm" disabled={!tpls[k]} onClick={()=>printDoc(k)}>Print</button>
               </div>
@@ -8556,6 +8613,7 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
           </div>
         );
       })}
+      {cs && <CountersignModal defaultName={(me&&me.email)||""} onCancel={()=>setCs(null)} onSubmit={r=>doCountersign(cs,r)}/>}
     </div>
   );
 }
@@ -8567,7 +8625,7 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
     .select("first_name,middle_name,last_name,email,work_email,mobile,ph_address,permanent_address,address_landmark,postal_code,date_of_birth,emergency_name,emergency_relationship,emergency_mobile,marital_status,education_level,course,year_graduated,school,gcash,paymaya,paypal,wise_tag,profile_extras")
     .eq("id",worker_id).limit(1), [client,worker_id]);
   const { data:sigs } = useQuery(client, c=>c.from("onboarding_signatures")
-    .select("agreement_kind,doc_version,doc_sha256,signed_legal_name,signature_method,ip_address,user_agent,device_fingerprint,signed_at,status")
+    .select("agreement_kind,doc_version,doc_sha256,signed_legal_name,signature_method,signature_data,ip_address,user_agent,device_fingerprint,signed_at,status")
     .eq("worker_id",worker_id).order("signed_at"), [client,worker_id]);
   const { data:docs, reload:reloadDocs } = useQuery(client, c=>c.from("documents")
     .select("id,kind,side,title,storage_path,issued_on,review_status,review_reason,reviewed_at,created_at")
