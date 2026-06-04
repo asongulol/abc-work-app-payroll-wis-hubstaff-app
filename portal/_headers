@@ -1,0 +1,10 @@
+# Response headers for the contractor portal (Cloudflare Workers static assets).
+# The portal is ONE HTML file (everything else loads from CDNs at runtime), so
+# always revalidate the shell with the server (cheap 304 via ETag) — a new
+# deploy then shows up immediately, no hard refresh needed.
+/*
+  Cache-Control: no-cache
+  X-Robots-Tag: noindex, nofollow
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer

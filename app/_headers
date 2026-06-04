@@ -1,5 +1,5 @@
-# Cloudflare Pages response headers (applied to the served app/ files).
-# Keep this app out of search indexes and add basic hardening for a PII app.
+# Response headers for the served app/ files (honored by Cloudflare Pages and
+# Workers static assets). Keep the app out of search indexes + basic hardening.
 # NOTE: no Content-Security-Policy here on purpose — the app loads React, Babel,
 # Tailwind and supabase-js from CDNs at runtime, so a strict CSP would break it.
 /*
@@ -7,3 +7,8 @@
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
+  # The whole app is ONE HTML file (everything else loads from CDNs at runtime),
+  # so there is nothing worth caching locally. Always revalidate the shell with
+  # the server (cheap 304 via ETag) so a new deploy shows up immediately without
+  # needing a hard refresh.
+  Cache-Control: no-cache
