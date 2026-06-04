@@ -76,7 +76,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-04 22:22 PHT · 20e2c8f";
+const BUILD = "2026-06-04 22:28 PHT · 337f264";
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -691,13 +691,16 @@ function Home({ client, session }){
           if(afterEnd<=120   && !recent.some(r=>r.kind==="end"))  { setMoodPrompt({kind:"end"});   return; }
           setMoodPrompt(null); return;
         }
-        setMoodPrompt(recent.length ? null : {kind:"start"});   // no schedule -> once per ~day
+        // No shift configured -> the check-in is shift-anchored, so show nothing
+        // (otherwise it nags on every refresh). Admin sets a shift to enable it.
+        setMoodPrompt(null);
       });
   },[w]);  // eslint-disable-line
   async function logMood(m){
     const kind=(moodPrompt&&moodPrompt.kind)||"start"; const wid=w?.id;
     setMoodPrompt(null);               // tapping an emoji is the ONLY way to dismiss the pop-out
-    if(wid) client.from("mood_checkins").insert({worker_id:wid,mood:m,kind});   // best-effort
+    if(wid){ const { error }=await client.from("mood_checkins").insert({worker_id:wid,mood:m,kind});
+      if(error) console.error("mood check-in failed:", error.message); }   // surfaced in DevTools if RLS/insert ever fails
   }
   const paid=s=>s==="sent"||s==="reconciled";
   return (
