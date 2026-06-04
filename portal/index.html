@@ -77,7 +77,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-04 23:22 PHT · c664f87";
+const BUILD = "2026-06-04 23:29 PHT · 7e2514c";
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -776,8 +776,8 @@ function Portal({ client, session }){
   return (
     <div>
       <div className="top">
-        <img src="favicon.png" alt="" onError={e=>{e.currentTarget.style.display="none";}}
-          style={{height:30,background:"#fff",borderRadius:7,padding:"2px",marginRight:10}}/>
+        <img src="mark-light.png" alt="" onError={e=>{e.currentTarget.style.display="none";}}
+          style={{height:34,marginRight:12}}/>
         <div style={{flex:1,minWidth:0}}><b>{first ? `${first}'s Workspace` : "Workspace"}</b><small>{session?.user?.email}</small></div>
         <button className="btn ghost" style={{padding:"6px 10px",fontSize:13}} onClick={signOut}>Sign out</button>
       </div>
