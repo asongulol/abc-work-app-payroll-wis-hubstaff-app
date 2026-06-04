@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 00:04 PHT · 4d02e72";
+const BUILD = "2026-06-05 00:09 PHT · a77deaa";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -4542,6 +4542,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   const [end,setEnd]=useState(def.end);
   const [payDate,setPayDate]=useState(def.payDate);
   const [autoDates,setAutoDates]=useState(true);   // auto-fill from imported file dates
+  const [loadNonce,setLoadNonce]=useState(0);      // bump to force a reload even when the dates are unchanged
   const [fx,setFx]=useState(58.0);            // PHP per 1 USD (reference only; paid in PHP)
   const [fxAuto,setFxAuto]=useState(true);    // true until the user types over it
   const [fxNote,setFxNote]=useState("");      // shows "live rate as of …"
@@ -4605,16 +4606,20 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // On mount / when company+period settle, restore any saved draft or locked
   // snapshot so a calculated payroll survives tab-switches and refreshes.
   useEffect(()=>{ if(client&&companyId&&start&&end){ if(pendingCalc.current) return; loadSaved(); } /* eslint-disable-next-line */
-  },[client,companyId,start,end]);
+  },[client,companyId,start,end,loadNonce]);
 
   // Cross-tab: another tab asked to open a specific period here for editing
-  // (e.g. Unlock from Process & Pay). Point the dates at it; the settle effect
-  // above then loadSaved()s the now-open draft so it's ready to edit/re-lock.
+  // (e.g. Unlock from Process & Pay). Point the dates at it and force a reload
+  // via loadNonce — the dates may already equal this period (e.g. it was just
+  // locked here), in which case setStart alone wouldn't re-fire loadSaved. Also
+  // refresh the batch list so the now-open draft shows without a manual reload.
   useEffect(()=>{
     if(!pendingPeriod||!pendingPeriod.start) return;
     if(consumePendingPeriod) consumePendingPeriod();
     setAutoDates(false);
     applyStart(pendingPeriod.start);
+    loadBatches();
+    setLoadNonce(n=>n+1);
     /* eslint-disable-next-line */
   },[pendingPeriod]);
 
