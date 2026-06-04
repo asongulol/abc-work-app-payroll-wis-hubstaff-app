@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 05:09 PHT · f870215";
+const BUILD = "2026-06-05 05:19 PHT · 0e2254f";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -5989,6 +5989,8 @@ function Reports({client,companyId,consolidated}){
   },[client,companyId,consolidated]);
 
   const [openKey,setOpenKey]=useState(null);   // which period row is expanded
+  const [fYears,setFYears]=useState(()=>new Set());   // payout-table year filter (empty = all)
+  const [fMonths,setFMonths]=useState(()=>new Set()); // payout-table month filter (empty = all)
   const pays=data||[];
   // group by period, keeping each contractor's line for the expandable detail
   const byPeriod={};
@@ -6020,6 +6022,16 @@ function Reports({client,companyId,consolidated}){
   const grandUsd=periods.reduce((s,p)=>s+(p.usdRef||0),0);   // sum of per-period net/fx
   const nCols=(consolidated?7:6)+1;   // for the detail row colSpan
 
+  // Year/Month filter for the payout-by-period table (multi-select; empty = All).
+  const yearsAvail=[...new Set(periods.map(p=>(p.start||"").slice(0,4)).filter(Boolean))].sort().reverse();
+  const MONTHS=[["01","Jan"],["02","Feb"],["03","Mar"],["04","Apr"],["05","May"],["06","Jun"],
+                ["07","Jul"],["08","Aug"],["09","Sep"],["10","Oct"],["11","Nov"],["12","Dec"]];
+  const shown=periods.filter(p=>{ const y=(p.start||"").slice(0,4), m=(p.start||"").slice(5,7);
+    return (fYears.size===0||fYears.has(y))&&(fMonths.size===0||fMonths.has(m)); });
+  const fNet=shown.reduce((s,p)=>s+p.net,0), fUsd=shown.reduce((s,p)=>s+(p.usdRef||0),0);
+  const filterActive=fYears.size>0||fMonths.size>0;
+  const toggleSet=(set,setter,v)=>{ const n=new Set(set); n.has(v)?n.delete(v):n.add(v); setter(n); };
+
   const paid=st=>st==="sent"||st==="reconciled";
 
   return (
@@ -6043,8 +6055,30 @@ function Reports({client,companyId,consolidated}){
 
       <div className="card">
         <h2>Payout by pay period</h2>
+        {periods.length>0 && (
+          <div style={{margin:"6px 0 10px"}}>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6,alignItems:"center"}}>
+              <span className="muted" style={{fontSize:11,width:46}}>Year</span>
+              <button className={"btn sm "+(fYears.size===0?"":"ghost")} onClick={()=>setFYears(new Set())}>All</button>
+              {yearsAvail.map(y=>(
+                <button key={y} className={"btn sm "+(fYears.has(y)?"":"ghost")} onClick={()=>toggleSet(fYears,setFYears,y)}>{y}</button>
+              ))}
+            </div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6,alignItems:"center",marginTop:6}}>
+              <span className="muted" style={{fontSize:11,width:46}}>Month</span>
+              <button className={"btn sm "+(fMonths.size===0?"":"ghost")} onClick={()=>setFMonths(new Set())}>All</button>
+              {MONTHS.map(([n,lbl])=>(
+                <button key={n} className={"btn sm "+(fMonths.has(n)?"":"ghost")} onClick={()=>toggleSet(fMonths,setFMonths,n)}>{lbl}</button>
+              ))}
+            </div>
+            {filterActive && <p className="sub" style={{marginTop:6}}>
+              Showing <b>{shown.length}</b> of {periods.length} periods · net <b>{money(fNet,"PHP")}</b> · ≈ {money(fUsd,"USD")}
+              {" "}<button className="btn link sm" onClick={()=>{setFYears(new Set());setFMonths(new Set());}}>clear</button></p>}
+          </div>
+        )}
         {loading?<div className="empty">Loading…</div>:
          periods.length===0?<div className="empty">No saved pay statements yet. Run &amp; lock a payroll first.</div>:
+         shown.length===0?<div className="empty">No periods match this Year/Month filter.</div>:
         <div className="table-scroll"><table>
           <thead><tr>
             <th style={{width:24}}></th>
@@ -6052,7 +6086,7 @@ function Reports({client,companyId,consolidated}){
             <th>Period</th><th>Pay date</th><th>Contractors</th><th>Net ₱</th><th>≈ USD ref</th><th>Unpaid ₱</th>
           </tr></thead>
           <tbody>
-            {periods.map((p,i)=>{
+            {shown.map((p,i)=>{
               const open=openKey===p.key;
               return (
               <React.Fragment key={p.key}>
