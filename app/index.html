@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-04 23:43 PHT · 997061e";
+const BUILD = "2026-06-04 23:58 PHT · 5ed359c";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -5277,10 +5277,15 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
         overrides: overrides.length?overrides:undefined}});
     setMsg(`Locked ${pays.length} statement(s) for ${start} → ${end}.`);
     loadBatches();   // reflect the new locked state in the batch list
-    // Offer to move straight to paying this batch (or stay to review more).
+    // The period is locked now and lives in Process & Pay. Clear it from the
+    // Calculate view so returning to this tab shows the clean "ready for
+    // calculation" list — not a stale locked batch card that implies there's
+    // still something to calculate/lock here. (Review it via Show locked/paid.)
+    setRows(null); setPeriod(null); setStaleRows([]);
+    // Offer to move straight to paying this batch.
     if(typeof goTab==="function" && window.confirm(
       `Locked ${pays.length} statement(s) for ${start} → ${end}.\n\n`+
-      `Proceed to Pay Batch (Process & Pay) now? Choose Cancel to stay here.`)){
+      `Proceed to Pay Batch (Process & Pay) now? Choose Cancel to stay on Calculate.`)){
       goTab("process");
     }
   }
