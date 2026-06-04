@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 00:48 PHT · 0fbae9b";
+const BUILD = "2026-06-05 00:55 PHT · 6c893fa";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -4128,8 +4128,11 @@ function TimeApproval({client,companyId,consolidated,goTab,openPeriodForEdit}){
         const dts=entries.filter(e=>idSet.has(e.id)).map(e=>e.work_date).filter(Boolean).sort();
         const anchor=dts[0]||pStart;
         const per=anchor?periodFor(anchor):null;
-        if(typeof openPeriodForEdit==="function" && per){ openPeriodForEdit({start:per.start, end:per.end}); }
-        else if(typeof goTab==="function"){ goTab("payroll"); }
+        // Approve navigates to Calculate (the batch appearing there is the
+        // confirmation), so don't leave the "Approved N entries" undo banner to
+        // linger on this tab when the user returns. Reject keeps it in place.
+        if(typeof openPeriodForEdit==="function" && per){ setUndo(null); openPeriodForEdit({start:per.start, end:per.end}); }
+        else if(typeof goTab==="function"){ setUndo(null); goTab("payroll"); }
       }
     }catch(ex){ setMsg("Couldn't update approval: "+(ex.message||ex)); }
     finally{ setBusy(false); }
