@@ -4,28 +4,6 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="robots" content="noindex, nofollow" />
-<!-- UI kill-switch (redesign safety net): lets any user instantly fall back to the
-     frozen classic admin app (legacy.html) with NO redeploy. Runs before React/Babel
-     load so a redirect avoids loading the whole app. ?ui=classic opts in, ?ui=new opts
-     out; the choice persists in localStorage. Remove this block once the redesign is
-     signed off and legacy.html is retired. See docs/admin-redesign-plan.md Phase 0. -->
-<script>
-(function(){
-  try{
-    // GLOBAL ROLLBACK LEVER: flip to true and deploy (~15s) to send EVERYONE to the
-    // classic app at once. Individual users can still debug the new app via ?ui=new.
-    var FORCE_CLASSIC=false;
-    var q=new URLSearchParams(location.search);
-    var v=q.get("ui");
-    if(v==="classic") localStorage.setItem("eis_ui","classic");
-    else if(v==="new") localStorage.removeItem("eis_ui");
-    var wantClassic=(FORCE_CLASSIC && v!=="new") || localStorage.getItem("eis_ui")==="classic";
-    if(wantClassic && !/\/legacy\.html$/.test(location.pathname)){
-      location.replace("/legacy.html"+location.search+location.hash);
-    }
-  }catch(e){/* never let the kill-switch break the app */}
-})();
-</script>
 <title>HR &amp; Payroll — PH Contractors</title>
 <link rel="icon" type="image/png" href="favicon.png" />
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2214%22%20fill%3D%22%231F3A68%22%2F%3E%3Cpath%20d%3D%22M13%2047%20L21%2026%20L29%2047%20Z%22%20fill%3D%22%23D4A24C%22%2F%3E%3Cpath%20d%3D%22M23%2047%20L32%2020%20L41%2047%20Z%22%20fill%3D%22%23F2C879%22%2F%3E%3Cpath%20d%3D%22M35%2047%20L43%2026%20L51%2047%20Z%22%20fill%3D%22%23D4A24C%22%2F%3E%3Cpath%20d%3D%22M11%2045%20Q32%2034%2053%2045%22%20stroke%3D%22%23D4A24C%22%20stroke-width%3D%223%22%20fill%3D%22none%22%20stroke-linecap%3D%22round%22%2F%3E%3C%2Fsvg%3E" />
@@ -434,11 +412,11 @@
 </head>
 <body>
 <div id="root"></div>
-<!-- Redesign safety net: discreet link to fall back to the classic app. Lives
-     OUTSIDE #root so React never touches it. Removed when legacy.html is retired. -->
-<a href="/?ui=classic" id="ui-switch" class="no-print"
-   title="Switch to the classic admin design"
-   style="position:fixed;left:10px;bottom:10px;z-index:40;font:600 11px/1 Inter,system-ui,sans-serif;color:#5c6677;background:rgba(255,255,255,.92);border:1px solid #e4e8ee;border-radius:999px;padding:6px 11px;text-decoration:none;box-shadow:0 1px 2px rgba(20,35,59,.08);opacity:.7">↩ Classic view</a>
+<!-- This is the FROZEN classic admin app (pre-redesign restore point). The only
+     change vs the known-good build is this one link back to the new design. -->
+<a href="/?ui=new" id="ui-switch" class="no-print"
+   title="Try the new admin design"
+   style="position:fixed;left:10px;bottom:10px;z-index:40;font:600 11px/1 Inter,system-ui,sans-serif;color:#1F3A68;background:rgba(255,255,255,.95);border:1px solid #D4A24C;border-radius:999px;padding:6px 11px;text-decoration:none;box-shadow:0 1px 2px rgba(20,35,59,.08)">✨ Try the new design</a>
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
