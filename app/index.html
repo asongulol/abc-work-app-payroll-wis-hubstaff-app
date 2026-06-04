@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 00:14 PHT · 2722b4e";
+const BUILD = "2026-06-05 00:29 PHT · 477d006";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -9131,7 +9131,14 @@ function OnboardingAdmin({ client }){
 // ============================ APP SHELL ======================================
 function App() {
   const sb = useSupabase();
-  const [tab, setTab] = useState("contractors");
+  // Restore the last tab on refresh (validated against known ids) so reloading
+  // keeps you on the screen you were on instead of resetting to Contractors.
+  const [tab, setTab] = useState(()=>{
+    try{ const t=localStorage.getItem("eis_tab");
+      return ["contractors","onboarding","documents","time","payroll","process","batches","reports","imports","audit"].includes(t)?t:"contractors";
+    }catch{ return "contractors"; }
+  });
+  useEffect(()=>{ try{ localStorage.setItem("eis_tab",tab); }catch{ /* ignore */ } },[tab]);
   const [companyId, setCompanyId] = useState(localStorage.getItem("sel_company")||"");
   const [consolidated, setConsolidated] = useState(false);
   useEffect(()=>{ if(companyId) localStorage.setItem("sel_company",companyId); },[companyId]);
