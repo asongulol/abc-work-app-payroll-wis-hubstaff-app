@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="robots" content="noindex, nofollow" />
 <title>HR &amp; Payroll — PH Contractors</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2064%2064'%3E%3Crect%20width%3D'64'%20height%3D'64'%20rx%3D'14'%20fill%3D'%232f5496'%2F%3E%3Ctext%20x%3D'32'%20y%3D'47'%20font-family%3D'Arial%2CHelvetica%2Csans-serif'%20font-size%3D'44'%20font-weight%3D'700'%20fill%3D'%23ffffff'%20text-anchor%3D'middle'%3E%E2%82%B1%3C%2Ftext%3E%3C%2Fsvg%3E" />
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2064%2064'%3E%3Crect%20width%3D'64'%20height%3D'64'%20rx%3D'14'%20fill%3D'%231F3A68'%2F%3E%3Ctext%20x%3D'32'%20y%3D'47'%20font-family%3D'Arial%2CHelvetica%2Csans-serif'%20font-size%3D'44'%20font-weight%3D'700'%20fill%3D'%23ffffff'%20text-anchor%3D'middle'%3E%E2%82%B1%3C%2Ftext%3E%3C%2Fsvg%3E" />
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -15,40 +15,76 @@
 </script>
 <style>
   :root{
-    --bg:#f6f7f9; --card:#ffffff; --border:#e2e5e9; --text:#1a1d21;
-    --muted:#6b7280; --accent:#2f5496; --accent-soft:#eaf0fb; --good:#0a7d3c;
-    --warn:#b45309; --warn-soft:#fef3c7; --bad:#b91c1c; --radius:10px;
+    /* Brand — unified with the contractor portal (navy + gold). */
+    --navy:#1F3A68; --navy-700:#162a4d; --navy-50:#eef2f8;
+    --gold:#D4A24C; --gold-soft:#f7edd8;
+    --bg:#f4f6f9; --card:#ffffff; --surface-2:#f8fafc;
+    --border:#e4e8ee; --border-strong:#ccd3dd; --text:#15233b;
+    --muted:#5c6677; --subtle:#8b94a4;
+    --good:#0a7d3c; --good-soft:#dcfce7;
+    --warn:#b45309; --warn-soft:#fef3c7; --bad:#b91c1c; --bad-soft:#fee2e2;
+    /* Aliases consumed by existing classNames -> re-skin to navy in one place. */
+    --accent:var(--navy); --accent-soft:var(--navy-50);
+    --radius-sm:7px; --radius:11px; --radius-lg:16px;
+    --shadow-sm:0 1px 2px rgba(15,28,51,.05);
+    --shadow:0 4px 14px -5px rgba(15,28,51,.14);
+    --shadow-lg:0 16px 40px -12px rgba(15,28,51,.28);
+    --ring:0 0 0 3px rgba(31,58,104,.22);
+    --dur:.16s; --ease:cubic-bezier(.2,.6,.2,1);
   }
   *{box-sizing:border-box}
   body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
-       background:var(--bg);color:var(--text);font-size:14px}
+       background:var(--bg);color:var(--text);font-size:14px;line-height:1.5;
+       -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  td{font-variant-numeric:tabular-nums}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  /* Visible keyboard focus everywhere (WCAG). */
+  :focus-visible{outline:2px solid var(--navy);outline-offset:2px;border-radius:4px}
   .topbar{display:flex;align-items:center;gap:16px;padding:12px 20px;background:var(--card);
-          border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10;
+          border-top:3px solid var(--gold);border-bottom:1px solid var(--border);
+          position:sticky;top:0;z-index:10;box-shadow:var(--shadow-sm);
           padding-top:calc(12px + env(safe-area-inset-top,0px))}
-  .brand{font-weight:700;font-size:16px;margin-right:8px}
-  .brand small{color:var(--muted);font-weight:400;font-size:12px;display:block}
+  .brand{font-weight:800;font-size:16px;margin-right:8px;color:var(--navy);letter-spacing:-.01em}
+  .brand small{color:var(--muted);font-weight:400;font-size:12px;display:block;letter-spacing:0}
   /* Wrappers are layout-transparent on desktop (display:contents) so the topbar
      renders identically to baseline — CompanySwitcher's marginLeft:auto still
      right-aligns the actions. They become real flex/block boxes on mobile. */
   .topbar-actions{display:contents}
   .company-switcher{display:contents}
   select,input,button,textarea{font-family:inherit;font-size:14px}
-  select,input,textarea{padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:#fff}
+  select,input,textarea{padding:8px 11px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);
+       background:#fff;color:var(--text);transition:border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease)}
+  select:focus,input:focus,textarea:focus{outline:none;border-color:var(--navy);box-shadow:var(--ring)}
   .tabs{display:flex;gap:4px;padding:0 20px;background:var(--card);border-bottom:1px solid var(--border)}
-  .tab{padding:11px 16px;border:none;background:none;cursor:pointer;color:var(--muted);
-       border-bottom:2px solid transparent;font-weight:500}
+  .tab{padding:12px 16px;border:none;background:none;cursor:pointer;color:var(--muted);
+       border-bottom:2.5px solid transparent;font-weight:600;
+       transition:color var(--dur) var(--ease),border-color var(--dur) var(--ease)}
+  .tab:hover{color:var(--text)}
   .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
-  .wrap{max-width:1180px;margin:22px auto;padding:0 20px}
-  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-bottom:16px}
-  h2{margin:0 0 4px;font-size:18px}
+  .wrap{max-width:1180px;margin:24px auto;padding:0 20px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+        padding:20px;margin-bottom:16px;box-shadow:var(--shadow-sm)}
+  h2{margin:0 0 4px;font-size:19px;font-weight:700;letter-spacing:-.01em}
   .sub{color:var(--muted);margin:0 0 16px;font-size:13px}
   table{width:100%;border-collapse:collapse}
-  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:top}
-  th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.03em}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:top}
+  th{color:var(--subtle);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;
+     border-bottom:1px solid var(--border-strong)}
+  tbody tr{transition:background var(--dur) var(--ease)}
   tr.clickable:hover{background:var(--accent-soft);cursor:pointer}
-  .btn{background:var(--accent);color:#fff;border:none;padding:8px 14px;border-radius:8px;cursor:pointer;font-weight:500}
-  .btn.ghost{background:#fff;color:var(--accent);border:1px solid var(--accent)}
-  .btn.sm{padding:5px 10px;font-size:12px}
+  .btn{background:var(--accent);color:#fff;border:1px solid transparent;padding:9px 15px;border-radius:var(--radius-sm);
+       cursor:pointer;font-weight:600;line-height:1.2;
+       transition:background var(--dur) var(--ease),box-shadow var(--dur) var(--ease),transform var(--dur) var(--ease)}
+  .btn:hover{background:var(--navy-700)}
+  .btn:active{transform:translateY(1px)}
+  .btn:focus-visible{outline:none;box-shadow:var(--ring)}
+  .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+  .btn.ghost{background:#fff;color:var(--accent);border:1px solid var(--border-strong)}
+  .btn.ghost:hover{background:var(--navy-50);border-color:var(--accent)}
+  .btn.danger{background:var(--bad);color:#fff}
+  .btn.danger:hover{background:#991b1b}
+  .btn.sm{padding:6px 11px;font-size:12px}
   .pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11px;font-weight:600}
   .pill.ft{background:var(--accent-soft);color:var(--accent)}
   .pill.pt{background:#fce7f3;color:#9d174d}
@@ -120,7 +156,7 @@
   /* primary action bar within a card */
   .actionbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;
     padding-top:12px;border-top:1px solid var(--border)}
-  .card.primary{border-color:var(--accent);box-shadow:0 1px 4px rgba(47,84,150,.12)}
+  .card.primary{border-color:var(--accent);box-shadow:var(--shadow)}
   h3{margin:0 0 4px;font-size:15px}
   /* tab groups */
   .tabgroup{display:flex;align-items:center}
@@ -151,8 +187,10 @@
   @keyframes bannerPop{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
   .connect{max-width:440px;margin:80px auto;text-align:center}
   .connect input{width:100%;margin-bottom:10px}
-  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:flex-start;justify-content:center;padding:40px;z-index:20;overflow:auto}
-  .modal{background:#fff;border-radius:12px;padding:24px;max-width:680px;width:100%}
+  .modal-bg{position:fixed;inset:0;background:rgba(15,28,51,.45);display:flex;align-items:flex-start;justify-content:center;padding:40px;z-index:20;overflow:auto;animation:modalFade var(--dur) var(--ease)}
+  .modal{background:#fff;border-radius:var(--radius-lg);padding:24px;max-width:680px;width:100%;box-shadow:var(--shadow-lg);animation:modalRise .18s var(--ease)}
+  @keyframes modalFade{from{opacity:0}to{opacity:1}}
+  @keyframes modalRise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
   .x{float:right;border:none;background:none;font-size:20px;cursor:pointer;color:var(--muted)}
   .muted{color:var(--muted)}
   .stub{border:2px dashed var(--border);border-radius:var(--radius);padding:36px;text-align:center;color:var(--muted)}
@@ -358,6 +396,11 @@
     .card{display:none !important}
     #paylist-print{display:block !important;border:none;box-shadow:none;margin:0}
     #paylist-print *{visibility:visible}
+  }
+  /* Respect users who prefer reduced motion — kill transitions/animations. */
+  @media (prefers-reduced-motion: reduce){
+    *,*::before,*::after{transition-duration:.001ms !important;animation-duration:.001ms !important;
+      animation-iteration-count:1 !important;scroll-behavior:auto !important}
   }
 </style>
 </head>

@@ -13,3 +13,8 @@ supabase/.temp/
 
 # Headless modal-width repro scratch file
 tools/.modal-width-repro.html
+
+# Throwaway visual-check scratch files
+tools/.gallery.*
+tools/.redesign-*.png
+tools/.shot.mjs
