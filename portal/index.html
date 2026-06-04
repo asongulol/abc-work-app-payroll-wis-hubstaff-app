@@ -77,7 +77,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 05:34 PHT · b217046";
+const BUILD = "2026-06-05 05:41 PHT · aaefb34";
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -690,7 +690,7 @@ function WorldClock(){
   );
 }
 function Home({ client, session }){
-  const [w,setW]=useState(null); const [billable,setBillable]=useState(null);
+  const [w,setW]=useState(null);
   const [lastPaid,setLastPaid]=useState(undefined); const [nextPay,setNextPay]=useState(undefined);  // last paid / next pending statement
   const [anns,setAnns]=useState(null); const [moodPrompt,setMoodPrompt]=useState(null);  // null=none | {kind:'start'|'end'}
   const per=curPeriod(); const {hour,clock}=phtParts();
@@ -700,8 +700,6 @@ function Home({ client, session }){
   const greetName=(ex.nickname||w?.first_name||"").trim();
   useEffect(()=>{
     client.from("workers").select("id,first_name,profile_extras,shift_start,shift_end").maybeSingle().then(({data})=>setW(data||{}));
-    client.from("time_entries").select("tracked_seconds,pto_seconds").gte("work_date",per.start).lte("work_date",per.end)
-      .then(({data})=>setBillable((data||[]).reduce((s,r)=>s+(r.tracked_seconds||0)+(r.pto_seconds||0),0)/3600));
     client.from("payments").select("net_php,status,pay_periods(pay_date,period_start,period_end)")
       .then(({data})=>{ const isPaid=s=>s==="sent"||s==="reconciled";
         const ps=(data||[]).map(p=>({net:Number(p.net_php||0),status:p.status,
@@ -765,7 +763,6 @@ function Home({ client, session }){
       <div className="card" style={{borderTop:"3px solid var(--accent)"}}>
         <div style={{fontWeight:700,marginBottom:6}}>This pay period</div>
         <div className="row"><span className="k">Period</span><span>{per.start} → {per.end}</span></div>
-        <div className="row"><span className="k">Billable hours so far</span><span><b>{billable==null?"…":billable.toFixed(2)} h</b></span></div>
         <div className="row" style={{borderTop:"1px solid var(--line)",marginTop:4,paddingTop:6}}>
           <span className="k">Last pay</span>
           <span>{lastPaid===undefined?"…":lastPaid
