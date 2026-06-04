@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 04:45 PHT · d5d41c4";
+const BUILD = "2026-06-05 04:52 PHT · c699eca";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -6247,6 +6247,7 @@ function ContractorHistory({client,companyId,consolidated}){
     .sort((a,b)=>a.name.localeCompare(b.name));
   const [wid,setWid]=useState("");
   const [rows,setRows]=useState(null);
+  const [openKey,setOpenKey]=useState(null);   // which period row is expanded to daily
   useEffect(()=>{
     if(!wid){ setRows(null); return; }
     let cancel=false;
@@ -6259,8 +6260,10 @@ function ContractorHistory({client,companyId,consolidated}){
       if(cancel) return;
       const tmap={};
       (te||[]).forEach(r=>{ const p=periodFor(r.work_date);
-        const g=tmap[p.start]||(tmap[p.start]={end:p.end,tracked:0,pto:0});
-        g.tracked+=Number(r.tracked_seconds||0); g.pto+=Number(r.pto_seconds||0); });
+        const g=tmap[p.start]||(tmap[p.start]={end:p.end,tracked:0,pto:0,days:{}});
+        g.tracked+=Number(r.tracked_seconds||0); g.pto+=Number(r.pto_seconds||0);
+        const d=g.days[r.work_date]||(g.days[r.work_date]={date:r.work_date,tracked:0,pto:0});
+        d.tracked+=Number(r.tracked_seconds||0); d.pto+=Number(r.pto_seconds||0); });
       const pmap={};
       (pays||[]).forEach(p=>{ const s=p.pay_periods?.period_start; if(!s) return;
         pmap[s]={end:p.pay_periods?.period_end,ha:Number(p.health_allowance_php||0),
@@ -6272,6 +6275,7 @@ function ContractorHistory({client,companyId,consolidated}){
         start:k, end:(p&&p.end)||t.end,
         worked: t.tracked!=null?t.tracked/3600:(p&&p.workedPay!=null?Number(p.workedPay):null),
         pto:(t.pto||0)/3600, hasPay:!!p,
+        days: Object.values(t.days||{}).filter(x=>x.tracked>0||x.pto>0).sort((a,b)=>a.date.localeCompare(b.date)),
         ha:p&&p.ha, lunch:p&&p.lunch, t13:p&&p.t13, gross:p&&p.gross, net:p&&p.net, method:p&&p.method, status:p&&p.status }; }));
     })();
     return ()=>{cancel=true;};
@@ -6306,9 +6310,14 @@ function ContractorHistory({client,companyId,consolidated}){
            <th>13th ₱</th><th>Gross ₱</th><th>Net ₱</th><th>Method</th><th>Status</th>
          </tr></thead>
          <tbody>
-           {rows.map((r,i)=>(
-             <tr key={i}>
-               <td className="card-title">{r.start} → {r.end||"?"}</td>
+           {rows.map((r,i)=>{
+             const open=openKey===i; const hasDays=r.days&&r.days.length>0;
+             const fmtD=d=>{ try{ return new Date(d+"T00:00:00").toLocaleDateString(undefined,{weekday:"short",month:"short",day:"numeric"}); }catch{ return d; } };
+             return (
+             <React.Fragment key={i}>
+             <tr onClick={()=>hasDays&&setOpenKey(open?null:i)}
+                 style={{cursor:hasDays?"pointer":"default", background:open?"#f1f5f9":undefined}}>
+               <td className="card-title"><span style={{color:"var(--muted)",marginRight:6}}>{hasDays?(open?"▾":"▸"):" "}</span>{r.start} → {r.end||"?"}</td>
                <td data-label="Worked h">{r.worked!=null?r.worked.toFixed(2):"—"}</td>
                <td data-label="PTO h">{r.pto>0?r.pto.toFixed(2):"—"}</td>
                <td data-label="Health ₱">{r.hasPay?money(r.ha,"PHP"):"—"}</td>
@@ -6321,7 +6330,20 @@ function ContractorHistory({client,companyId,consolidated}){
                  ? <span className="pill" style={paid(r.status)?{background:"#dcfce7",color:"#065f46"}:{background:"#f3f4f6",color:"var(--muted)"}}>{paid(r.status)?"paid":(r.status||"draft")}</span>
                  : <span className="muted" style={{fontSize:11}}>time only</span>}</td>
              </tr>
-           ))}
+             {open && hasDays && (
+               <tr><td colSpan={10} style={{background:"#f8fafc",padding:"8px 10px"}}>
+                 <div style={{maxHeight:280,overflow:"auto"}}>
+                   <table className="keep-table"><thead><tr><th>Day</th><th>Worked h</th><th>PTO h</th></tr></thead>
+                   <tbody>{r.days.map(d=>(
+                     <tr key={d.date}><td>{fmtD(d.date)} <span className="muted" style={{fontSize:11}}>({d.date})</span></td>
+                       <td>{(d.tracked/3600).toFixed(2)}</td>
+                       <td>{d.pto>0?(d.pto/3600).toFixed(2):"—"}</td></tr>
+                   ))}</tbody></table>
+                 </div>
+               </td></tr>
+             )}
+             </React.Fragment>
+           );})}
          </tbody>
        </table></div>}
     </div>
