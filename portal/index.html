@@ -115,6 +115,8 @@ const STRINGS = { en: {
   "ob.stage3.intro": "Upload each document as a PDF, JPG, or PNG (max 10 MB). Our HR team reviews each one.",
   "ob.stage3.finish": "Finish onboarding",
   "ob.stage3.waiting": "Waiting for HR review…",
+  "ob.stage3.review.title": "Documents submitted — HR is reviewing",
+  "ob.stage3.review.body": "Thanks! All your documents are in, and our HR team is now reviewing them. Please check back in a few hours to finish setting up your login. If anything else is needed, you'll see the feedback right here.",
   "ob.doc.pending": "Pending review",
   "ob.doc.approved": "Approved",
   "ob.doc.needs": "Needs replacement",
@@ -951,11 +953,21 @@ function Stage3Docs({ client, session, cfg, onAdvance }){
     else slots.push({kind:d.kind,side:null,label:d.title});
   });
   const allApproved = slots.length>0 && slots.every(s=>{ const l=latest(s.kind,s.side); return l&&l.review_status==="approved"; });
+  // Every required slot has a doc that hasn't been bounced back (pending or approved).
+  const allSubmitted = slots.length>0 && slots.every(s=>{ const l=latest(s.kind,s.side); return l&&l.review_status!=="needs_replacement"; });
+  // Submitted in full, none rejected, but not yet fully approved -> awaiting HR.
+  const awaitingReview = allSubmitted && !allApproved;
   if(docs===null) return <div className="card"><div className="empty">Loading…</div></div>;
   return (
     <div className="card">
       <div style={{fontWeight:700,marginBottom:4}}>{t("ob.stage3.title")}</div>
       <p className="sub" style={{marginTop:0}}>{t("ob.stage3.intro")}</p>
+      {awaitingReview && (
+        <div style={{background:"#f7edd8",border:"1px solid var(--gold)",borderRadius:12,padding:"14px 16px",margin:"6px 0 10px"}}>
+          <div style={{fontWeight:700,marginBottom:4,color:"var(--accent)"}}>⏳ {t("ob.stage3.review.title")}</div>
+          <div className="sub" style={{margin:0,fontSize:14,color:"#5b4a22"}}>{t("ob.stage3.review.body")}</div>
+        </div>
+      )}
       {err && <div className="err">{err}</div>}
       {slots.map(s=>(
         <UploadSlot key={s.kind+(s.side||"")} client={client} session={session} wid={wid} slot={s} doc={latest(s.kind,s.side)} onChange={load}/>
