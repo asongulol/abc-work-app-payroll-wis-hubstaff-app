@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-04 23:22 PHT · c664f87";
+const BUILD = "2026-06-04 23:31 PHT · 2cfaf8b";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -9111,8 +9111,8 @@ function App() {
     <div>
       <div className="topbar">
         <div className="brand">
-          <img src="favicon.png" alt="" onError={e=>{e.currentTarget.style.display="none";}}
-            style={{height:36,background:"#fff",borderRadius:8,padding:"2px",marginRight:11,verticalAlign:"middle"}}/>
+          <img src="mark-light.png" alt="" onError={e=>{e.currentTarget.style.display="none";}}
+            style={{height:38,marginRight:12,verticalAlign:"middle"}}/>
           HR &amp; Payroll<small>PH independent contractors</small></div>
         <div className="topbar-actions">
           <div className="company-switcher"><CompanySwitcher {...{client:sb.client,companyId,setCompanyId,consolidated,setConsolidated}} /></div>
