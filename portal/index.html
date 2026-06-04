@@ -550,14 +550,38 @@ function OnboardingDocReminder({ client, session }){
     </div>
   );
 }
+// Live two-zone world clock: Philippine Time + New York Time, re-rendered
+// every 20s so the minutes stay current.
+function WorldClock(){
+  const [,tick]=useState(0);
+  useEffect(()=>{ const id=setInterval(()=>tick(t=>t+1),20000); return ()=>clearInterval(id); },[]);
+  const fmt=(tz)=>new Intl.DateTimeFormat("en-US",{timeZone:tz,hour:"numeric",minute:"2-digit",hour12:true}).format(new Date());
+  const day=(tz)=>new Intl.DateTimeFormat("en-US",{timeZone:tz,weekday:"short",month:"short",day:"numeric"}).format(new Date());
+  const Z=({flag,label,tz,accent})=>(
+    <div style={{flex:1,textAlign:"center"}}>
+      <div className="sub" style={{margin:0,fontSize:12}}>{flag} {label}</div>
+      <div style={{fontWeight:800,fontSize:20,color:accent?"var(--accent)":"var(--text)"}}>{fmt(tz)}</div>
+      <div className="sub" style={{margin:0,fontSize:11}}>{day(tz)}</div>
+    </div>
+  );
+  return (
+    <div className="card" style={{display:"flex",alignItems:"center",gap:8,padding:"12px 14px"}}>
+      <Z flag="🇵🇭" label="Manila" tz="Asia/Manila"/>
+      <div style={{width:1,alignSelf:"stretch",background:"var(--line)"}}/>
+      <Z flag="🗽" label="New York" tz="America/New_York" accent/>
+    </div>
+  );
+}
 function Home({ client, session }){
   const [w,setW]=useState(null); const [billable,setBillable]=useState(null);
-  const [latest,setLatest]=useState(undefined); const [anns,setAnns]=useState(null); const [moodMsg,setMoodMsg]=useState("");
+  const [latest,setLatest]=useState(undefined); const [anns,setAnns]=useState(null); const [moodDone,setMoodDone]=useState(null);
   const per=curPeriod(); const {hour,clock}=phtParts();
   const greetEN=hour<12?"Good morning":hour<18?"Good afternoon":"Good evening";
   const greetTL=hour<12?"Magandang umaga":hour<18?"Magandang hapon":"Magandang gabi";
+  const ex=(w&&w.profile_extras&&typeof w.profile_extras==="object")?w.profile_extras:{};
+  const greetName=(ex.nickname||w?.first_name||"").trim();
   useEffect(()=>{
-    client.from("workers").select("id,first_name").maybeSingle().then(({data})=>setW(data||{}));
+    client.from("workers").select("id,first_name,profile_extras").maybeSingle().then(({data})=>setW(data||{}));
     client.from("time_entries").select("tracked_seconds,pto_seconds").gte("work_date",per.start).lte("work_date",per.end)
       .then(({data})=>setBillable((data||[]).reduce((s,r)=>s+(r.tracked_seconds||0)+(r.pto_seconds||0),0)/3600));
     client.from("payments").select("net_php,status,pay_periods(pay_date)")
@@ -565,19 +589,28 @@ function Home({ client, session }){
     client.from("announcements").select("title,body,published_at").eq("active",true).order("published_at",{ascending:false}).limit(5)
       .then(({data})=>setAnns(data||[]));
   },[]);  // eslint-disable-line
+  // Has this contractor already checked in today (Manila day)? If not, the
+  // mood pop-out shows. Runs once the worker id is known.
+  useEffect(()=>{
+    const wid=w&&w.id; if(!wid) return;
+    const phDate=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Manila"}).format(new Date());
+    client.from("mood_checkins").select("id").eq("worker_id",wid).gte("created_at",`${phDate}T00:00:00+08:00`).limit(1)
+      .then(({data})=>setMoodDone(!!(data&&data.length)));
+  },[w]);  // eslint-disable-line
   async function logMood(m){
-    setMoodMsg(""); const wid=w?.id; if(!wid){ setMoodMsg("Loading your profile…"); return; }
-    const {error}=await client.from("mood_checkins").insert({worker_id:wid,mood:m});
-    setMoodMsg(error?("Couldn't save: "+error.message):"Thanks for checking in 💙");
+    const wid=w?.id;
+    setMoodDone(true);                 // tapping an emoji is the ONLY way to dismiss the pop-out
+    if(wid) client.from("mood_checkins").insert({worker_id:wid,mood:m});   // best-effort
   }
   const paid=s=>s==="sent"||s==="reconciled";
   return (
     <div className="wrap">
       <div style={{margin:"6px 2px 4px"}}>
         <div style={{fontSize:13,color:"var(--muted)"}}>{clock} · PHT</div>
-        <h2 style={{margin:"2px 0"}}>{greetTL}{w?.first_name?`, ${w.first_name}`:""} 👋</h2>
+        <h2 style={{margin:"2px 0"}}>{greetTL}{greetName?`, ${greetName}`:""} 👋</h2>
         <div className="sub">{greetEN} — here's your day.</div>
       </div>
+      <WorldClock/>
       <OnboardingDocReminder client={client} session={session}/>
       <div className="card" style={{borderTop:"3px solid var(--accent)"}}>
         <div style={{fontWeight:700,marginBottom:6}}>This pay period</div>
@@ -596,13 +629,18 @@ function Home({ client, session }){
             {a.body && <div style={{fontSize:14,marginTop:4,whiteSpace:"pre-wrap"}}>{a.body}</div>}
           </div>
         ))}
-      <div className="card">
-        <div style={{fontWeight:700,marginBottom:4}}>How are you feeling today?</div>
-        <div style={{display:"flex",gap:10,fontSize:28}}>
-          {["😞","😕","🙂","😀","🤩"].map((e,i)=><span key={i} onClick={()=>logMood(i+1)} style={{cursor:"pointer"}} role="button" aria-label={"mood "+(i+1)}>{e}</span>)}
+      {moodDone===false && (
+        <div role="dialog" aria-modal="true" aria-label="Daily mood check-in"
+          style={{position:"fixed",inset:0,background:"rgba(15,28,51,.55)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,zIndex:60}}>
+          <div className="card" style={{maxWidth:360,width:"100%",textAlign:"center",margin:0}}>
+            <div style={{fontWeight:800,fontSize:17,marginBottom:2}}>How are you feeling today?</div>
+            <div className="sub" style={{marginTop:0,marginBottom:12}}>Tap an emoji to continue.</div>
+            <div style={{display:"flex",gap:12,fontSize:36,justifyContent:"center"}}>
+              {["😞","😕","🙂","😀","🤩"].map((e,i)=><span key={i} onClick={()=>logMood(i+1)} style={{cursor:"pointer"}} role="button" aria-label={"mood "+(i+1)}>{e}</span>)}
+            </div>
+          </div>
         </div>
-        {moodMsg && <div className="sub" style={{marginTop:6,color:"var(--good)"}}>{moodMsg}</div>}
-      </div>
+      )}
     </div>
   );
 }
