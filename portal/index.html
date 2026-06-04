@@ -850,8 +850,11 @@ function Stage2Profile({ client, onAdvance }){
     setBusy(false);
     if(error||(data&&data.error)){ setServerErr(await fnErr(error,data)); return; }
     if(data.field_errors&&data.field_errors.length){ const fe={}; data.field_errors.forEach(x=>fe[x.field]=x.msg); setErrs(fe); return; }
-    if(data.stage2_complete){ onAdvance && onAdvance(); return; }
-    if(!isLast) setSec(order[idx+1]); else onAdvance && onAdvance();
+    // Walk EVERY tab in order, including the optional "About you" tab — don't
+    // jump to Stage 3 the moment the required tabs validate (that skipped the
+    // About tab entirely). Only advance to the next stage after the LAST tab.
+    if(!isLast){ setSec(order[idx+1]); return; }
+    onAdvance && onAdvance();
   }
   return (
     <div className="card">
