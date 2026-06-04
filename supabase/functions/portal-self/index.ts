@@ -116,7 +116,7 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
     const action = body.action;
-    if (action !== "update_profile" && action !== "complete_tab" && action !== "finish_onboarding") return json({ error: "unknown action" }, 400);
+    if (action !== "update_profile" && action !== "complete_tab" && action !== "finish_onboarding" && action !== "advance_from_stage1") return json({ error: "unknown action" }, 400);
 
     // shared: turn input fields into {patch, extra} limited to an allowed set
     const buildPatch = (inFields: any, allowed: Set<string>) => {
@@ -201,6 +201,42 @@ Deno.serve(async (req) => {
       });
       if (!upd.ok) return json({ error: `could not finish onboarding: ${await upd.text()}` }, 500);
       return json({ ok: true, completed: true });
+    }
+
+    // ---- advance_from_stage1 (unstick Stage 1) ----
+    // When an admin reopens a contractor to "Signing" but every required
+    // agreement is ALREADY signed, the contractor lands on Stage 1 with all
+    // ticked and no way forward (Stage 1 normally advances only on a NEW sign).
+    // This lets the contractor continue: if all required agreements are signed,
+    // mark stage1_complete and move to Stage 2. Monotonic / never regresses.
+    if (action === "advance_from_stage1") {
+      const opRes = await fetch(`${SB}/rest/v1/onboarding_progress?worker_id=eq.${worker_id}&select=stage1_complete,completed_at,current_stage`, { headers: svc });
+      const op = (await opRes.json())?.[0];
+      if (!op) return json({ error: "no onboarding in progress for this login" }, 409);
+      if (op.completed_at) return json({ ok: true, already_complete: true });
+
+      // required agreements from config (default order if unconfigured)
+      const psRes = await fetch(`${SB}/rest/v1/portal_settings?id=eq.1&select=onboarding_config`, { headers: svc });
+      const ps = await psRes.json();
+      const cfgAgr = (Array.isArray(ps) && Array.isArray(ps[0]?.onboarding_config?.agreements) && ps[0].onboarding_config.agreements.length)
+        ? ps[0].onboarding_config.agreements
+        : [{ kind: "ic_agreement" }, { kind: "non_compete" }, { kind: "confidentiality_nda" }, { kind: "baa" }];
+      const reqKinds = cfgAgr.filter((a: any) => a.required !== false).map((a: any) => a.kind);
+
+      const sRes = await fetch(`${SB}/rest/v1/onboarding_signatures?worker_id=eq.${worker_id}&status=eq.signed&select=agreement_kind`, { headers: svc });
+      const signed = new Set(((await sRes.json()) || []).map((r: any) => r.agreement_kind));
+      const allSigned = reqKinds.every((k: string) => signed.has(k));
+      if (!allSigned) return json({ error: "sign all your agreements first", code: "stage_out_of_order" }, 409);
+
+      const RANK: Record<string, number> = { stage1_sign: 0, stage2_profile: 1, stage3_docs: 2, complete: 3 };
+      const cur = op.current_stage || "stage1_sign";
+      const next_stage = RANK["stage2_profile"] > RANK[cur] ? "stage2_profile" : cur;
+      const upd = await fetch(`${SB}/rest/v1/onboarding_progress?worker_id=eq.${worker_id}`, {
+        method: "PATCH", headers: { ...svc, Prefer: "return=minimal" },
+        body: JSON.stringify({ stage1_complete: true, current_stage: next_stage, updated_at: new Date().toISOString() }),
+      });
+      if (!upd.ok) return json({ error: `could not advance: ${await upd.text()}` }, 500);
+      return json({ ok: true, current_stage: next_stage });
     }
 
     // ---- complete_tab (onboarding Stage 2) ----

@@ -783,10 +783,21 @@ function AgreementViewer({ client, agreement, onClose, onSigned }){
 }
 
 function Stage1Agreements({ client, cfg, signed, onSigned }){
-  const [openK,setOpenK]=useState(null);
+  const [openK,setOpenK]=useState(null); const [busy,setBusy]=useState(false); const [err,setErr]=useState("");
   const agreements = (cfg && cfg.agreements ? cfg.agreements.slice() : []).sort((a,b)=>(a.order||0)-(b.order||0));
   const signedSet = new Set(signed||[]);
   const nextKind = (agreements.find(a=>!signedSet.has(a.kind))||{}).kind;
+  // All required agreements already signed but the flow hasn't advanced (e.g.
+  // an admin reopened to Signing while the signatures still stand) — let the
+  // contractor continue instead of being stuck on all-ticked Stage 1.
+  const allSigned = agreements.length>0 && agreements.filter(a=>a.required!==false).every(a=>signedSet.has(a.kind));
+  async function cont(){
+    setBusy(true); setErr("");
+    const { data, error } = await client.functions.invoke("portal-self",{body:{action:"advance_from_stage1"}});
+    setBusy(false);
+    if(error||(data&&data.error)){ setErr((data&&data.error)||await fnErr(error,data)); return; }
+    onSigned && onSigned();
+  }
   return (
     <div className="card">
       <div style={{fontWeight:700,marginBottom:4}}>{t("ob.stage1.title")}</div>
@@ -807,6 +818,9 @@ function Stage1Agreements({ client, cfg, signed, onSigned }){
           </div>
         );
       })}
+      {allSigned && <button className="btn" style={{width:"100%",marginTop:10}} disabled={busy} onClick={cont}>
+        {busy?t("ob.sign.signing"):t("ob.stage2.continue")}</button>}
+      {err && <div className="err" style={{marginTop:6}}>{err}</div>}
       {openK && <AgreementViewer client={client}
         agreement={agreements.find(a=>a.kind===openK)}
         onClose={()=>setOpenK(null)}
