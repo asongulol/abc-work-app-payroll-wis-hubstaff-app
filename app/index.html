@@ -154,6 +154,22 @@
   .step-done{color:var(--text)}
   .step-done .step-ico{color:var(--good)}
   .step-pending{color:var(--subtle)}
+  /* ===== Phase 5: Overview dashboard tiles ================================ */
+  .ov-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+  .ov-tile{display:block;width:100%;text-align:left;background:var(--card);border:1px solid var(--border);
+           border-left:4px solid var(--border-strong);border-radius:var(--radius);padding:14px 16px;cursor:pointer;font:inherit;
+           transition:box-shadow var(--dur) var(--ease),transform var(--dur) var(--ease)}
+  .ov-tile:hover{box-shadow:var(--shadow);transform:translateY(-1px)}
+  .ov-tile:disabled{cursor:default}
+  .ov-tile:disabled:hover{box-shadow:none;transform:none}
+  .ov-tile.t-good{border-left-color:var(--good)}
+  .ov-tile.t-warn{border-left-color:var(--warn)}
+  .ov-tile.t-bad{border-left-color:var(--bad)}
+  .ov-tile.t-info{border-left-color:var(--navy)}
+  .ov-tile-label{font-size:12px;color:var(--muted);font-weight:600;display:flex;align-items:center;gap:7px}
+  .ov-tile-num{font-size:26px;font-weight:800;letter-spacing:-.02em;margin:6px 0 2px;line-height:1.05;color:var(--text)}
+  .ov-tile-sub{font-size:12px;color:var(--muted)}
+  @media(max-width:480px){.ov-grid{grid-template-columns:1fr}}
   /* horizontal scroll wrapper for wide tables */
   .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
   .table-scroll table{min-width:560px}
@@ -475,7 +491,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 07:10 PHT · caddfea";
+const BUILD = "2026-06-05 07:34 PHT · 1c2c815";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -9437,14 +9453,146 @@ function OnboardingAdmin({ client }){
 }
 
 // ============================ APP SHELL ======================================
+// ===== Phase 5: attention-first Overview dashboard ========================
+// New additive "Home" tab. Surfaces what needs action (current cycle, money to
+// send, approvals, blocked contractors, docs/onboarding, payout issues) instead
+// of raw tables. All tile queries run concurrently via Promise.allSettled so one
+// failing query only blanks its own tile; the call site wraps this in an
+// ErrorBoundary for render-time safety. Company-scoped via the canonical
+// `!consolidated && companyId` pattern (Reports). Tiles are real buttons
+// (focusable, labelled); tone is icon+text+left-border, never colour alone.
+function Overview({ client, companyId, consolidated, goTab }){
+  const scoped = !consolidated && !!companyId;
+  const noScope = !companyId && !consolidated;
+  const { data, loading, reload } = useQuery(client, async (c)=>{
+    if(noScope) return { data:null, error:null };
+    const S = q => scoped ? q.eq("company_id", companyId) : q;
+    const tasks = {
+      // Bounded: fetch ONLY the latest period (order desc, limit 1) with its
+      // payments embedded — never the full payments history (which already
+      // exceeds PostgREST's 1000-row cap and would silently drop the newest
+      // period as the table grows). contractors = payments.length, net = Σ net_php.
+      period: S(c.from("pay_periods").select("period_start,period_end,pay_date,state,companies(name),payments(net_php)").order("period_start",{ascending:false}).limit(1)),
+      pendingTime: S(c.from("time_entries").select("id",{count:"exact",head:true}).eq("approval","pending")),
+      drafts: S(c.from("payments").select("net_php,status,pay_periods!inner(state)").in("status",["draft","queued"]).eq("pay_periods.state","locked")),
+      failed: S(c.from("payments").select("id",{count:"exact",head:true}).eq("status","failed")),
+      links: S(c.from("worker_companies").select("worker_id,company_id,status,workers(id,first_name,middle_name,last_name,status,payout_method)")),
+      rates: S(c.from("rates").select("worker_id,company_id,effective_start,effective_end")),
+      pendDocs: S(c.from("documents").select("id",{count:"exact",head:true}).eq("review_status","pending")),
+      onb: scoped
+        ? c.from("onboarding_progress").select("worker_id, worker_companies!inner(company_id)",{count:"exact",head:true}).is("completed_at",null).eq("worker_companies.company_id",companyId)
+        : c.from("onboarding_progress").select("worker_id",{count:"exact",head:true}).is("completed_at",null),
+    };
+    const keys=Object.keys(tasks);
+    const res=await Promise.allSettled(keys.map(k=>Promise.resolve(tasks[k])));
+    const R={};
+    keys.forEach((k,i)=>{ R[k]= res[i].status==="fulfilled" ? res[i].value : {error:String((res[i].reason&&res[i].reason.message)||res[i].reason)}; });
+    return { data:R, error:null };
+  }, [client, companyId, consolidated]);
+
+  if(noScope) return <div className="card"><div className="empty">Pick a company in the switcher (top right) to see your overview.</div></div>;
+  if(loading && !data) return <div className="ov-grid">{Array.from({length:6}).map((_,i)=><div key={i} className="ov-tile" aria-hidden="true" style={{cursor:"default"}}><Skeleton rows={3}/></div>)}</div>;
+
+  const R = data || {};
+  const err = k => R[k] && R[k].error;
+  const got = k => R[k] || {};
+  const today = new Date().toISOString().slice(0,10);
+
+  // current period: the single latest pay_periods row + its embedded payments
+  let period=null;
+  if(!err("period")){
+    const pp=((got("period").data)||[])[0];
+    if(pp){
+      const pays=pp.payments||[];
+      period={start:pp.period_start,end:pp.period_end,state:pp.state,company:pp.companies&&pp.companies.name,
+              contractors:pays.length, net:pays.reduce((s,x)=>s+Number(x.net_php||0),0)};
+    }
+  }
+  // contractors needing setup: active worker with no payout method OR no current rate
+  let blocked=null;
+  if(!err("links") && !err("rates")){
+    const rateOk={};
+    ((got("rates").data)||[]).forEach(r=>{ if(String(r.effective_start||"")<=today && (!r.effective_end||String(r.effective_end)>today)) rateOk[r.worker_id+"|"+r.company_id]=true; });
+    const seen=new Set(); blocked=0;
+    ((got("links").data)||[]).forEach(l=>{ const w=l.workers; if(!w||w.status!=="active"||l.status!=="active"||seen.has(l.worker_id)) return;
+      if(!w.payout_method || !rateOk[l.worker_id+"|"+l.company_id]){ blocked++; seen.add(l.worker_id); }
+    });
+  }
+  const pendTime = err("pendingTime")? null : (got("pendingTime").count||0);
+  const dRows = err("drafts")? null : ((got("drafts").data)||[]);
+  const draftN = dRows? dRows.length : null;
+  const draftNet = dRows? dRows.reduce((s,p)=>s+Number(p.net_php||0),0) : 0;
+  const failed = err("failed")? null : (got("failed").count||0);
+  const pendDocs = err("pendDocs")? null : (got("pendDocs").count||0);
+  const onbOpen = err("onb")? null : (got("onb").count||0);
+
+  const stTone=s=>s==="paid"?"good":s==="locked"?"warn":"info";
+  const stLabel=s=>s==="paid"?"Paid":s==="locked"?"Locked — awaiting payout":s==="open"?"Open (draft)":(s||"—");
+  // plain JSX-returning helper (not a nested component) so it never remounts
+  const tile=({tone,icon,label,num,sub,drill,error})=>(
+    <button key={label} className={"ov-tile t-"+(error?"bad":tone)} disabled={!drill} onClick={()=>drill&&goTab(drill)}
+            aria-label={label+(error?": couldn't load":"")}>
+      <div className="ov-tile-label"><span aria-hidden="true">{icon}</span>{label}</div>
+      <div className="ov-tile-num" style={error?{fontSize:15,color:"var(--bad)"}:null}>{error?"—":num}</div>
+      <div className="ov-tile-sub">{error? <span style={{color:"var(--bad)"}}>Couldn't load — press Refresh</span> : sub}</div>
+    </button>
+  );
+
+  return (
+    <div>
+      <div className="card" style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+        <div>
+          <h2 style={{margin:0}}>Overview</h2>
+          <div className="sub" style={{margin:0}}>{consolidated?"All companies":((period&&period.company)||"This company")} · what needs your attention</div>
+        </div>
+        <button className="btn ghost sm" onClick={reload} disabled={loading}>{loading?"Refreshing…":"↻ Refresh"}</button>
+      </div>
+      <div className="ov-grid">
+        {tile({tone:period?stTone(period.state):"info", icon:"📅", label:"Current pay period", error:err("period"),
+          num: period? <span style={{fontSize:17}}>{period.start} → {period.end}</span> : "—",
+          sub: period? `${stLabel(period.state)} · ${period.contractors} contractor(s) · net ${money(period.net,"PHP")}` : "No pay periods yet — run a payroll",
+          drill:"process"})}
+        {tile({tone:draftN?"warn":"good", icon:"💸", label:"Locked, not yet sent", error:err("drafts"),
+          num: draftN==null?"—":draftN,
+          sub: draftN? `${money(draftNet,"PHP")} ready to send` : "All locked pay is sent",
+          drill:"process"})}
+        {tile({tone:pendTime?"warn":"good", icon:"⏱", label:"Time pending approval", error:err("pendingTime"),
+          num: pendTime==null?"—":pendTime,
+          sub: pendTime? "time entr(ies) awaiting approval" : "All time approved",
+          drill:"time"})}
+        {tile({tone:blocked?"warn":"good", icon:"👤", label:"Contractors needing setup", error:err("links")||err("rates"),
+          num: blocked==null?"—":blocked,
+          sub: blocked? "missing payout method or current rate" : "All active contractors are payroll-ready",
+          drill:"contractors"})}
+        {tile({tone:(pendDocs||onbOpen)?"info":"good", icon:"📄", label:"Docs & onboarding", error:err("pendDocs")||err("onb"),
+          num: (pendDocs==null&&onbOpen==null)?"—":((pendDocs||0)+(onbOpen||0)),
+          sub: (pendDocs||onbOpen)? `${pendDocs||0} doc(s) to review · ${onbOpen||0} onboarding open` : "Nothing waiting on you",
+          drill:"documents"})}
+        {tile({tone:failed?"bad":"good", icon:"🚩", label:"Payout issues", error:err("failed"),
+          num: failed==null?"—":failed,
+          sub: failed? "failed payout(s) need attention" : "No failed payouts",
+          drill:"batches"})}
+      </div>
+      <div className="card" style={{marginTop:12}}>
+        <b>Data-quality</b>
+        <div className="sub" style={{margin:"4px 0 10px"}}>Period date-ranges with approved time but no calculated pay appear at the bottom of Calculate; per-contractor time-vs-pay is in Reports.</div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <button className="btn ghost sm" onClick={()=>goTab("payroll")}>Open Calculate</button>
+          <button className="btn ghost sm" onClick={()=>goTab("reports")}>Open Reports</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const sb = useSupabase();
   // Restore the last tab on refresh (validated against known ids) so reloading
   // keeps you on the screen you were on instead of resetting to Contractors.
   const [tab, setTab] = useState(()=>{
     try{ const t=localStorage.getItem("eis_tab");
-      return ["contractors","onboarding","documents","time","payroll","process","batches","reports","imports","audit"].includes(t)?t:"contractors";
-    }catch{ return "contractors"; }
+      return ["overview","contractors","onboarding","documents","time","payroll","process","batches","reports","imports","audit"].includes(t)?t:"overview";
+    }catch{ return "overview"; }
   });
   useEffect(()=>{ try{ localStorage.setItem("eis_tab",tab); }catch{ /* ignore */ } },[tab]);
   const [companyId, setCompanyId] = useState(localStorage.getItem("sel_company")||"");
@@ -9516,6 +9664,7 @@ function App() {
 
   // Tabs grouped by workflow stage so the bar reads as the real process order.
   const tabGroups = [
+    ["Home",    [["overview","Overview"]]],
     ["Setup",   [["contractors","Contractors"],["onboarding","Onboarding"],["documents","Documents"]]],
     ["Run payroll", [["time","Time & Approval"],["payroll","Calculate"],["process","Process and Pay"]]],
     ["Review",  [["batches","Review & Recon Batches"],["reports","Reports"],["imports","Imports"],["audit","Audit Log"]]],
@@ -9524,7 +9673,7 @@ function App() {
   // Flattened tab list for the mobile bottom nav (same ids/handler as the top
   // tabs). Short labels + an emoji glyph keep each item compact one-handed.
   const bottomNav = [
-    ["contractors","People","👥"],["documents","Docs","📄"],
+    ["overview","Home","🏠"],["contractors","People","👥"],["documents","Docs","📄"],
     ["time","Time","⏱"],["payroll","Calc","🧮"],["process","Pay","💸"],
     ["batches","Batches","📦"],["reports","Reports","📊"],
     ["imports","Imports","🗂"],["audit","Audit","📝"],
@@ -9558,6 +9707,9 @@ function App() {
         <DstNudge/>
         {!companyId && !consolidated &&
           <div className="banner">Pick a company in the switcher (top right) to begin.</div>}
+        {/* Overview (Phase 5): conditional render so its queries fire only when
+            viewed; wrapped in its own ErrorBoundary for per-tab isolation. */}
+        {tab==="overview" && <ErrorBoundary><Overview {...{client:sb.client,companyId,consolidated,goTab:go}} /></ErrorBoundary>}
         {/* All tabs stay mounted; only the active one is shown. This preserves
             each tab's in-memory state (selected period, loaded rows, filters)
             across tab switches. */}
