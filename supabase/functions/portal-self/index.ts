@@ -116,7 +116,7 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
     const action = body.action;
-    if (action !== "update_profile" && action !== "complete_tab") return json({ error: "unknown action" }, 400);
+    if (action !== "update_profile" && action !== "complete_tab" && action !== "finish_onboarding") return json({ error: "unknown action" }, 400);
 
     // shared: turn input fields into {patch, extra} limited to an allowed set
     const buildPatch = (inFields: any, allowed: Set<string>) => {
@@ -152,6 +152,55 @@ Deno.serve(async (req) => {
       const upd = await fetch(`${SB}/rest/v1/workers?id=eq.${worker_id}`, { method: "PATCH", headers: { ...svc, Prefer: "return=minimal" }, body: JSON.stringify(patch) });
       if (!upd.ok) return json({ error: `update failed: ${await upd.text()}` }, 500);
       return json({ ok: true, updated: Object.keys(patch) });
+    }
+
+    // ---- finish_onboarding (contractor self-complete) ----
+    // Lets the contractor finish onboarding once Stage 1 + Stage 2 are done and
+    // every REQUIRED document is approved (optional docs never block — they're
+    // reminded at login instead). Covers the case where the config has NO
+    // required docs, so HR review never fires the completion. Mirrors
+    // portal-review.reEvalStage3 exactly; completed_at is monotonic.
+    if (action === "finish_onboarding") {
+      const opRes = await fetch(`${SB}/rest/v1/onboarding_progress?worker_id=eq.${worker_id}&select=stage1_complete,stage2_complete,completed_at`, { headers: svc });
+      const op = (await opRes.json())?.[0];
+      if (!op) return json({ error: "no onboarding in progress for this login" }, 409);
+      if (op.completed_at) return json({ ok: true, already_complete: true });
+      if (!op.stage1_complete || !op.stage2_complete) return json({ error: "finish your agreements and profile first", code: "stage_out_of_order" }, 409);
+
+      // required documents from config (default set if unconfigured)
+      const psRes = await fetch(`${SB}/rest/v1/portal_settings?id=eq.1&select=onboarding_config`, { headers: svc });
+      const ps = await psRes.json();
+      const cfgDocs = (Array.isArray(ps) && Array.isArray(ps[0]?.onboarding_config?.documents) && ps[0].onboarding_config.documents.length)
+        ? ps[0].onboarding_config.documents
+        : [{ kind: "resume" }, { kind: "diploma" }, { kind: "nbi_clearance" }, { kind: "gov_id", sides: ["front", "back"] }];
+      const reqDocs = cfgDocs.filter((d: any) => d.required !== false);
+
+      // approved evidence (honor per-side completion for sided kinds)
+      const apRes = await fetch(`${SB}/rest/v1/documents?worker_id=eq.${worker_id}&review_status=eq.approved&select=id,kind,side,storage_path`, { headers: svc });
+      const apRows = (await apRes.json()) || [];
+      const evidence: Record<string, Set<string>> = {};
+      const sidesSeen: Record<string, Set<string>> = {};
+      for (const r of apRows) {
+        (evidence[r.kind] ||= new Set()).add(r.storage_path || r.id);
+        if (r.side) (sidesSeen[r.kind] ||= new Set()).add(r.side);
+      }
+      const stage3_complete = reqDocs.every((d: any) => {
+        if (Array.isArray(d.sides) && d.sides.length) {
+          const have = sidesSeen[d.kind] || new Set<string>();
+          return d.sides.every((s: string) => have.has(s));
+        }
+        return (evidence[d.kind]?.size || 0) >= 1;
+      });
+      if (!stage3_complete) {
+        return json({ error: "your required documents are still being reviewed — you'll be able to finish once they're approved", code: "docs_pending" }, 409);
+      }
+      const now = new Date().toISOString();
+      const upd = await fetch(`${SB}/rest/v1/onboarding_progress?worker_id=eq.${worker_id}`, {
+        method: "PATCH", headers: { ...svc, Prefer: "return=minimal" },
+        body: JSON.stringify({ stage3_complete: true, completed_at: now, current_stage: "complete", updated_at: now }),
+      });
+      if (!upd.ok) return json({ error: `could not finish onboarding: ${await upd.text()}` }, 500);
+      return json({ ok: true, completed: true });
     }
 
     // ---- complete_tab (onboarding Stage 2) ----

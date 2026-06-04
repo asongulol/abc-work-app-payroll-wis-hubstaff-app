@@ -507,6 +507,49 @@ function curPeriod(){
   const ny=m===12?y+1:y, nm=m===12?1:m+1;
   return {start:iso(16),end:iso(lastDay),pay:`${ny}-${String(nm).padStart(2,"0")}-15`};
 }
+// Post-onboarding login reminder: nags a contractor (who's already in the
+// portal) to upload any outstanding onboarding documents. Only shows for
+// contractors actually engaged in the doc process (>=1 onboarding doc uploaded)
+// so grandfathered contractors are never bothered. "Outstanding" = missing or
+// sent-back (needs_replacement); a pending upload stops the nag.
+function OnboardingDocReminder({ client, session }){
+  const [wid,setWid]=useState(null); const [docs,setDocs]=useState(null); const [cfg,setCfg]=useState(null); const [open,setOpen]=useState(false);
+  function load(){
+    client.from("workers").select("id").maybeSingle().then(({data})=>setWid(data&&data.id||null));
+    client.from("documents").select("id,kind,side,title,storage_path,review_status,review_reason,created_at")
+      .order("created_at",{ascending:false}).then(({data})=>setDocs(data||[]));
+    client.from("portal_settings").select("onboarding_config").eq("id",1).maybeSingle()
+      .then(({data})=>setCfg((data&&data.onboarding_config)||{}));
+  }
+  useEffect(load,[]);
+  if(docs===null||cfg===null) return null;
+  const ONB_KINDS=["resume","diploma","nbi_clearance","gov_id"];
+  const DEFAULT_DOCS=[{kind:"resume",title:"Resume / CV",required:true},{kind:"diploma",title:"Diploma or Transcript of Records",required:true},{kind:"nbi_clearance",title:"NBI Clearance",required:true,freshness_months:6},{kind:"gov_id",title:"Government-issued ID or Passport",required:true,sides:["front","back"]}];
+  const cfgDocs=(Array.isArray(cfg.documents)&&cfg.documents.length)?cfg.documents:DEFAULT_DOCS;
+  const byKey={}; (docs||[]).forEach(d=>{ const k=d.kind+"|"+(d.side||""); (byKey[k]=byKey[k]||[]).push(d); });
+  const latest=(kind,side)=>{ const a=byKey[kind+"|"+(side||"")]; return a&&a[0]; };
+  const engaged=(docs||[]).some(d=>ONB_KINDS.includes(d.kind));
+  const slots=[];
+  cfgDocs.forEach(d=>{
+    const optional=d.required===false;
+    if(Array.isArray(d.sides)) d.sides.forEach(side=>slots.push({kind:d.kind,side,label:d.title+" ("+side+")",optional}));
+    else slots.push({kind:d.kind,side:null,label:d.title,optional});
+  });
+  const outstanding=slots.filter(s=>{ const l=latest(s.kind,s.side); return !l || l.review_status==="needs_replacement"; });
+  if(!engaged || !outstanding.length) return null;
+  const anyBounced=outstanding.some(s=>{ const l=latest(s.kind,s.side); return l&&l.review_status==="needs_replacement"; });
+  return (
+    <div className="card" style={{borderLeft:"4px solid var(--gold)"}}>
+      <div style={{fontWeight:700,marginBottom:2}}>📄 {outstanding.length} document{outstanding.length>1?"s":""} still needed</div>
+      <p className="sub" style={{marginTop:0}}>Please upload these so HR can finish your file.{anyBounced?" Some were sent back for a replacement — see the reason below.":""}</p>
+      {!open
+        ? <button className="btn" style={{width:"100%"}} onClick={()=>setOpen(true)}>Upload documents</button>
+        : <div>{outstanding.map(s=>(
+            <UploadSlot key={s.kind+(s.side||"")} client={client} session={session} wid={wid} slot={s} doc={latest(s.kind,s.side)} onChange={load}/>
+          ))}</div>}
+    </div>
+  );
+}
 function Home({ client, session }){
   const [w,setW]=useState(null); const [billable,setBillable]=useState(null);
   const [latest,setLatest]=useState(undefined); const [anns,setAnns]=useState(null); const [moodMsg,setMoodMsg]=useState("");
@@ -535,6 +578,7 @@ function Home({ client, session }){
         <h2 style={{margin:"2px 0"}}>{greetTL}{w?.first_name?`, ${w.first_name}`:""} 👋</h2>
         <div className="sub">{greetEN} — here's your day.</div>
       </div>
+      <OnboardingDocReminder client={client} session={session}/>
       <div className="card" style={{borderTop:"3px solid var(--accent)"}}>
         <div style={{fontWeight:700,marginBottom:6}}>This pay period</div>
         <div className="row"><span className="k">Period</span><span>{per.start} → {per.end}</span></div>
@@ -916,7 +960,7 @@ function UploadSlot({ client, session, wid, slot, doc, onChange }){
   return (
     <div style={{borderTop:"1px solid var(--line)",padding:"10px 0"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div style={{fontWeight:600}}>{slot.label}</div>
+        <div style={{fontWeight:600}}>{slot.label}{slot.optional && <span className="sub" style={{fontWeight:400}}> · optional</span>}</div>
         {badge && <span className={"pill "+badge.cls}>{badge.txt}</span>}
       </div>
       {status==="needs_replacement" && doc&&doc.review_reason &&
@@ -938,7 +982,7 @@ function UploadSlot({ client, session, wid, slot, doc, onChange }){
   );
 }
 function Stage3Docs({ client, session, cfg, onAdvance }){
-  const [wid,setWid]=useState(null); const [docs,setDocs]=useState(null); const [err,setErr]=useState("");
+  const [wid,setWid]=useState(null); const [docs,setDocs]=useState(null); const [err,setErr]=useState(""); const [busy,setBusy]=useState(false);
   function load(){
     client.from("workers").select("id").maybeSingle().then(({data})=>setWid(data&&data.id||null));
     client.from("documents").select("id,kind,side,title,storage_path,issued_on,review_status,review_reason,created_at")
@@ -947,19 +991,31 @@ function Stage3Docs({ client, session, cfg, onAdvance }){
   }
   useEffect(load,[]);
   const DEFAULT_DOCS=[{kind:"resume",title:"Resume / CV",required:true},{kind:"diploma",title:"Diploma or Transcript of Records",required:true},{kind:"nbi_clearance",title:"NBI Clearance",required:true,freshness_months:6},{kind:"gov_id",title:"Government-issued ID or Passport",required:true,sides:["front","back"]}];
-  const reqDocs=(cfg&&Array.isArray(cfg.documents)&&cfg.documents.length)?cfg.documents:DEFAULT_DOCS;
+  const allCfgDocs=(cfg&&Array.isArray(cfg.documents)&&cfg.documents.length)?cfg.documents:DEFAULT_DOCS;
   const byKey={}; (docs||[]).forEach(d=>{ const key=d.kind+"|"+(d.side||""); (byKey[key]=byKey[key]||[]).push(d); });
   const latest=(kind,side)=>{ const a=byKey[kind+"|"+(side||"")]; return a&&a[0]; };
+  // Show EVERY configured document (required + optional). Only REQUIRED ones
+  // gate completion; optional ones are uploadable but never block — outstanding
+  // ones are reminded at login instead.
   const slots=[];
-  reqDocs.filter(d=>d.required!==false).forEach(d=>{
-    if(Array.isArray(d.sides)) d.sides.forEach(side=>slots.push({kind:d.kind,side,label:d.title+" ("+side+")"}));
-    else slots.push({kind:d.kind,side:null,label:d.title});
+  allCfgDocs.forEach(d=>{
+    const optional = d.required===false;
+    if(Array.isArray(d.sides)) d.sides.forEach(side=>slots.push({kind:d.kind,side,label:d.title+" ("+side+")",optional}));
+    else slots.push({kind:d.kind,side:null,label:d.title,optional});
   });
-  const allApproved = slots.length>0 && slots.every(s=>{ const l=latest(s.kind,s.side); return l&&l.review_status==="approved"; });
-  // Every required slot has a doc that hasn't been bounced back (pending or approved).
-  const allSubmitted = slots.length>0 && slots.every(s=>{ const l=latest(s.kind,s.side); return l&&l.review_status!=="needs_replacement"; });
-  // Submitted in full, none rejected, but not yet fully approved -> awaiting HR.
-  const awaitingReview = allSubmitted && !allApproved;
+  const reqSlots=slots.filter(s=>!s.optional);
+  const isApproved=s=>{ const l=latest(s.kind,s.side); return l&&l.review_status==="approved"; };
+  const isSubmitted=s=>{ const l=latest(s.kind,s.side); return l&&l.review_status!=="needs_replacement"; };   // pending or approved
+  const allRequiredApproved = reqSlots.every(isApproved);                       // vacuously true if no required docs
+  const awaitingReview = reqSlots.length>0 && reqSlots.every(isSubmitted) && !allRequiredApproved;
+  const optionalOutstanding = slots.filter(s=>s.optional && !isSubmitted(s)).length;
+  async function finish(){
+    setBusy(true); setErr("");
+    const { data, error } = await client.functions.invoke("portal-self",{body:{action:"finish_onboarding"}});
+    setBusy(false);
+    if(error||(data&&data.error)){ setErr((data&&data.error)||await fnErr(error,data)); return; }
+    onAdvance && onAdvance();
+  }
   if(docs===null) return <div className="card"><div className="empty">Loading…</div></div>;
   return (
     <div className="card">
@@ -975,8 +1031,10 @@ function Stage3Docs({ client, session, cfg, onAdvance }){
       {slots.map(s=>(
         <UploadSlot key={s.kind+(s.side||"")} client={client} session={session} wid={wid} slot={s} doc={latest(s.kind,s.side)} onChange={load}/>
       ))}
-      <button className="btn" style={{width:"100%",marginTop:10}} disabled={!allApproved} onClick={()=>onAdvance&&onAdvance()}>
-        {allApproved? t("ob.stage3.finish") : t("ob.stage3.waiting")}
+      {allRequiredApproved && optionalOutstanding>0 &&
+        <p className="sub" style={{marginTop:8}}>You can finish now and upload the {optionalOutstanding} optional document{optionalOutstanding>1?"s":""} later — we'll remind you at login.</p>}
+      <button className="btn" style={{width:"100%",marginTop:10}} disabled={busy||!allRequiredApproved} onClick={finish}>
+        {busy?t("ob.sign.signing"):(allRequiredApproved? t("ob.stage3.finish") : t("ob.stage3.waiting"))}
       </button>
     </div>
   );
