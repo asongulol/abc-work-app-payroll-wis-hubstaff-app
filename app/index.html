@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 00:09 PHT · a77deaa";
+const BUILD = "2026-06-05 00:14 PHT · 2722b4e";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -4945,7 +4945,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     setStaleRows(mapped.filter(r=>r.rate_stale).map(r=>({
       worker_id:r.worker_id, name:r.name, was:r.rate, now:r.live_rate,
     })));
-    setMsg(pp.state==="open"?"Loaded saved draft for this period.":`Loaded ${pp.state} period (read-only snapshot).`);
+    setMsg(pp.state==="open"?"Please edit the batch, then press Lock to proceed to Process & Pay.":`Loaded ${pp.state} period (read-only snapshot).`);
   }
 
   // Sum the misc_items adjustments on a row. other_earns and other_hours add
@@ -5226,10 +5226,13 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       logEvent(client,{company_id:companyId,action:"delete_import",
         entity:`${b.start} → ${b.end}`,
         detail:{scope:"approved_batch",contractors:b.contractors,hours:b.hours}});
-      setMsg(`Deleted approved batch ${b.start} → ${b.end}.`);
+      setMsg(`Deleted ${b.start} → ${b.end}. Opening Time & Approval to load or enter hours…`);
       // if the currently-loaded period is the one we deleted, clear the table
       if(start===b.start && end===b.end){ setRows([]); setPeriod(null); }
       loadBatches();
+      // The batch is gone — send the user to Time & Approval to import the
+      // correct times or enter manual hours, then recalculate.
+      if(typeof goTab==="function") goTab("time");
     }catch(ex){ setMsg("Couldn't delete batch: "+(ex.message||ex)); }
     finally{ setBusy(false); }
   }
