@@ -6,7 +6,8 @@
     "lint": "eslint . && node tools/check-html-syntax.mjs",
     "lint:js": "eslint .",
     "lint:fix": "eslint . --fix",
-    "lint:html": "node tools/check-html-syntax.mjs"
+    "lint:html": "node tools/check-html-syntax.mjs",
+    "stamp": "node tools/stamp-build.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.13.0",

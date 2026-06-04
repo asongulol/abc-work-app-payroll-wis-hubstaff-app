@@ -75,6 +75,8 @@
 <div id="root"></div>
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
+// Build stamp — replaced on each deploy by tools/stamp-build.mjs.
+const BUILD = "2026-06-04 21:58 PHT · 7c215ac";
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -662,6 +664,7 @@ function Portal({ client, session }){
       {tab==="time" && <TimeView client={client}/>}
       {tab==="docs" && <DocsView client={client} session={session}/>}
       {tab==="me"   && <ProfileView client={client} session={session} onSignOut={signOut}/>}
+      <div style={{textAlign:"center",color:"var(--muted)",fontSize:11,padding:"10px 0 84px"}}>Build {BUILD}</div>
       <div className="tabs">
         <button className={tab==="home"?"on":""} onClick={()=>setTab("home")}><span className="ic">🏠</span>Home</button>
         <button className={tab==="pay"?"on":""}  onClick={()=>setTab("pay")}><span className="ic">₱</span>Pay slips</button>

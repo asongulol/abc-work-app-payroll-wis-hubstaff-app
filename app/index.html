@@ -413,6 +413,8 @@
 <div id="root"></div>
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
+// Build stamp — replaced on each deploy by tools/stamp-build.mjs.
+const BUILD = "2026-06-04 21:58 PHT · 7c215ac";
 
 // Display label for a payout method: BPI uppercase, others Capitalized.
 function methodLabel(m){
@@ -9086,6 +9088,7 @@ function App() {
         <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="onboarding"?"block":"none"}}><OnboardingAdmin {...{client:sb.client}} /></div>
+        <div className="no-print" style={{textAlign:"center",color:"var(--muted)",fontSize:11,padding:"18px 0 32px",letterSpacing:".02em"}}>Build {BUILD}</div>
       </div>
       {/* Mobile-only bottom tab bar (<=768px); hidden on desktop via CSS. */}
       <nav className="bottom-nav no-print" aria-label="Primary">
