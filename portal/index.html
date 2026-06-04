@@ -76,7 +76,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-04 22:41 PHT · 74f865b";
+const BUILD = "2026-06-04 22:44 PHT · 143eb62";
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -517,12 +517,14 @@ const QUICK_LINKS=[
   {label:"Providersoft", desc:"Provider system", icon:"🗂️", domain:"web.providersoftllc.com", url:"https://web.providersoftllc.com/AbilityBuilders/security/login.aspx"},
   {label:"Wise",         desc:"Get paid",        icon:"₱",  domain:"wise.com",                url:"https://wise.com/home"},
 ];
-// Real favicon for a link (Google's favicon service), emoji fallback on error.
+// Real favicon for a link. Tries DuckDuckGo's icon service first (rarely blocked),
+// then Google's (often blocked by privacy/ad blockers), then the emoji fallback.
 function Favicon({ domain, fallback }){
-  const [ok,setOk]=useState(true);
-  if(!ok) return <span style={{fontSize:22,lineHeight:1,width:24,textAlign:"center"}}>{fallback}</span>;
-  return <img src={`https://www.google.com/s2/favicons?domain=${domain}&sz=64`} alt="" width={24} height={24}
-    loading="lazy" onError={()=>setOk(false)} style={{display:"block",borderRadius:4}}/>;
+  const srcs=[`https://icons.duckduckgo.com/ip3/${domain}.ico`,`https://www.google.com/s2/favicons?domain=${domain}&sz=64`];
+  const [i,setI]=useState(0);
+  if(i>=srcs.length) return <span style={{fontSize:22,lineHeight:1,width:24,textAlign:"center"}}>{fallback}</span>;
+  return <img src={srcs[i]} alt="" width={24} height={24} loading="lazy"
+    onError={()=>setI(i+1)} style={{display:"block",borderRadius:4,objectFit:"contain"}}/>;
 }
 function QuickLinks(){
   return (
