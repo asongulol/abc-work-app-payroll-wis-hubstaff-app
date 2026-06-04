@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="robots" content="noindex, nofollow" />
 <title>HR &amp; Payroll — PH Contractors</title>
+<link rel="icon" type="image/png" href="favicon.png" />
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2214%22%20fill%3D%22%231F3A68%22%2F%3E%3Cpath%20d%3D%22M13%2047%20L21%2026%20L29%2047%20Z%22%20fill%3D%22%23D4A24C%22%2F%3E%3Cpath%20d%3D%22M23%2047%20L32%2020%20L41%2047%20Z%22%20fill%3D%22%23F2C879%22%2F%3E%3Cpath%20d%3D%22M35%2047%20L43%2026%20L51%2047%20Z%22%20fill%3D%22%23D4A24C%22%2F%3E%3Cpath%20d%3D%22M11%2045%20Q32%2034%2053%2045%22%20stroke%3D%22%23D4A24C%22%20stroke-width%3D%223%22%20fill%3D%22none%22%20stroke-linecap%3D%22round%22%2F%3E%3C%2Fsvg%3E" />
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -414,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-04 23:09 PHT · 1b49e1a";
+const BUILD = "2026-06-04 23:13 PHT · b956451";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -8667,7 +8668,8 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
       `</div>`;
     const html=`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(ONB_AGR_LABEL[k]||k)} — ${escapeHtml(workerName)}</title>`+
       `<style>body{font-family:Georgia,serif;color:#111;max-width:720px;margin:40px auto;padding:0 24px;line-height:1.55}pre{white-space:pre-wrap;font-family:inherit;font-size:14px;margin:0}@media print{body{margin:0}}</style></head>`+
-      `<body><pre>${escapeHtml(merged)}</pre>${sigBlock}<script>window.onload=function(){window.print();}<\/script></body></html>`;
+      `<body><div style="text-align:center;margin-bottom:22px"><img src="${location.origin}/logo.png" alt="" style="max-width:300px;width:55%;display:inline-block" onerror="this.style.display='none'"/></div>`+
+      `<pre>${escapeHtml(merged)}</pre>${sigBlock}<script>window.onload=function(){window.print();}<\/script></body></html>`;
     const win=window.open("","_blank"); if(!win){ setMsg("Pop-up blocked — allow pop-ups to print."); return; }
     win.document.write(html); win.document.close();
   }
