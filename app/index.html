@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 00:55 PHT · 6c893fa";
+const BUILD = "2026-06-05 01:01 PHT · aa273e9";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -3983,14 +3983,18 @@ function TimeApproval({client,companyId,consolidated,goTab,openPeriodForEdit}){
     if(addMode==="total"){
       const h=parseFloat(addTotal);
       if(isNaN(h)||h<=0){setMsg("Enter total hours for "+name+".");return;}
-      rows=dates.map((dt,i)=>({company_id:companyId,worker_id:wid,source_name:source,
-        work_date:dt,tracked_seconds:i===0?Math.round(h*3600):0,approval:"pending",
-        import_batch_id:batch}));
+      // Total goes on the period's first day ONLY. Never blanket-write the whole
+      // period — the old "zero the other days" wiped real data (e.g. Hubstaff
+      // imports) on days the user didn't touch.
+      rows=[{company_id:companyId,worker_id:wid,source_name:source,work_date:dates[0],
+        tracked_seconds:Math.round(h*3600),approval:"pending",import_batch_id:batch}];
     }else{
-      rows=dates.map(dt=>({company_id:companyId,worker_id:wid,source_name:source,
-        work_date:dt,tracked_seconds:Math.round((parseFloat(addDaily[dt])||0)*3600),approval:"pending",
-        import_batch_id:batch}));
-      if(!rows.some(r=>r.tracked_seconds>0)){setMsg("Enter hours for at least one day.");return;}
+      // DAILY: write ONLY the days the user actually entered hours for; leave
+      // every other day (and its existing data) untouched.
+      rows=dates.filter(dt=>(parseFloat(addDaily[dt])||0)>0).map(dt=>({company_id:companyId,worker_id:wid,
+        source_name:source,work_date:dt,tracked_seconds:Math.round((parseFloat(addDaily[dt])||0)*3600),
+        approval:"pending",import_batch_id:batch}));
+      if(!rows.length){setMsg("Enter hours for at least one day.");return;}
     }
     setBusy(true);
     try{
@@ -4019,7 +4023,8 @@ function TimeApproval({client,companyId,consolidated,goTab,openPeriodForEdit}){
       const perDay=dates.map(dt=>({dt, h:parseFloat(addBottomDaily[dt])||0}));
       if(!perDay.some(d=>d.h>0)){setMsg("Enter hours for at least one day.");return;}
       const batch=crypto.randomUUID();
-      rows=perDay.map(({dt,h})=>({company_id:companyId,worker_id:opt.worker_id,source_name:opt.source,
+      // Only the days actually entered — never touch (or zero) untouched days.
+      rows=perDay.filter(d=>d.h>0).map(({dt,h})=>({company_id:companyId,worker_id:opt.worker_id,source_name:opt.source,
         work_date:dt,tracked_seconds:Math.round(h*3600),approval:"pending",
         import_batch_id:batch}));
       totalForLog=+perDay.reduce((s,d)=>s+d.h,0).toFixed(2);
@@ -4027,9 +4032,9 @@ function TimeApproval({client,companyId,consolidated,goTab,openPeriodForEdit}){
       const h=parseFloat(addHrs);
       if(isNaN(h)||h<=0){setMsg("Enter hours.");return;}
       const batch=crypto.randomUUID();
-      rows=dates.map((dt,i)=>({company_id:companyId,worker_id:opt.worker_id,source_name:opt.source,
-        work_date:dt,tracked_seconds:i===0?Math.round(h*3600):0,approval:"pending",
-        import_batch_id:batch}));
+      // Total on the period's first day ONLY — never blanket-write the period.
+      rows=[{company_id:companyId,worker_id:opt.worker_id,source_name:opt.source,
+        work_date:dates[0],tracked_seconds:Math.round(h*3600),approval:"pending",import_batch_id:batch}];
       totalForLog=h;
     }
     setBusy(true);setMsg("");
