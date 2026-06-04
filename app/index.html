@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 04:16 PHT · cce99d7";
+const BUILD = "2026-06-05 04:45 PHT · d5d41c4";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -6115,6 +6115,8 @@ function Reports({client,companyId,consolidated}){
 
       <PerContractorSummary client={client} companyId={companyId} consolidated={consolidated}/>
 
+      <ContractorHistory client={client} companyId={companyId} consolidated={consolidated}/>
+
       <UtilizationReport client={client} companyId={companyId} consolidated={consolidated}/>
 
       <WiseReconciliation client={client} companyId={companyId} consolidated={consolidated}/>
@@ -6230,6 +6232,98 @@ function PerContractorSummary({client,companyId,consolidated}){
       <p className="muted" style={{fontSize:11,marginTop:6}}>
         CSV export includes the full breakdown (Health, 13th, Lunch, Bonus, Deductions). The on-screen
         table is condensed; Gross + Misc + the other components reconcile to Net.</p>
+    </div>
+  );
+}
+
+// Per-contractor drill-down: pick one contractor, see every pay period stacked
+// — worked hours + PTO (from time_entries, bucketed by period) merged with the
+// pay components (Health/Lunch/13th/Gross/Net) from the saved pay statement.
+// Read-only. Complements PerContractorSummary (which aggregates across periods).
+function ContractorHistory({client,companyId,consolidated}){
+  const {data:wkrs}=useQuery(client,c=>c.from("workers")
+    .select("id,first_name,middle_name,last_name"),[client]);
+  const workers=(wkrs||[]).map(w=>({id:w.id,name:fullName(w)||"(unknown)"}))
+    .sort((a,b)=>a.name.localeCompare(b.name));
+  const [wid,setWid]=useState("");
+  const [rows,setRows]=useState(null);
+  useEffect(()=>{
+    if(!wid){ setRows(null); return; }
+    let cancel=false;
+    (async()=>{
+      const {data:pays}=await client.from("payments")
+        .select("worked_hours,gross_php,health_allowance_php,pdd_lunch_php,thirteenth_month_php,bonus_php,net_php,payout_method,status,pay_periods(period_start,period_end,pay_date)")
+        .eq("worker_id",wid);
+      const {data:te}=await client.from("time_entries")
+        .select("work_date,tracked_seconds,pto_seconds").eq("worker_id",wid).limit(5000);
+      if(cancel) return;
+      const tmap={};
+      (te||[]).forEach(r=>{ const p=periodFor(r.work_date);
+        const g=tmap[p.start]||(tmap[p.start]={end:p.end,tracked:0,pto:0});
+        g.tracked+=Number(r.tracked_seconds||0); g.pto+=Number(r.pto_seconds||0); });
+      const pmap={};
+      (pays||[]).forEach(p=>{ const s=p.pay_periods?.period_start; if(!s) return;
+        pmap[s]={end:p.pay_periods?.period_end,ha:Number(p.health_allowance_php||0),
+          lunch:Number(p.pdd_lunch_php||0),t13:Number(p.thirteenth_month_php||0),
+          gross:Number(p.gross_php||0),net:Number(p.net_php||0),method:p.payout_method,
+          status:p.status,workedPay:p.worked_hours}; });
+      const keys=[...new Set([...Object.keys(tmap),...Object.keys(pmap)])].sort((a,b)=>b.localeCompare(a));
+      setRows(keys.map(k=>{ const t=tmap[k]||{}; const p=pmap[k]; return {
+        start:k, end:(p&&p.end)||t.end,
+        worked: t.tracked!=null?t.tracked/3600:(p&&p.workedPay!=null?Number(p.workedPay):null),
+        pto:(t.pto||0)/3600, hasPay:!!p,
+        ha:p&&p.ha, lunch:p&&p.lunch, t13:p&&p.t13, gross:p&&p.gross, net:p&&p.net, method:p&&p.method, status:p&&p.status }; }));
+    })();
+    return ()=>{cancel=true;};
+  },[client,wid]);
+  const sel=workers.find(w=>w.id===wid);
+  const paid=st=>st==="sent"||st==="reconciled";
+  function exportCsv(){
+    if(!rows||!rows.length) return;
+    const header=["Period start","Period end","Worked h","PTO h","Health PHP","Lunch PHP","13th PHP","Gross PHP","Net PHP","Method","Status"];
+    const body=rows.map(r=>[r.start,r.end||"",r.worked!=null?r.worked.toFixed(2):"",r.pto.toFixed(2),
+      r.hasPay?r.ha:"",r.hasPay?r.lunch:"",r.hasPay?r.t13:"",r.hasPay?r.gross:"",r.hasPay?r.net:"",r.method||"",r.status||""]);
+    downloadCSV(`${(sel?.name||"contractor").replace(/[^a-z0-9]+/gi,"_")}_history.csv`,[header,...body]);
+  }
+  return (
+    <div className="card">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
+        <div><h2>Contractor pay &amp; hours history</h2>
+          <p className="sub">Pick a contractor to see every pay period's worked hours, PTO, and pay
+            components stacked. Hours/PTO come from time entries; amounts from saved pay statements.</p></div>
+        {rows&&rows.length>0 && <button className="btn ghost sm" onClick={exportCsv}>Export CSV ({rows.length})</button>}
+      </div>
+      <select value={wid} onChange={e=>setWid(e.target.value)} style={{maxWidth:340,margin:"6px 0"}}>
+        <option value="">Select contractor…</option>
+        {workers.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}
+      </select>
+      {!wid ? null :
+       rows===null ? <div className="empty">Loading…</div> :
+       !rows.length ? <div className="empty">No hours or pay records for this contractor.</div> :
+       <div className="table-scroll"><table>
+         <thead><tr>
+           <th>Pay period</th><th>Worked h</th><th>PTO h</th><th>Health ₱</th><th>Lunch ₱</th>
+           <th>13th ₱</th><th>Gross ₱</th><th>Net ₱</th><th>Method</th><th>Status</th>
+         </tr></thead>
+         <tbody>
+           {rows.map((r,i)=>(
+             <tr key={i}>
+               <td className="card-title">{r.start} → {r.end||"?"}</td>
+               <td data-label="Worked h">{r.worked!=null?r.worked.toFixed(2):"—"}</td>
+               <td data-label="PTO h">{r.pto>0?r.pto.toFixed(2):"—"}</td>
+               <td data-label="Health ₱">{r.hasPay?money(r.ha,"PHP"):"—"}</td>
+               <td data-label="Lunch ₱">{r.hasPay?money(r.lunch,"PHP"):"—"}</td>
+               <td data-label="13th ₱">{r.hasPay&&r.t13?money(r.t13,"PHP"):"—"}</td>
+               <td data-label="Gross ₱">{r.hasPay?money(r.gross,"PHP"):"—"}</td>
+               <td data-label="Net ₱"><b>{r.hasPay?money(r.net,"PHP"):"—"}</b></td>
+               <td data-label="Method">{r.hasPay?(methodLabel(r.method)||"—"):"—"}</td>
+               <td data-label="Status">{r.hasPay
+                 ? <span className="pill" style={paid(r.status)?{background:"#dcfce7",color:"#065f46"}:{background:"#f3f4f6",color:"var(--muted)"}}>{paid(r.status)?"paid":(r.status||"draft")}</span>
+                 : <span className="muted" style={{fontSize:11}}>time only</span>}</td>
+             </tr>
+           ))}
+         </tbody>
+       </table></div>}
     </div>
   );
 }
