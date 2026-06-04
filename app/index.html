@@ -53,6 +53,10 @@
     --shadow:0 4px 14px -5px rgba(15,28,51,.14);
     --shadow-lg:0 16px 40px -12px rgba(15,28,51,.28);
     --ring:0 0 0 3px rgba(31,58,104,.22);
+    /* Motion tokens (restrained, enterprise feel): --dur = standard transition
+       duration; --ease = standard easing. Use these for all hover/focus/state
+       transitions so motion stays cohesive. All motion is disabled under
+       prefers-reduced-motion (see @media at the end of this stylesheet). */
     --dur:.16s; --ease:cubic-bezier(.2,.6,.2,1);
   }
   *{box-sizing:border-box}
@@ -471,7 +475,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 07:09 PHT · a7c89c9";
+const BUILD = "2026-06-05 07:10 PHT · caddfea";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -9584,7 +9588,33 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+// Phase 6: top-level error boundary. Any uncaught render error now shows a
+// recovery screen (reload / switch to classic) instead of a blank white page,
+// and ties into the kill-switch. Implements the guideline's "error state":
+// names what happened, reassures, and offers a way out — never a dead end.
+class ErrorBoundary extends React.Component{
+  constructor(p){ super(p); this.state={err:null}; }
+  static getDerivedStateFromError(err){ return {err}; }
+  componentDidCatch(err,info){ try{ console.error("App error:",err,info); }catch(_){} }
+  render(){
+    if(!this.state.err) return this.props.children;
+    return (
+      <div style={{maxWidth:560,margin:"60px auto",padding:24,fontFamily:"Inter,system-ui,sans-serif"}}>
+        <h2 style={{marginTop:0}}>Something went wrong</h2>
+        <p className="sub">The page hit an unexpected error. Your data is safe — nothing was changed.
+          Try reloading; if it keeps happening, switch to the classic view.</p>
+        <div style={{display:"flex",gap:10,flexWrap:"wrap",marginTop:12}}>
+          <button className="btn" onClick={()=>location.reload()}>Reload</button>
+          <a className="btn ghost" href="/?ui=classic">Switch to classic view</a>
+        </div>
+        <pre style={{marginTop:16,padding:12,background:"var(--surface-2)",border:"1px solid var(--border)",
+          borderRadius:8,fontSize:12,overflow:"auto",color:"var(--muted)"}}>{String((this.state.err&&this.state.err.message)||this.state.err)}</pre>
+      </div>
+    );
+  }
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<ErrorBoundary><App /></ErrorBoundary>);
 </script>
 </body>
 </html>
