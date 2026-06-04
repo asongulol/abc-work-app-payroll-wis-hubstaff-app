@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 04:56 PHT · 01bf293";
+const BUILD = "2026-06-05 05:09 PHT · f870215";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -6017,6 +6017,7 @@ function Reports({client,companyId,consolidated}){
   const periods=Object.values(byPeriod).sort((a,b)=>(b.start||"").localeCompare(a.start||""));
   const grandNet=periods.reduce((s,p)=>s+p.net,0);
   const grandUnpaid=periods.reduce((s,p)=>s+p.unpaid,0);
+  const grandUsd=periods.reduce((s,p)=>s+(p.usdRef||0),0);   // sum of per-period net/fx
   const nCols=(consolidated?7:6)+1;   // for the detail row colSpan
 
   const paid=st=>st==="sent"||st==="reconciled";
@@ -6031,6 +6032,8 @@ function Reports({client,companyId,consolidated}){
         <div className="row dash-stats">
           <div className="field dash-stat"><label>Total net (all periods)</label>
             <div className="val dash-stat-num" style={{fontSize:20,fontWeight:700}}>{money(grandNet,"PHP")}</div></div>
+          <div className="field dash-stat"><label>Total ≈ USD ref</label>
+            <div className="val dash-stat-num" style={{fontSize:20,fontWeight:700}}>{money(grandUsd,"USD")}</div></div>
           <div className="field dash-stat"><label>Unpaid / not yet sent</label>
             <div className="val dash-stat-num" style={{fontSize:20,fontWeight:700,color:grandUnpaid>0?"var(--warn)":"var(--good)"}}>{money(grandUnpaid,"PHP")}</div></div>
           <div className="field dash-stat"><label>Pay periods recorded</label>
