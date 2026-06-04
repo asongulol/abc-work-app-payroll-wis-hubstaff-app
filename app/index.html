@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-04 23:31 PHT · 2cfaf8b";
+const BUILD = "2026-06-04 23:37 PHT · ec8ff00";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -5105,29 +5105,41 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       if(te.length<PAGE) break;
     }
     const {data:pp}=await client.from("pay_periods")
-      .select("id,period_start,period_end,state").eq("company_id",companyId);
-    const stateBy={}; (pp||[]).forEach(p=>{ stateBy[`${p.period_start}|${p.period_end}`]=p.state; });
-    // Show EVERY period that has approved time (mirrors the Time Approval list).
-    // Paid/locked are labeled and have limited actions; nothing silently hides.
-    const list=Object.values(g).map(b=>({
-      start:b.start, end:b.end, payDate:b.payDate,
-      contractors:b.workers.size, hours:+(b.sec/3600).toFixed(2),
-      state: stateBy[`${b.start}|${b.end}`]||"uncalculated",
-    })).sort((a,b)=>b.start.localeCompare(a.start));
-    setBatches(list);
-    // Detect PHANTOM empty draft periods: open pay_periods with no payment
-    // rows AND no approved time (left behind after a batch/import delete).
-    // Surfaced with a one-click cleanup so they don't clutter or mislead.
+      .select("id,period_start,period_end,pay_date,state").eq("company_id",companyId);
+    const ppByKey={}; (pp||[]).forEach(p=>{ ppByKey[`${p.period_start}|${p.period_end}`]=p; });
+    // Count draft statements per OPEN period — drives draft labeling, orphan-draft
+    // surfacing, and empty-phantom detection.
     const openPP=(pp||[]).filter(p=>p.state==="open");
+    const payCount={};
     if(openPP.length){
-      const ids=openPP.map(p=>p.id);
-      const {data:pays}=await client.from("payments").select("pay_period_id").in("pay_period_id",ids);
-      const withPay=new Set((pays||[]).map(p=>p.pay_period_id));
-      const hasTime=new Set(Object.keys(g));   // "start|end" keys with approved time
-      const empties=openPP.filter(p=>!withPay.has(p.id) && !hasTime.has(`${p.period_start}|${p.period_end}`))
-        .map(p=>({id:p.id,start:p.period_start,end:p.period_end}));
-      setEmptyDrafts(empties);
-    } else setEmptyDrafts([]);
+      const {data:pays}=await client.from("payments").select("pay_period_id,worker_id")
+        .in("pay_period_id",openPP.map(p=>p.id));
+      (pays||[]).forEach(r=>{ payCount[r.pay_period_id]=(payCount[r.pay_period_id]||0)+1; });
+    }
+    // List = every period with approved time UNION every open period that already
+    // has draft statements. The union is the key fix: a calculated draft can no
+    // longer silently hide just because its time isn't approved/imported yet
+    // (e.g. a premature/stale calc of an in-progress period). Locked/paid are
+    // labeled; "open + has statements" => draft; otherwise uncalculated.
+    const keys=new Set(Object.keys(g));
+    openPP.forEach(p=>{ if(payCount[p.id]>0) keys.add(`${p.period_start}|${p.period_end}`); });
+    const list=[...keys].map(key=>{
+      const [s,e]=key.split("|"); const b=g[key]; const ppRow=ppByKey[key];
+      const hasPay=!!(ppRow && payCount[ppRow.id]>0);
+      const state=(ppRow&&(ppRow.state==="locked"||ppRow.state==="paid")) ? ppRow.state
+                 : hasPay ? "draft" : "uncalculated";
+      return {
+        start:s, end:e, payDate:(b&&b.payDate)||(ppRow&&ppRow.pay_date)||periodFor(s).payDate,
+        contractors: b ? b.workers.size : (ppRow?payCount[ppRow.id]:0),
+        hours: b ? +(b.sec/3600).toFixed(2) : 0,
+        state, noTime: !b,   // draft with no approved time backing it
+      };
+    }).sort((a,b)=>b.start.localeCompare(a.start));
+    setBatches(list);
+    // Phantom EMPTY drafts: open periods with NO statements AND no approved time.
+    const empties=openPP.filter(p=>!(payCount[p.id]>0) && !g[`${p.period_start}|${p.period_end}`])
+      .map(p=>({id:p.id,start:p.period_start,end:p.period_end}));
+    setEmptyDrafts(empties);
   }
   const [emptyDrafts,setEmptyDrafts]=useState([]);
   // Delete phantom empty draft periods (open, no payments, no approved time).
@@ -5169,10 +5181,16 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   async function deleteBatch(b){
     if(b.state==="locked"||b.state==="paid"){
       setMsg(`Period ${b.start} → ${b.end} is ${b.state} — unlock it first.`); return; }
-    if(!window.confirm(`Delete the approved-time batch for ${b.start} → ${b.end}?\n\n`+
-      `${b.contractors} contractor(s) · ${b.hours}h.\nRemoves the approved time entries`+
-      (b.state==="draft"?" and the draft pay statements":"")+` for this period. `+
-      `Not reversible here (re-import/re-add the time to restore).`)) return;
+    // Orphan draft = calculated statements with no approved time behind them.
+    // Phrase the prompt for what's actually being removed.
+    const confirmMsg = b.noTime
+      ? `Discard the draft for ${b.start} → ${b.end}?\n\n${b.contractors} draft statement(s), no approved time behind it. `+
+        `This clears the draft only (no time entries exist for this period).`
+      : `Delete the approved-time batch for ${b.start} → ${b.end}?\n\n`+
+        `${b.contractors} contractor(s) · ${b.hours}h.\nRemoves the approved time entries`+
+        (b.state==="draft"?" and the draft pay statements":"")+` for this period. `+
+        `Not reversible here (re-import/re-add the time to restore).`;
+    if(!window.confirm(confirmMsg)) return;
     setBusy(true); setMsg("");
     try{
       const {data:ppRow}=await client.from("pay_periods").select("id,state")
@@ -5184,6 +5202,11 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
         .eq("company_id",companyId).gte("work_date",b.start).lte("work_date",b.end)
         .eq("approval","approved");
       if(error) throw new Error(error.message);
+      // Fully remove the now-empty open period so it can't linger as a phantom
+      // draft that auto-loads on the next visit.
+      if(ppRow && ppRow.state==="open"){
+        await client.from("pay_periods").delete().eq("id",ppRow.id);
+      }
       logEvent(client,{company_id:companyId,action:"delete_import",
         entity:`${b.start} → ${b.end}`,
         detail:{scope:"approved_batch",contractors:b.contractors,hours:b.hours}});
@@ -5311,7 +5334,8 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
                 const finished = b.state==="locked" || b.state==="paid";
                 return (
                   <tr key={i} style={isCur?{background:"#eff6ff"}:{}}>
-                    <td className="card-title"><b>{b.start} → {b.end}</b></td>
+                    <td className="card-title"><b>{b.start} → {b.end}</b>
+                      {b.noTime && b.state==="draft" && <div className="sub" style={{fontWeight:400}}>draft only — no approved time</div>}</td>
                     <td data-label="Contractors">{b.contractors}</td>
                     <td data-label="Total hours">{b.hours.toLocaleString(undefined,{minimumFractionDigits:2})}</td>
                     <td data-label="Status">{badge}</td>
