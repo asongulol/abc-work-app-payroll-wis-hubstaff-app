@@ -1118,7 +1118,7 @@ function PortalSettingsModal({ client, onClose }){
     {k:"emergency_name",label:"Emergency contact name"},{k:"emergency_relationship",label:"Emergency relationship"},{k:"emergency_mobile",label:"Emergency mobile"},
     {k:"permanent_address",label:"Permanent address"},{k:"address_landmark",label:"Landmark"},{k:"postal_code",label:"Postal code"},
     {k:"marital_status",label:"Marital status"},{k:"education_level",label:"Highest Degree Attained"},{k:"course",label:"Degree and Major"},{k:"year_graduated",label:"Year graduated"},{k:"school",label:"School"},
-    {k:"favorite_color",label:"Favorite color"},{k:"favorite_food",label:"Favorite food"},{k:"tshirt_size",label:"T-shirt size"},{k:"shoe_size",label:"Shoe size"},{k:"hobbies",label:"Hobbies"},{k:"motto",label:"Personal motto"},
+    {k:"nickname",label:"Nickname"},{k:"favorite_color",label:"Favorite color"},{k:"favorite_food",label:"Favorite food"},{k:"tshirt_size",label:"T-shirt size"},{k:"shoe_size",label:"Shoe size"},{k:"hobbies",label:"Hobbies"},{k:"motto",label:"Personal motto"},
   ];
   const [sel,setSel]=useState(null); const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
   useEffect(()=>{ client.from("portal_settings").select("editable_fields").eq("id",1).maybeSingle()
@@ -8773,7 +8773,7 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px 16px",fontSize:13}}>
           {FIELDS.map(([lbl,k])=>(<div key={k}><span className="muted">{lbl}:</span> {w[k]||"—"}</div>))}
         </div>
-        {(ex.favorite_color||ex.favorite_food||ex.tshirt_size||ex.shoe_size||ex.hobbies||ex.motto)&&<p className="muted" style={{fontSize:12,marginTop:4}}>{[ex.favorite_color&&"Color: "+ex.favorite_color,ex.favorite_food&&"Food: "+ex.favorite_food,ex.tshirt_size&&"T-shirt: "+ex.tshirt_size,ex.shoe_size&&"Shoe: "+ex.shoe_size,ex.hobbies&&"Hobbies: "+ex.hobbies,ex.motto&&"Motto: "+ex.motto].filter(Boolean).join(" · ")}</p>}
+        {(ex.nickname||ex.favorite_color||ex.favorite_food||ex.tshirt_size||ex.shoe_size||ex.hobbies||ex.motto)&&<p className="muted" style={{fontSize:12,marginTop:4}}>{[ex.nickname&&"Nickname: "+ex.nickname,ex.favorite_color&&"Color: "+ex.favorite_color,ex.favorite_food&&"Food: "+ex.favorite_food,ex.tshirt_size&&"T-shirt: "+ex.tshirt_size,ex.shoe_size&&"Shoe: "+ex.shoe_size,ex.hobbies&&"Hobbies: "+ex.hobbies,ex.motto&&"Motto: "+ex.motto].filter(Boolean).join(" · ")}</p>}
 
         <h3 style={{marginBottom:4,marginTop:14}}>3 · Documents</h3>
         {(docs||[]).length===0? <p className="sub">No documents uploaded yet.</p> :

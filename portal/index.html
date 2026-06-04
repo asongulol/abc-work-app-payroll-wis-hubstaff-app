@@ -411,7 +411,7 @@ const FIELD_DEFS = [
   {k:"marital_status",label:"Marital status",s:"personal"}, {k:"education_level",label:"Highest Degree Attained",s:"personal",opts:["Elementary","High School","Some College","College","Masters","Doctorate"]}, {k:"course",label:"Degree and Major",s:"personal"}, {k:"year_graduated",label:"Year graduated",s:"personal"}, {k:"school",label:"School",s:"personal"},
   {k:"gcash",label:"GCash",s:"payout"}, {k:"paymaya",label:"PayMaya",s:"payout"}, {k:"paypal",label:"PayPal",s:"payout"}, {k:"wise_tag",label:"Wise Tag",wise:true,s:"payout"},
   // "Culture" / fun facts — stored in the profile_extras jsonb (ex:true), not flat columns
-  {k:"favorite_color",label:"Favorite color",s:"about",ex:true}, {k:"favorite_food",label:"Favorite food",s:"about",ex:true}, {k:"tshirt_size",label:"T-shirt size",s:"about",ex:true}, {k:"shoe_size",label:"Shoe size",s:"about",ex:true}, {k:"hobbies",label:"Hobbies",s:"about",ex:true}, {k:"motto",label:"Personal motto",s:"about",ex:true},
+  {k:"nickname",label:"Nickname",s:"about",ex:true}, {k:"favorite_color",label:"Favorite color",s:"about",ex:true}, {k:"favorite_food",label:"Favorite food",s:"about",ex:true}, {k:"tshirt_size",label:"T-shirt size",s:"about",ex:true}, {k:"shoe_size",label:"Shoe size",s:"about",ex:true}, {k:"hobbies",label:"Hobbies",s:"about",ex:true}, {k:"motto",label:"Personal motto",s:"about",ex:true},
 ];
 function ProfileView({ client, session, onSignOut }){
   const [w,setW]=useState(null); const [editable,setEditable]=useState([]); const [form,setForm]=useState({});

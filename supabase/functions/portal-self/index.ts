@@ -34,13 +34,13 @@ const SAFE_FIELDS = new Set([
   "permanent_address", "address_landmark", "postal_code",
   "marital_status", "education_level", "course", "year_graduated", "school",
   // "Culture" / fun facts — routed into the profile_extras jsonb (see EXTRA_KEYS)
-  "favorite_color", "favorite_food", "tshirt_size", "shoe_size", "hobbies", "motto",
+  "nickname", "favorite_color", "favorite_food", "tshirt_size", "shoe_size", "hobbies", "motto",
 ]);
 
 // These live as keys inside the workers.profile_extras jsonb, not as flat
 // columns. We merge them into the existing object so a partial edit never
 // clobbers the other culture fields. Keep in sync with the admin reader.
-const EXTRA_KEYS = new Set(["favorite_color", "favorite_food", "tshirt_size", "shoe_size", "hobbies", "motto"]);
+const EXTRA_KEYS = new Set(["nickname", "favorite_color", "favorite_food", "tshirt_size", "shoe_size", "hobbies", "motto"]);
 
 // ---- Stage-2 onboarding: tab -> fields, and server-side validation ----
 const STAGE2_SELECT = "first_name,middle_name,last_name,mobile,ph_address,permanent_address,address_landmark,postal_code,date_of_birth,emergency_name,emergency_relationship,emergency_mobile,marital_status,education_level,course,year_graduated,school,gcash,paymaya,paypal,wise_tag,profile_extras";
