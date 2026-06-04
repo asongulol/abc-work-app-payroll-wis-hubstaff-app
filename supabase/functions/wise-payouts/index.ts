@@ -20,6 +20,7 @@
 //        -> { batch_group_id, results: [...] }   (group created + transfers added;
 //            NOT completed, NOT funded — you complete & fund in Wise)
 //   { action: "status", transfer_ids: [..] }       -> { statuses: [ {id, status} ] }
+//   { action: "rates",  transfer_ids: [..] }        -> { rates: [ {id, rate, status, sourceValue, targetValue, ...} ] }  (read-only GET; no money moves)
 //   { action: "poll", pay_period_id?: uuid, only_drafts?: boolean }
 //        -> { checked, marked_paid, in_flight, unknown, results: [...] }
 //        Server-side reconcile: pulls every payment with a wise_transfer_id
@@ -204,6 +205,34 @@ Deno.serve(async (req) => {
         statuses.push(r.ok ? { id, status: (await r.json()).status } : { id, status: "unknown" });
       }
       return json({ statuses });
+    }
+
+    // READ-ONLY rate lookup. Given transfer_ids, returns each transfer's
+    // authoritative LOCKED quote rate (the `rate` Wise locked at draft time)
+    // plus source/target amounts and status. No quote, no draft, no funding —
+    // a plain GET /v1/transfers/{id}. Use this to verify/disambiguate the
+    // fx_rate stored on payments.
+    if (body.action === "rates") {
+      const ids = body.transfer_ids ?? [];
+      const rates = [];
+      for (const id of ids) {
+        const r = await fetch(`${BASE}/v1/transfers/${id}`, { headers: authHeaders(token) });
+        if (!r.ok) { rates.push({ id, error: `wise ${r.status}` }); continue; }
+        const t = await r.json();
+        rates.push({
+          id,
+          rate: t.rate ?? null,
+          status: t.status ?? null,
+          sourceCurrency: t.sourceCurrency ?? null,
+          targetCurrency: t.targetCurrency ?? null,
+          sourceValue: t.sourceValue ?? null,
+          targetValue: t.targetValue ?? null,
+          targetAccount: t.targetAccount ?? null,
+          reference: t.details?.reference ?? null,
+          created: t.created ?? null,
+        });
+      }
+      return json({ rates });
     }
 
     // SERVER-SIDE RECONCILE. Pulls every payment with a wise_transfer_id
