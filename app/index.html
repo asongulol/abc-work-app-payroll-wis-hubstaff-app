@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 01:01 PHT · aa273e9";
+const BUILD = "2026-06-05 04:16 PHT · cce99d7";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -4588,6 +4588,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // Set true by "Calculate this batch" so the date-change loadSaved effect
   // defers to calculate() instead of loading the old draft (avoids a race).
   const pendingCalc=React.useRef(false);
+  const scrollToBatch=React.useRef(false);   // set by View/Open so we scroll to the loaded batch card once it renders
   // Bumped by calcBatch so the calculate() trigger fires even when the period
   // dates are UNCHANGED (re-calculating the already-loaded batch). A [start,end]
   // dep alone silently no-ops then, leaving "Calculating…" stuck forever.
@@ -5209,9 +5210,19 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // Just load a period (no recalc) — used to review/inspect a locked or paid
   // batch in place (where you can Unlock it). loadSaved fires off the date change.
   function openBatch(b){
-    setAutoDates(false); pendingCalc.current=false; applyStart(b.start);
+    setAutoDates(false); pendingCalc.current=false; scrollToBatch.current=true;
+    applyStart(b.start); setLoadNonce(n=>n+1);   // force reload even if dates are unchanged
     setMsg(`Loaded ${b.start} → ${b.end}.`);
   }
+  // Once the requested batch's rows have loaded, scroll the card into view (the
+  // list above can be long, so the loaded card would otherwise be off-screen).
+  useEffect(()=>{
+    if(scrollToBatch.current && rows && rows.length){
+      scrollToBatch.current=false;
+      const el=document.getElementById("pay-batch-card");
+      if(el) el.scrollIntoView({behavior:"smooth",block:"start"});
+    }
+  },[rows]);
 
   // Delete a whole approved-time batch (the period's approved entries, plus any
   // open draft statements). Blocked for locked/paid periods — unlock first.
@@ -5395,7 +5406,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
                     <td className="card-action" style={{textAlign:"right",whiteSpace:"nowrap"}}>
                       {finished
                         ? <button className="btn ghost sm" disabled={busy} onClick={()=>openBatch(b)}
-                            title={b.state==="paid"?"Review this paid period (pay it in Process & Pay)":"Open to review / unlock below"}>Open</button>
+                            title={b.state==="paid"?"View this paid period's pay statements (read-only; pay/reconcile in Process & Pay)":"View this locked period below (review / unlock)"}>View</button>
                         : <>
                             <button className="btn sm" disabled={busy} onClick={()=>calcBatch(b)}>
                               Calculate</button>{" "}
@@ -5446,7 +5457,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
         onChange={()=>setHolTick(t=>t+1)} />}
 
       {rows && rows.length>0 && (
-        <div className="card">
+        <div className="card" id="pay-batch-card">
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12}}>
             <div><h2>Pay batch · {start} → {end}</h2>
               <p className="sub">Pay date <b>{payDate}</b> · {rows.length} contractor(s) ·
