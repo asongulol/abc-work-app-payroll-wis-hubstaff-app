@@ -8477,20 +8477,15 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
     setEdit(e=>{ const n={...e}; delete n[k]; return n; }); load(); onChange&&onChange();
   }
   async function countersign(k){
-    const r=insts[k]||{};
     const nm=window.prompt("Type your full legal name to countersign on behalf of ABC Kids NY:", (me&&me.email)||"");
     if(nm===null) return; if(!nm.trim()){ setMsg("A name is required to countersign."); return; }
     setBusy(k); setMsg("");
-    const row={ worker_id, agreement_kind:k,
-      f_position:r.f_position||null, f_rate:r.f_rate||null, f_start_date:r.f_start_date||null,
-      countersigner_user_id:r.countersigner_user_id||(me&&me.id),
-      countersigner_name:r.countersigner_name||nm.trim(),
-      countersigned_by:me&&me.id, countersigned_name:nm.trim(), countersign_method:"typed",
-      countersign_data:nm.trim(), countersigned_at:new Date().toISOString(), updated_at:new Date().toISOString() };
-    // upsert (the contractor may have signed before the admin prepared a row)
-    const { error } = await client.from("onboarding_agreements").upsert(row,{onConflict:"worker_id,agreement_kind"});
+    // server-captured countersignature (verifies admin + assignment + contractor
+    // signed first; records IP/time/UA service-side). Parity with portal-sign.
+    const { data, error } = await client.functions.invoke("portal-countersign",
+      { body:{ action:"countersign", worker_id, agreement_kind:k, signed_name:nm.trim() } });
     setBusy("");
-    if(error){ setMsg("Countersign failed: "+error.message); return; }
+    if(error||(data&&data.error)){ setMsg((data&&data.error)||await fnErrorMessage(error)); return; }
     logEvent(client,{action:"agreement_countersigned",entity:`${workerName} · ${ONB_AGR_LABEL[k]||k}`,detail:{worker_id,agreement_kind:k,name:nm.trim()}});
     load(); onChange&&onChange();
   }
@@ -8503,7 +8498,7 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
       `<div><div style="border-bottom:1px solid #000;min-width:240px;padding-bottom:2px;font-family:cursive;font-size:18px">${sig?escapeHtml(sig.signed_legal_name):""}</div>`+
       `<div style="font-size:12px;color:#444">Contractor — ${escapeHtml(workerName)}<br>${sig?("Signed "+new Date(sig.signed_at).toLocaleString()+(sig.ip_address?(" · IP "+escapeHtml(sig.ip_address)):"")):"<i>Not yet signed</i>"}</div></div>`+
       `<div><div style="border-bottom:1px solid #000;min-width:240px;padding-bottom:2px;font-family:cursive;font-size:18px">${r.countersigned_name?escapeHtml(r.countersigned_name):""}</div>`+
-      `<div style="font-size:12px;color:#444">For ABC Kids NY${r.countersigner_name?(" — "+escapeHtml(r.countersigner_name)):""}<br>${r.countersigned_at?("Countersigned "+new Date(r.countersigned_at).toLocaleString()):"<i>Not yet countersigned</i>"}</div></div>`+
+      `<div style="font-size:12px;color:#444">For ABC Kids NY${r.countersigner_name?(" — "+escapeHtml(r.countersigner_name)):""}<br>${r.countersigned_at?("Countersigned "+new Date(r.countersigned_at).toLocaleString()+(r.countersign_ip?(" · IP "+escapeHtml(r.countersign_ip)):"")):"<i>Not yet countersigned</i>"}</div></div>`+
       `</div>`;
     const html=`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(ONB_AGR_LABEL[k]||k)} — ${escapeHtml(workerName)}</title>`+
       `<style>body{font-family:Georgia,serif;color:#111;max-width:720px;margin:40px auto;padding:0 24px;line-height:1.55}pre{white-space:pre-wrap;font-family:inherit;font-size:14px;margin:0}@media print{body{margin:0}}</style></head>`+
