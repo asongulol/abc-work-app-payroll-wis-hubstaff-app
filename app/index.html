@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-04 23:58 PHT · 5ed359c";
+const BUILD = "2026-06-05 00:04 PHT · 4d02e72";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -4534,7 +4534,7 @@ function HolidayEditor({year, onChange}){
   );
 }
 
-function Payroll({client,companyId,consolidated,confirmBillingDirty,openContractor,goTab}){
+function Payroll({client,companyId,consolidated,confirmBillingDirty,openContractor,goTab,pendingPeriod,consumePendingPeriod}){
   const gate = (label)=> typeof confirmBillingDirty==="function" ? confirmBillingDirty(label) : true;
   const today=new Date();
   const def=periodFor(iso(today));
@@ -4606,6 +4606,17 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // snapshot so a calculated payroll survives tab-switches and refreshes.
   useEffect(()=>{ if(client&&companyId&&start&&end){ if(pendingCalc.current) return; loadSaved(); } /* eslint-disable-next-line */
   },[client,companyId,start,end]);
+
+  // Cross-tab: another tab asked to open a specific period here for editing
+  // (e.g. Unlock from Process & Pay). Point the dates at it; the settle effect
+  // above then loadSaved()s the now-open draft so it's ready to edit/re-lock.
+  useEffect(()=>{
+    if(!pendingPeriod||!pendingPeriod.start) return;
+    if(consumePendingPeriod) consumePendingPeriod();
+    setAutoDates(false);
+    applyStart(pendingPeriod.start);
+    /* eslint-disable-next-line */
+  },[pendingPeriod]);
 
   // "Calculate this batch" sets the period dates then flips pendingCalc; once
   // the new dates have settled, run calculate() (which rebuilds + saves the
@@ -6867,7 +6878,7 @@ function downloadCSV(filename, rowsOfArrays){
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
-function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirty,openContractor,reconcileOnly,goTab}){
+function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirty,openContractor,reconcileOnly,goTab,openPeriodForEdit}){
   const gate = (label)=> typeof confirmBillingDirty==="function" ? confirmBillingDirty(label) : true;
   const [periods,setPeriods]=useState([]);
   const [periodId,setPeriodId]=useState("");
@@ -6925,8 +6936,10 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
         detail:{reason,previous_state:p.state,from:"process_and_pay"}});
       setPeriods(prev=>prev.filter(x=>x.id!==p.id));   // no longer locked/paid
       if(periodId===p.id){ setPeriodId(""); setPers(null); setRows(null); }
-      setMsg(`Unlocked ${p.period_start} → ${p.period_end} — opening Calculate…`);
-      if(typeof goTab==="function") goTab("payroll");
+      // Jump straight to Calculate with this batch loaded for editing.
+      if(typeof openPeriodForEdit==="function"){
+        openPeriodForEdit({start:p.period_start, end:p.period_end});
+      } else if(typeof goTab==="function"){ goTab("payroll"); }
     }catch(ex){ setMsg("Unlock failed: "+(ex.message||ex)); }
     finally{ setBusy(false); }
   }
@@ -9145,6 +9158,20 @@ function App() {
   }, []);
   const consumePendingWorker = React.useCallback(()=>setPendingWorkerId(null), []);
 
+  // Cross-tab "open this period in Calculate" plumbing — e.g. unlocking a period
+  // in Process & Pay jumps straight to Calculate with that batch loaded for
+  // editing. Calculate (Payroll) consumes pendingPeriod via useEffect.
+  const [pendingPeriod, setPendingPeriod] = useState(null);   // {start,end} | null
+  const openPeriodForEdit = React.useCallback((p)=>{
+    if(!p||!p.start) return;
+    setPendingPeriod({start:p.start, end:p.end});
+    setTab("payroll");
+    const w=document.querySelector(".wrap");
+    if(w) w.scrollIntoView({block:"start"});
+    window.scrollTo(0,0);
+  }, []);
+  const consumePendingPeriod = React.useCallback(()=>setPendingPeriod(null), []);
+
   const confirmBillingDirty = React.useCallback((actionLabel) => {
     if (!billingDirty.length) return true;
     const lines = billingDirty.slice(0,12).map(e=>`• ${e.name} — ${e.field}`).join("\n");
@@ -9213,8 +9240,8 @@ function App() {
         <div style={{display:tab==="contractors"?"block":"none"}}><Contractors {...{client:sb.client,companyId,consolidated,onBillingChange:recordBillingChange,pendingWorkerId,consumePendingWorker}} /></div>
         <div style={{display:tab==="time"?"block":"none"}}><TimeImport {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="imports"?"block":"none"}}><DeleteImports {...{client:sb.client,companyId,consolidated}} /></div>
-        <div style={{display:tab==="payroll"?"block":"none"}}><Payroll {...{client:sb.client,companyId,consolidated,confirmBillingDirty,openContractor,goTab:go}} /></div>
-        <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="process",confirmBillingDirty,openContractor,goTab:go}} /></div>
+        <div style={{display:tab==="payroll"?"block":"none"}}><Payroll {...{client:sb.client,companyId,consolidated,confirmBillingDirty,openContractor,goTab:go,pendingPeriod,consumePendingPeriod}} /></div>
+        <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="process",confirmBillingDirty,openContractor,goTab:go,openPeriodForEdit}} /></div>
         <div style={{display:tab==="documents"?"block":"none"}}><Documents {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="batches"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="batches",confirmBillingDirty,openContractor,reconcileOnly:true}} /></div>
         <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>
