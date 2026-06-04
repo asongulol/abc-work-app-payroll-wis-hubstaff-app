@@ -455,9 +455,19 @@ Deno.serve(async (req) => {
             wise_dates: dates,
           };
           const sentIso = dates.dateSent || dates.dateFunded || dates.created || null;
-          if (sentIso && (t.status === "outgoing_payment_sent" || t.status === "completed" || t.status === "sent")) {
+          const wiseTerminal = t.status === "outgoing_payment_sent" || t.status === "completed" || t.status === "sent";
+          if (sentIso && wiseTerminal) {
             patch.paid_at = sentIso;
             patch.status = "sent";
+            patch.wise_locked_at = new Date().toISOString();
+          } else if (p.status === "sent") {
+            // The row was ALREADY recorded as sent (CSV import / manual / a prior
+            // poll) and we've re-found its non-cancelled transfer in Wise. Lock it
+            // even though the live API status isn't terminal: some batch-uploaded
+            // transfers keep reporting a non-terminal status long after the money
+            // actually went out (e.g. the 2026-05-29 batch showed "in progress"
+            // though the payroll was paid). We trust the recorded 'sent' here;
+            // first-time matching (below) still requires a terminal status.
             patch.wise_locked_at = new Date().toISOString();
           }
           // Variance auto-override: refresh path always treats the existing
