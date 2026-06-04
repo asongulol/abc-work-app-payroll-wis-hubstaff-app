@@ -43,7 +43,7 @@
     --gold:#D4A24C; --gold-soft:#f7edd8;
     --bg:#f4f6f9; --card:#ffffff; --surface-2:#f8fafc;
     --border:#e4e8ee; --border-strong:#ccd3dd; --text:#15233b;
-    --muted:#5c6677; --subtle:#8b94a4;
+    --muted:#5c6677; --subtle:#677083; /* subtle darkened from #8b94a4 -> WCAG AA 4.5:1 (was 3.06) */
     --good:#0a7d3c; --good-soft:#dcfce7;
     --warn:#b45309; --warn-soft:#fef3c7; --bad:#b91c1c; --bad-soft:#fee2e2;
     /* Aliases consumed by existing classNames -> re-skin to navy in one place. */
@@ -64,6 +64,10 @@
   a:hover{text-decoration:underline}
   /* Visible keyboard focus everywhere (WCAG). */
   :focus-visible{outline:2px solid var(--navy);outline-offset:2px;border-radius:4px}
+  /* Skip-to-content link: hidden until keyboard-focused (WCAG 2.4.1). */
+  .skip-link{position:absolute;left:-9999px;top:0;z-index:100;background:var(--navy);color:#fff;
+             padding:10px 16px;border-radius:0 0 var(--radius-sm) 0;font-weight:600;text-decoration:none}
+  .skip-link:focus{left:0}
   .topbar{display:flex;align-items:center;gap:16px;padding:13px 20px;background:var(--navy);
           border-top:3px solid var(--gold);border-bottom:1px solid var(--navy-700);color:#fff;
           position:sticky;top:0;z-index:10;box-shadow:var(--shadow);
@@ -442,7 +446,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 05:19 PHT · 0e2254f";
+const BUILD = "2026-06-05 06:59 PHT · 4dd0b60";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -9444,7 +9448,8 @@ function App() {
   ];
   return (
     <div>
-      <div className="topbar">
+      <a href="#main" className="skip-link">Skip to content</a>
+      <header className="topbar">
         <div className="brand">
           <img src="mark-light.png" alt="" onError={e=>{e.currentTarget.style.display="none";}}
             style={{height:38,marginRight:12,verticalAlign:"middle"}}/>
@@ -9454,19 +9459,19 @@ function App() {
           {sb.session?.user?.email && <span className="sub" style={{fontSize:12,whiteSpace:"nowrap"}} title="Signed in">{sb.session.user.email}</span>}
           <button className="btn ghost sm" onClick={sb.signOut}>Sign out</button>
         </div>
-      </div>
-      <div className="tabs">
+      </header>
+      <nav className="tabs" aria-label="Sections">
         {tabGroups.map(([label,items],gi)=>(
           <React.Fragment key={label}>
             {gi>0 && <div className="tab-sep"></div>}
             <span className="tabgroup-label">{label}</span>
             {items.map(([id,lbl])=>(
-              <button key={id} className={"tab"+(tab===id?" active":"")} onClick={()=>go(id)}>{lbl}</button>
+              <button key={id} className={"tab"+(tab===id?" active":"")} aria-current={tab===id?"page":undefined} onClick={()=>go(id)}>{lbl}</button>
             ))}
           </React.Fragment>
         ))}
-      </div>
-      <div className="wrap">
+      </nav>
+      <main className="wrap" id="main">
         <DstNudge/>
         {!companyId && !consolidated &&
           <div className="banner">Pick a company in the switcher (top right) to begin.</div>}
@@ -9484,7 +9489,7 @@ function App() {
         <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="onboarding"?"block":"none"}}><OnboardingAdmin {...{client:sb.client}} /></div>
         <div className="no-print" style={{textAlign:"center",color:"var(--muted)",fontSize:11,padding:"18px 0 32px",letterSpacing:".02em"}}>Build {BUILD}</div>
-      </div>
+      </main>
       {/* Mobile-only bottom tab bar (<=768px); hidden on desktop via CSS. */}
       <nav className="bottom-nav no-print" aria-label="Primary">
         {bottomNav.map(([id,lbl,ico])=>(
