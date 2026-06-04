@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="robots" content="noindex, nofollow" />
 <title>Workspace — Contractor Portal</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2064%2064'%3E%3Crect%20width%3D'64'%20height%3D'64'%20rx%3D'14'%20fill%3D'%232f5496'%2F%3E%3Ctext%20x%3D'32'%20y%3D'47'%20font-family%3D'Arial%2CHelvetica%2Csans-serif'%20font-size%3D'44'%20font-weight%3D'700'%20fill%3D'%23ffffff'%20text-anchor%3D'middle'%3E%E2%82%B1%3C%2Ftext%3E%3C%2Fsvg%3E" />
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2214%22%20fill%3D%22%231F3A68%22%2F%3E%3Cpath%20d%3D%22M13%2047%20L21%2026%20L29%2047%20Z%22%20fill%3D%22%23D4A24C%22%2F%3E%3Cpath%20d%3D%22M23%2047%20L32%2020%20L41%2047%20Z%22%20fill%3D%22%23F2C879%22%2F%3E%3Cpath%20d%3D%22M35%2047%20L43%2026%20L51%2047%20Z%22%20fill%3D%22%23D4A24C%22%2F%3E%3Cpath%20d%3D%22M11%2045%20Q32%2034%2053%2045%22%20stroke%3D%22%23D4A24C%22%20stroke-width%3D%223%22%20fill%3D%22none%22%20stroke-linecap%3D%22round%22%2F%3E%3C%2Fsvg%3E" />
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -76,7 +76,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-04 22:50 PHT · a4cc53b";
+const BUILD = "2026-06-04 23:09 PHT · 1b49e1a";
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -228,7 +228,8 @@ function Login({ client }){
   return (
     <div className="wrap">
       <div style={{textAlign:"center",margin:"32px 0 8px"}}>
-        <div style={{fontSize:40}}>₱</div>
+        <img src="logo.png" alt="Aaron Anderson EHS LLC" onError={e=>{e.currentTarget.style.display="none";}}
+          style={{maxWidth:200,width:"70%",margin:"0 auto 10px",display:"block"}}/>
         <h2 style={{margin:0}}>Contractor Portal</h2>
         <p className="sub">Sign in to view your pay, time, and documents.</p>
       </div>
@@ -774,7 +775,9 @@ function Portal({ client, session }){
   return (
     <div>
       <div className="top">
-        <div><b>{first ? `${first}'s Workspace` : "Workspace"}</b><small>{session?.user?.email}</small></div>
+        <img src="logo.png" alt="" onError={e=>{e.currentTarget.style.display="none";}}
+          style={{height:30,background:"#fff",borderRadius:7,padding:"2px 5px",marginRight:10}}/>
+        <div style={{flex:1,minWidth:0}}><b>{first ? `${first}'s Workspace` : "Workspace"}</b><small>{session?.user?.email}</small></div>
         <button className="btn ghost" style={{padding:"6px 10px",fontSize:13}} onClick={signOut}>Sign out</button>
       </div>
       {tab==="home" && <Home client={client} session={session}/>}
