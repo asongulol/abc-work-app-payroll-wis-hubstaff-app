@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 00:40 PHT · 6fdb92c";
+const BUILD = "2026-06-05 00:48 PHT · 0fbae9b";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -3538,7 +3538,7 @@ function TimeImport({client,companyId,consolidated,goTab,openPeriodForEdit}){
 
       <div id="time-approval-anchor" />
       {revealApproval
-        ? <TimeApproval client={client} companyId={companyId} consolidated={consolidated} key={done?done.count:"a"}/>
+        ? <TimeApproval client={client} companyId={companyId} consolidated={consolidated} goTab={goTab} openPeriodForEdit={openPeriodForEdit} key={done?done.count:"a"}/>
         : <div className="card" style={{textAlign:"center"}}>
             <p className="sub" style={{margin:"0 0 8px"}}>Imported time opens for review automatically after an import.
               To add hours by hand for a contractor, open the manual time entry grid.</p>
@@ -3837,7 +3837,7 @@ function DeleteImports({client,companyId,consolidated,onDeleted}){
 }
 
 // ---- approval workflow ------------------------------------------------------
-function TimeApproval({client,companyId,consolidated}){
+function TimeApproval({client,companyId,consolidated,goTab,openPeriodForEdit}){
   // ACTIVE (pending/rejected) only. Bounded, so it never hits PostgREST's
   // 1000-row default cap — which (oldest-first) was hiding recent pending
   // entries behind old approved history and making the grid undercount.
@@ -4122,7 +4122,12 @@ function TimeApproval({client,companyId,consolidated}){
       // load that period there, refreshing its list so the now-approved batch
       // shows). Rejecting stays put.
       if(status==="approved"){
-        const per = pStart ? periodFor(pStart) : null;   // canonical period boundaries
+        // Anchor on the approved entries' own dates (robust when activeDates /
+        // pStart is empty, e.g. fresh manual entries), then map to the canonical
+        // period so Calculate loads the right batch.
+        const dts=entries.filter(e=>idSet.has(e.id)).map(e=>e.work_date).filter(Boolean).sort();
+        const anchor=dts[0]||pStart;
+        const per=anchor?periodFor(anchor):null;
         if(typeof openPeriodForEdit==="function" && per){ openPeriodForEdit({start:per.start, end:per.end}); }
         else if(typeof goTab==="function"){ goTab("payroll"); }
       }
