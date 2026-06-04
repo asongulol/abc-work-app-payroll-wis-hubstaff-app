@@ -76,7 +76,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-04 22:28 PHT · 337f264";
+const BUILD = "2026-06-04 22:41 PHT · 74f865b";
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -512,11 +512,18 @@ function curPeriod(){
 // Homepage quick links (open in a new tab — Hubstaff blocks iframe embedding).
 // URLs live here so they're easy to update; confirm before go-live.
 const QUICK_LINKS=[
-  {label:"Hubstaff",     desc:"Track your time", icon:"⏱️", url:"https://hubstaff.com/"},
-  {label:"Gmail",        desc:"Work email",      icon:"✉️", url:"https://mail.google.com/mail/u/0/#inbox"},
-  {label:"Providersoft", desc:"Provider system", icon:"🗂️", url:"https://web.providersoftllc.com/AbilityBuilders/security/login.aspx"},
-  {label:"Wise",         desc:"Get paid",        icon:"₱",  url:"https://wise.com/home"},
+  {label:"Hubstaff",     desc:"Track your time", icon:"⏱️", domain:"hubstaff.com",            url:"https://hubstaff.com/"},
+  {label:"Gmail",        desc:"Work email",      icon:"✉️", domain:"gmail.com",               url:"https://mail.google.com/mail/u/0/#inbox"},
+  {label:"Providersoft", desc:"Provider system", icon:"🗂️", domain:"web.providersoftllc.com", url:"https://web.providersoftllc.com/AbilityBuilders/security/login.aspx"},
+  {label:"Wise",         desc:"Get paid",        icon:"₱",  domain:"wise.com",                url:"https://wise.com/home"},
 ];
+// Real favicon for a link (Google's favicon service), emoji fallback on error.
+function Favicon({ domain, fallback }){
+  const [ok,setOk]=useState(true);
+  if(!ok) return <span style={{fontSize:22,lineHeight:1,width:24,textAlign:"center"}}>{fallback}</span>;
+  return <img src={`https://www.google.com/s2/favicons?domain=${domain}&sz=64`} alt="" width={24} height={24}
+    loading="lazy" onError={()=>setOk(false)} style={{display:"block",borderRadius:4}}/>;
+}
 function QuickLinks(){
   return (
     <div>
@@ -525,7 +532,7 @@ function QuickLinks(){
         {QUICK_LINKS.map(l=>(
           <a key={l.label} href={l.url} target="_blank" rel="noreferrer"
              style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",border:"1px solid var(--line)",borderRadius:10,textDecoration:"none",color:"var(--text)"}}>
-            <span style={{fontSize:22,lineHeight:1}}>{l.icon}</span>
+            <Favicon domain={l.domain} fallback={l.icon}/>
             <span style={{minWidth:0}}><span style={{fontWeight:700,display:"block"}}>{l.label}</span>
               <span className="sub" style={{margin:0,fontSize:12}}>{l.desc}</span></span>
           </a>

@@ -414,7 +414,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-04 22:28 PHT · 337f264";
+const BUILD = "2026-06-04 22:41 PHT · 74f865b";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -443,6 +443,31 @@ function ShiftEditor({ client, workerId }){
 }
 
 // Display label for a payout method: BPI uppercase, others Capitalized.
+// Next US daylight-saving transition (spring=2nd Sun Mar, fall=1st Sun Nov),
+// as a 'YYYY-MM-DD' ET date. Drives the shift-adjustment nudge banner.
+function nextUsDstChange(){
+  const nthSunday=(year,month0,n)=>{ let c=0; for(let day=1;day<=31;day++){ const dt=new Date(Date.UTC(year,month0,day)); if(dt.getUTCMonth()!==month0) break; if(dt.getUTCDay()===0){ c++; if(c===n){ return `${year}-${String(month0+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`; } } } return null; };
+  const todayET=new Intl.DateTimeFormat("en-CA",{timeZone:"America/New_York"}).format(new Date());
+  const y=Number(todayET.slice(0,4));
+  const ms=(s)=>Date.UTC(+s.slice(0,4),+s.slice(5,7)-1,+s.slice(8,10));
+  const cands=[];
+  for(const yy of [y,y+1]){ cands.push({iso:nthSunday(yy,2,2),kind:"spring"}); cands.push({iso:nthSunday(yy,10,1),kind:"fall"}); }
+  return cands.filter(c=>c.iso && ms(c.iso)>=ms(todayET)).sort((a,b)=>ms(a.iso)-ms(b.iso))[0];
+}
+// Shows from the working day before (Fri) through the Sunday change, reminding
+// admins to shift US-anchored schedules by an hour (PH<->NY gap flips 12h<->13h).
+function DstNudge(){
+  const c=nextUsDstChange(); if(!c) return null;
+  const ms=(s)=>Date.UTC(+s.slice(0,4),+s.slice(5,7)-1,+s.slice(8,10));
+  const todayET=new Intl.DateTimeFormat("en-CA",{timeZone:"America/New_York"}).format(new Date());
+  const days=Math.round((ms(c.iso)-ms(todayET))/86400000);
+  if(days<0 || days>2) return null;
+  const when=new Date(c.iso+"T12:00:00Z").toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"});
+  const spring=c.kind==="spring";
+  return (
+    <div className="banner info">⏰ US daylight saving {spring?"begins":"ends"} on {when} (clocks {spring?"spring forward":"fall back"}). The Philippines–New York gap becomes {spring?"12 hours":"13 hours"}. For any shifts anchored to US office hours, move their PHT start/end <b>{spring?"1 hour EARLIER":"1 hour LATER"}</b>.</div>
+  );
+}
 function methodLabel(m){
   if(!m) return "";
   return m==="bpi" ? "BPI" : m.charAt(0).toUpperCase()+m.slice(1);
@@ -9100,6 +9125,7 @@ function App() {
         ))}
       </div>
       <div className="wrap">
+        <DstNudge/>
         {!companyId && !consolidated &&
           <div className="banner">Pick a company in the switcher (top right) to begin.</div>}
         {/* All tabs stay mounted; only the active one is shown. This preserves
