@@ -77,7 +77,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-04 23:29 PHT · 7e2514c";
+const BUILD = "2026-06-05 01:50 PHT · 00ee9bd";
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -311,31 +311,57 @@ function PaySlips({ client }){
 
 function TimeView({ client }){
   const [rows,setRows]=useState(null); const [err,setErr]=useState("");
+  const [open,setOpen]=useState({});   // { periodKey: true } — which periods are expanded
   useEffect(()=>{
     client.from("time_entries").select("work_date,tracked_seconds,pto_seconds,approval")
-      .order("work_date",{ascending:false}).limit(1000)
+      .order("work_date",{ascending:false}).limit(2000)
       .then(({data,error})=>{ if(error) setErr(error.message); setRows(data||[]); });
   },[]);
   if(err) return <div className="wrap"><div className="err">{err}</div></div>;
   if(rows===null) return <div className="wrap"><div className="empty">Loading…</div></div>;
   if(!rows.length) return <div className="wrap"><div className="empty">No time recorded yet.</div></div>;
-  // group by semi-monthly-ish: just by month-half via the date
+  // group by semi-monthly period, keeping a per-day breakdown for the drill-down
   const byPeriod={};
   rows.forEach(r=>{ const d=r.work_date; const half=Number(d.slice(8,10))<=15?"01–15":"16–end"; const key=d.slice(0,7)+" "+half;
-    const g=byPeriod[key]||(byPeriod[key]={key,tracked:0,pto:0,days:0}); g.tracked+=r.tracked_seconds||0; g.pto+=r.pto_seconds||0;
-    if((r.tracked_seconds||0)>0||(r.pto_seconds||0)>0) g.days++; });
-  const periods=Object.values(byPeriod);
+    const g=byPeriod[key]||(byPeriod[key]={key,tracked:0,pto:0,byDay:{}});
+    g.tracked+=r.tracked_seconds||0; g.pto+=r.pto_seconds||0;
+    const day=g.byDay[d]||(g.byDay[d]={date:d,tracked:0,pto:0});
+    day.tracked+=r.tracked_seconds||0; day.pto+=r.pto_seconds||0; });
+  const periods=Object.values(byPeriod).map(g=>{
+    g.daysList=Object.values(g.byDay).filter(x=>x.tracked>0||x.pto>0).sort((a,b)=>a.date.localeCompare(b.date));
+    g.days=g.daysList.length; return g; });
+  const fmtDay=(d)=>{ try{ return new Date(d+"T00:00:00").toLocaleDateString(undefined,{weekday:"short",month:"short",day:"numeric"}); }catch{ return d; } };
   return (
     <div className="wrap">
       <h2>Time</h2>
-      {periods.map(g=>(
+      {periods.map(g=>{
+        const isOpen=!!open[g.key];
+        return (
         <div className="card" key={g.key}>
-          <div style={{fontWeight:700}}>{g.key}</div>
-          <div className="row"><span className="k">Worked</span><span>{hrs(g.tracked).toFixed(2)} h</span></div>
-          {g.pto>0 && <div className="row"><span className="k">PTO</span><span>{hrs(g.pto).toFixed(2)} h</span></div>}
-          <div className="row" style={{fontWeight:700}}><span>Total</span><span>{(hrs(g.tracked)+hrs(g.pto)).toFixed(2)} h</span></div>
+          <div onClick={()=>setOpen(o=>({...o,[g.key]:!o[g.key]}))} style={{cursor:"pointer"}}>
+            <div style={{fontWeight:700,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span>{g.key}</span>
+              <span className="sub" style={{fontWeight:500}}>{g.days} day{g.days===1?"":"s"} {isOpen?"▾":"▸"}</span>
+            </div>
+            <div className="row"><span className="k">Worked</span><span>{hrs(g.tracked).toFixed(2)} h</span></div>
+            {g.pto>0 && <div className="row"><span className="k">PTO</span><span>{hrs(g.pto).toFixed(2)} h</span></div>}
+            <div className="row" style={{fontWeight:700}}><span>Total</span><span>{(hrs(g.tracked)+hrs(g.pto)).toFixed(2)} h</span></div>
+          </div>
+          {isOpen && (
+            <div style={{marginTop:8,paddingTop:8,borderTop:"1px solid #e5e7eb"}}>
+              {g.daysList.length===0
+                ? <div className="sub">No daily entries.</div>
+                : g.daysList.map(day=>(
+                    <div className="row" key={day.date}>
+                      <span className="k">{fmtDay(day.date)}</span>
+                      <span>{(hrs(day.tracked)+hrs(day.pto)).toFixed(2)} h{day.pto>0?` · ${hrs(day.pto).toFixed(2)} PTO`:""}</span>
+                    </div>
+                  ))}
+            </div>
+          )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
