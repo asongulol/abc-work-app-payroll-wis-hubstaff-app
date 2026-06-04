@@ -10,3 +10,6 @@ diagnose_jam.sh
 
 # Supabase CLI local cache
 supabase/.temp/
+
+# Headless modal-width repro scratch file
+tools/.modal-width-repro.html

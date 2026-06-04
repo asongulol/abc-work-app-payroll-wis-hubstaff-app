@@ -1,10 +1,25 @@
-# Known issue: mobile modals render wider than the viewport (deferred)
+# Known issue: mobile modals render wider than the viewport — RESOLVED 2026-06-04
 
-**Status:** UNFIXED as of branch `feature/mobile-redesign` tip. The Playwright
-authed suite has **3 failing tests** (the modal test at mobile-360/390/414);
-the other 41 pass. Tablet-768 modal passes. Cosmetic, behind auth — the modal
-works, it just isn't a clean full-width sheet and the page scrolls sideways
-while it's open.
+**Status: FIXED** (on `main`). Root cause confirmed and fixed at the source: in
+mobile card-mode `td.card-action` was `display:block`, so its two `width:100%`
+buttons (with inline `white-space:nowrap`) sat side-by-side and blew the cell's
+min-content to ~560px, inflating the layout viewport and dragging the
+`width:100%` modal wide. Fix = make `td.card-action` a flex COLUMN
+(`display:flex;flex-direction:column;align-items:stretch;gap:6px;min-width:0`)
+plus `min-width:0` on its `.btn`s, so the buttons stack (the intended mobile
+design) and can't establish a wide min-content. No ancestor `overflow` clip is
+used, so nothing is hidden (unlike the reverted `#root{overflow-x:clip}` try).
+
+**Verified** headlessly with `tools/modal-width-check.mjs` (system Chrome via
+puppeteer-core), which rebuilds the Contractors card + open modal from the app's
+real `<style>`: before = modal 604/664/712 @ 360/390/414 (reproduced the exact
+bug); after = 360/390/414 with zero horizontal overflow. Re-run anytime:
+`node tools/modal-width-check.mjs`. The full authed Playwright suite's 3 `modal`
+tests should now pass too — run for the official 44/44 when a fresh session is
+handy (`cd tools/playwright && npm run import && npm test -- -g modal`).
+
+---
+Historical analysis (kept for reference):
 
 ## Symptom
 `mobile-authed.spec.mjs` › "open + close the first modal on Contractors":

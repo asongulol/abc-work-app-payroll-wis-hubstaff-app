@@ -98,13 +98,17 @@
       display:block;text-align:left;font-size:15px;padding-bottom:9px}
     .table-scroll:not(.keep-table) > table > tbody > tr > td.card-title::before{
       content:none}
-    /* Action cells: make tappable, full-width buttons (>=44px touch target). */
+    /* Action cells: STACK the buttons as full-width tap targets (>=44px). Flex
+       column + min-width:0 so two width:100% buttons can't sit side-by-side and
+       blow out the cell's min-content (which inflated the mobile layout viewport
+       and dragged width:100% modals wide — see KNOWN_ISSUE_modal_width). */
     .table-scroll:not(.keep-table) > table > tbody > tr > td.card-action{
-      display:block;text-align:left;padding:7px 0}
+      display:flex;flex-direction:column;align-items:stretch;gap:6px;min-width:0;
+      text-align:left;padding:7px 0}
     .table-scroll:not(.keep-table) > table > tbody > tr > td.card-action::before{
       content:none}
     .table-scroll:not(.keep-table) > table > tbody > tr > td.card-action .btn{
-      width:100%;min-height:44px;font-size:14px}
+      width:100%;min-width:0;min-height:44px;font-size:14px}
     /* Empty placeholder cells add no visible row on mobile. */
     .table-scroll:not(.keep-table) > table > tbody > tr > td.card-skip{display:none}
     /* Tables explicitly kept tabular get a subtle scroll affordance + tighter
