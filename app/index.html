@@ -414,7 +414,33 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-04 21:58 PHT · 7c215ac";
+const BUILD = "2026-06-04 22:22 PHT · 20e2c8f";
+// Admin: set a contractor's single daily shift (PHT). Drives the portal's
+// start/end mood check-ins. Self-contained — fetches + saves on its own.
+function ShiftEditor({ client, workerId }){
+  const [s,setS]=useState(null); const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
+  useEffect(()=>{ let alive=true;
+    client.from("workers").select("shift_start,shift_end").eq("id",workerId).maybeSingle()
+      .then(({data})=>{ if(alive) setS({start:(data&&data.shift_start||"").slice(0,5),end:(data&&data.shift_end||"").slice(0,5)}); });
+    return ()=>{alive=false;}; },[workerId]);
+  if(!s) return null;
+  async function save(){ setBusy(true); setMsg("");
+    const {error}=await client.from("workers").update({shift_start:s.start||null,shift_end:s.end||null}).eq("id",workerId);
+    setBusy(false); setMsg(error?("Failed: "+error.message):"Saved ✓"); }
+  const sinp={padding:"7px 10px",border:"1px solid var(--border-strong)",borderRadius:"var(--radius-sm)",width:"auto"};
+  return (
+    <div style={{margin:"8px 0"}}>
+      <label style={{display:"block",fontSize:11,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".03em",marginBottom:4}}>Shift schedule (PHT) — drives start/end mood check-ins</label>
+      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+        <input type="time" style={sinp} value={s.start} onChange={e=>setS(x=>({...x,start:e.target.value}))}/>
+        <span className="muted">to</span>
+        <input type="time" style={sinp} value={s.end} onChange={e=>setS(x=>({...x,end:e.target.value}))}/>
+        <button className="btn sm" disabled={busy} onClick={save}>{busy?"Saving…":"Save shift"}</button>
+        {msg && <span className="muted" style={{fontSize:12}}>{msg}</span>}
+      </div>
+    </div>
+  );
+}
 
 // Display label for a payout method: BPI uppercase, others Capitalized.
 function methodLabel(m){
@@ -2051,6 +2077,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
           <div className="field"><label>Hire date</label><input style={inp} type="date" value={f.hire_date||""} onChange={e=>set("hire_date",e.target.value)}/></div>
           <div className="field"><label>Date of birth</label><input style={inp} type="date" value={f.date_of_birth||""} onChange={e=>set("date_of_birth",e.target.value)}/></div>
         </div>
+        <ShiftEditor client={client} workerId={w.id}/>
         <div className="field"><label>PH address</label><input style={inp} value={f.ph_address} onChange={e=>set("ph_address",e.target.value)}/></div>
         <div className="row">
           <div className="field"><label>Hubstaff name (import match)</label><input style={inp} value={hubName} onChange={e=>setHubName(e.target.value)}/></div>

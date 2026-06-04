@@ -76,7 +76,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-04 21:58 PHT · 7c215ac";
+const BUILD = "2026-06-04 22:22 PHT · 20e2c8f";
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -509,6 +509,31 @@ function curPeriod(){
   const ny=m===12?y+1:y, nm=m===12?1:m+1;
   return {start:iso(16),end:iso(lastDay),pay:`${ny}-${String(nm).padStart(2,"0")}-15`};
 }
+// Homepage quick links (open in a new tab — Hubstaff blocks iframe embedding).
+// URLs live here so they're easy to update; confirm before go-live.
+const QUICK_LINKS=[
+  {label:"Hubstaff",     desc:"Track your time", icon:"⏱️", url:"https://hubstaff.com/"},
+  {label:"Gmail",        desc:"Work email",      icon:"✉️", url:"https://mail.google.com/mail/u/0/#inbox"},
+  {label:"Providersoft", desc:"Provider system", icon:"🗂️", url:"https://web.providersoftllc.com/AbilityBuilders/security/login.aspx"},
+  {label:"Wise",         desc:"Get paid",        icon:"₱",  url:"https://wise.com/home"},
+];
+function QuickLinks(){
+  return (
+    <div>
+      <h2 style={{color:"var(--accent)"}}>Quick links</h2>
+      <div className="card" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,padding:10}}>
+        {QUICK_LINKS.map(l=>(
+          <a key={l.label} href={l.url} target="_blank" rel="noreferrer"
+             style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",border:"1px solid var(--line)",borderRadius:10,textDecoration:"none",color:"var(--text)"}}>
+            <span style={{fontSize:22,lineHeight:1}}>{l.icon}</span>
+            <span style={{minWidth:0}}><span style={{fontWeight:700,display:"block"}}>{l.label}</span>
+              <span className="sub" style={{margin:0,fontSize:12}}>{l.desc}</span></span>
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
 // Post-onboarding login reminder: nags a contractor (who's already in the
 // portal) to upload any outstanding onboarding documents. Only shows for
 // contractors actually engaged in the doc process (>=1 onboarding doc uploaded)
@@ -552,6 +577,59 @@ function OnboardingDocReminder({ client, session }){
     </div>
   );
 }
+// NYC current weather via open-meteo (free, no key, CORS-friendly).
+const WCODE={0:["Clear","☀️"],1:["Mainly clear","🌤️"],2:["Partly cloudy","⛅"],3:["Overcast","☁️"],45:["Fog","🌫️"],48:["Fog","🌫️"],51:["Light drizzle","🌦️"],53:["Drizzle","🌦️"],55:["Drizzle","🌦️"],61:["Light rain","🌧️"],63:["Rain","🌧️"],65:["Heavy rain","🌧️"],66:["Freezing rain","🌧️"],67:["Freezing rain","🌧️"],71:["Light snow","🌨️"],73:["Snow","🌨️"],75:["Heavy snow","❄️"],77:["Snow grains","🌨️"],80:["Showers","🌦️"],81:["Showers","🌦️"],82:["Heavy showers","⛈️"],85:["Snow showers","🌨️"],86:["Snow showers","🌨️"],95:["Thunderstorm","⛈️"],96:["Thunderstorm","⛈️"],99:["Thunderstorm","⛈️"]};
+function NyWeather(){
+  const [c,setC]=useState(null); const [err,setErr]=useState(false);
+  useEffect(()=>{
+    fetch("https://api.open-meteo.com/v1/forecast?latitude=40.7128&longitude=-74.006&current=temperature_2m,weather_code&temperature_unit=fahrenheit&timezone=America%2FNew_York")
+      .then(r=>r.json()).then(d=>{ if(d&&d.current) setC(d.current); else setErr(true); }).catch(()=>setErr(true));
+  },[]);
+  if(err) return null;
+  const [desc,icon]=(c&&WCODE[c.weather_code])||["",""];
+  return (
+    <div className="card" style={{display:"flex",alignItems:"center",gap:12,borderLeft:"4px solid var(--gold)"}}>
+      <div style={{fontSize:34,lineHeight:1}}>{c?(icon||"🌡️"):"…"}</div>
+      <div><div style={{fontWeight:700}}>New York weather</div>
+        <div className="sub" style={{margin:0}}>{c?`${Math.round(c.temperature_2m)}°F · ${desc||"—"}`:"Loading…"}</div></div>
+    </div>
+  );
+}
+// Curated NYC trivia, rotated by day-of-year (NY date) — no external API.
+const NYC_TRIVIA=[
+  "The NYC subway has 472 stations — more than any other system in the world.",
+  "Times Square is named after The New York Times, which moved there in 1904.",
+  "Over 800 languages are spoken in NYC — the most linguistically diverse city on Earth.",
+  "Central Park is larger than the entire principality of Monaco.",
+  "A 'bodega' is a NYC corner store — many have a beloved resident 'bodega cat.'",
+  "The Statue of Liberty was a gift from France, dedicated in 1886.",
+  "New Yorkers say they take 'the train,' never 'the metro.'",
+  "George Washington took the first presidential oath at Federal Hall on Wall Street in 1789.",
+  "The Brooklyn Bridge (1883) was the world's first steel-wire suspension bridge.",
+  "'Schmear' — the cream cheese on your bagel — comes from Yiddish, a big influence on NYC slang.",
+  "Locals fold a pizza slice in half to eat it on the go.",
+  "The Empire State Building has its own ZIP code: 10118.",
+  "A 'stoop' is the front steps of a building; 'stoop-sitting' is a summer ritual.",
+  "Grand Central Terminal has 44 platforms — the most of any train station in the world.",
+  "Manhattan's numbered street grid was laid out in the Commissioners' Plan of 1811.",
+  "Cabs are yellow because that hue is the easiest to spot from a distance.",
+  "The High Line park was built on a disused elevated freight railway.",
+  "'Fuhgeddaboudit' is famous enough to appear on a road sign leaving Brooklyn.",
+  "NYC's five boroughs are Manhattan, Brooklyn, Queens, the Bronx, and Staten Island.",
+  "The nickname 'The Big Apple' spread from 1920s horse-racing slang.",
+];
+function NyTrivia(){
+  const tz="America/New_York";
+  const s=new Intl.DateTimeFormat("en-CA",{timeZone:tz,year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+  const [y,m,d]=s.split("-").map(Number);
+  const doy=Math.floor((Date.UTC(y,m-1,d)-Date.UTC(y,0,1))/86400000);
+  return (
+    <div className="card" style={{borderLeft:"4px solid var(--gold)"}}>
+      <div style={{fontWeight:700,marginBottom:2}}>🗽 NYC fact of the day</div>
+      <div style={{fontSize:14}}>{NYC_TRIVIA[doy%NYC_TRIVIA.length]}</div>
+    </div>
+  );
+}
 // Live two-zone world clock: Philippine Time + New York Time, re-rendered
 // every 20s so the minutes stay current.
 function WorldClock(){
@@ -576,14 +654,14 @@ function WorldClock(){
 }
 function Home({ client, session }){
   const [w,setW]=useState(null); const [billable,setBillable]=useState(null);
-  const [latest,setLatest]=useState(undefined); const [anns,setAnns]=useState(null); const [moodDone,setMoodDone]=useState(null);
+  const [latest,setLatest]=useState(undefined); const [anns,setAnns]=useState(null); const [moodPrompt,setMoodPrompt]=useState(null);  // null=none | {kind:'start'|'end'}
   const per=curPeriod(); const {hour,clock}=phtParts();
   const greetEN=hour<12?"Good morning":hour<18?"Good afternoon":"Good evening";
   const greetTL=hour<12?"Magandang umaga":hour<18?"Magandang hapon":"Magandang gabi";
   const ex=(w&&w.profile_extras&&typeof w.profile_extras==="object")?w.profile_extras:{};
   const greetName=(ex.nickname||w?.first_name||"").trim();
   useEffect(()=>{
-    client.from("workers").select("id,first_name,profile_extras").maybeSingle().then(({data})=>setW(data||{}));
+    client.from("workers").select("id,first_name,profile_extras,shift_start,shift_end").maybeSingle().then(({data})=>setW(data||{}));
     client.from("time_entries").select("tracked_seconds,pto_seconds").gte("work_date",per.start).lte("work_date",per.end)
       .then(({data})=>setBillable((data||[]).reduce((s,r)=>s+(r.tracked_seconds||0)+(r.pto_seconds||0),0)/3600));
     client.from("payments").select("net_php,status,pay_periods(pay_date)")
@@ -591,18 +669,35 @@ function Home({ client, session }){
     client.from("announcements").select("title,body,published_at").eq("active",true).order("published_at",{ascending:false}).limit(5)
       .then(({data})=>setAnns(data||[]));
   },[]);  // eslint-disable-line
-  // Has this contractor already checked in today (Manila day)? If not, the
-  // mood pop-out shows. Runs once the worker id is known.
+  // Decide whether to show the mood pop-out, and which one:
+  //   START ("How are you feeling today?")  — within 2h after shift start
+  //   END   ("Tell me how your day went?")  — within 2h after shift end
+  // De-dupe per shift by looking back 16h (handles overnight US-hours shifts,
+  // where start/end straddle midnight PHT). No shift set => generic once-per-
+  // ~day start check-in so it still works before an admin enters a schedule.
   useEffect(()=>{
     const wid=w&&w.id; if(!wid) return;
-    const phDate=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Manila"}).format(new Date());
-    client.from("mood_checkins").select("id").eq("worker_id",wid).gte("created_at",`${phDate}T00:00:00+08:00`).limit(1)
-      .then(({data})=>setMoodDone(!!(data&&data.length)));
+    const phHM=new Intl.DateTimeFormat("en-GB",{timeZone:"Asia/Manila",hour12:false,hour:"2-digit",minute:"2-digit"}).format(new Date());
+    const [hh,mm]=phHM.split(":").map(Number); const nowMin=hh*60+mm;
+    const parse=(t)=>{ if(!t) return null; const [a,b]=String(t).split(":").map(Number); return (a||0)*60+(b||0); };
+    const start=parse(w.shift_start), end=parse(w.shift_end);
+    const sinceIso=new Date(Date.now()-16*3600*1000).toISOString();
+    client.from("mood_checkins").select("kind,created_at").eq("worker_id",wid).gte("created_at",sinceIso)
+      .then(({data})=>{
+        const recent=data||[];
+        if(start!=null && end!=null){
+          const afterStart=(nowMin-start+1440)%1440, afterEnd=(nowMin-end+1440)%1440;
+          if(afterStart<=120 && !recent.some(r=>r.kind==="start")){ setMoodPrompt({kind:"start"}); return; }
+          if(afterEnd<=120   && !recent.some(r=>r.kind==="end"))  { setMoodPrompt({kind:"end"});   return; }
+          setMoodPrompt(null); return;
+        }
+        setMoodPrompt(recent.length ? null : {kind:"start"});   // no schedule -> once per ~day
+      });
   },[w]);  // eslint-disable-line
   async function logMood(m){
-    const wid=w?.id;
-    setMoodDone(true);                 // tapping an emoji is the ONLY way to dismiss the pop-out
-    if(wid) client.from("mood_checkins").insert({worker_id:wid,mood:m});   // best-effort
+    const kind=(moodPrompt&&moodPrompt.kind)||"start"; const wid=w?.id;
+    setMoodPrompt(null);               // tapping an emoji is the ONLY way to dismiss the pop-out
+    if(wid) client.from("mood_checkins").insert({worker_id:wid,mood:m,kind});   // best-effort
   }
   const paid=s=>s==="sent"||s==="reconciled";
   return (
@@ -623,6 +718,8 @@ function Home({ client, session }){
           <span className="k">Last pay</span><span>{peso(latest.net_php)} · <span className={"pill "+(paid(latest.status)?"paid":"pending")}>{paid(latest.status)?"paid":"pending"}</span></span></div>}
       </div>
       <h2 style={{color:"var(--accent)"}}>From New York</h2>
+      <NyWeather/>
+      <NyTrivia/>
       {anns===null?<div className="empty">Loading…</div>: !anns.length?<div className="empty">No announcements right now.</div>:
         anns.map((a,i)=>(
           <div className="card" key={i} style={{borderLeft:"4px solid var(--gold)"}}>
@@ -631,11 +728,12 @@ function Home({ client, session }){
             {a.body && <div style={{fontSize:14,marginTop:4,whiteSpace:"pre-wrap"}}>{a.body}</div>}
           </div>
         ))}
-      {moodDone===false && (
-        <div role="dialog" aria-modal="true" aria-label="Daily mood check-in"
+      <QuickLinks/>
+      {moodPrompt && (
+        <div role="dialog" aria-modal="true" aria-label="Shift mood check-in"
           style={{position:"fixed",inset:0,background:"rgba(15,28,51,.55)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,zIndex:60}}>
           <div className="card" style={{maxWidth:360,width:"100%",textAlign:"center",margin:0}}>
-            <div style={{fontWeight:800,fontSize:17,marginBottom:2}}>How are you feeling today?</div>
+            <div style={{fontWeight:800,fontSize:17,marginBottom:2}}>{moodPrompt.kind==="end"?"Tell me how your day went?":"How are you feeling today?"}</div>
             <div className="sub" style={{marginTop:0,marginBottom:12}}>Tap an emoji to continue.</div>
             <div style={{display:"flex",gap:12,fontSize:36,justifyContent:"center"}}>
               {["😞","😕","🙂","😀","🤩"].map((e,i)=><span key={i} onClick={()=>logMood(i+1)} style={{cursor:"pointer"}} role="button" aria-label={"mood "+(i+1)}>{e}</span>)}
