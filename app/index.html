@@ -471,7 +471,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 07:05 PHT · cd2c2d1";
+const BUILD = "2026-06-05 07:09 PHT · a7c89c9";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -528,6 +528,22 @@ function DstNudge(){
 function methodLabel(m){
   if(!m) return "";
   return m==="bpi" ? "BPI" : m.charAt(0).toUpperCase()+m.slice(1);
+}
+
+// Recognition-over-recall (Phase 4): plain-language explanation of a coded
+// value, surfaced on hover via title= so even trained admins don't have to hold
+// the taxonomy in their head. Returns "" when there's no hint (no tooltip).
+function codeHint(kind, val){
+  const v=String(val==null?"":val).toLowerCase();
+  const M={
+    contract:{ft:"Full-time contractor", pt:"Part-time contractor"},
+    status:{active:"Currently engaged — included in new payroll", inactive:"Not currently engaged — excluded from new payroll"},
+    method:{wise:"Paid in PHP via Wise transfer (USD-funded)", bpi:"Paid via BPI bank transfer",
+            gcash:"Paid via GCash", paymaya:"Paid via Maya", paypal:"Paid via PayPal"},
+    pay:{draft:"Calculated, not yet sent", queued:"Queued for payout", sent:"Funded & sent to the contractor",
+         failed:"Payout failed — needs attention", reconciled:"Matched against the payout rail"},
+  };
+  return (M[kind] && M[kind][v]) || "";
 }
 
 // Loading skeleton (Phase 2). Shimmer bars that reserve layout space so data
@@ -1716,10 +1732,10 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
                     <Avatar src={w.photo_url} name={fullName(w)} size={28}/><b>{fullName(w)}</b></span></td>
                 <td data-label="Company">{r.companies?.name||"—"}</td>
                 <td data-label="Role">{r.role||<span className="muted">—</span>}</td>
-                <td data-label="Contract"><span className={"pill "+(r.contract==="PT"?"pt":"ft")}>{r.contract}</span></td>
-                <td data-label="Payout">{w.payout_method?methodLabel(w.payout_method):
-                  <span className="pill warn">not set</span>}</td>
-                <td data-label="Status"><span className={"pill "+(active?"active":"inactive")}>{active?"active":"inactive"}</span></td>
+                <td data-label="Contract"><span className={"pill "+(r.contract==="PT"?"pt":"ft")} title={codeHint("contract",r.contract)}>{r.contract}</span></td>
+                <td data-label="Payout">{w.payout_method?<span title={codeHint("method",w.payout_method)}>{methodLabel(w.payout_method)}</span>:
+                  <span className="pill warn" title="No payout method set — can't be paid until set">not set</span>}</td>
+                <td data-label="Status"><span className={"pill "+(active?"active":"inactive")} title={codeHint("status",active?"active":"inactive")}>{active?"active":"inactive"}</span></td>
                 <td className="card-action" style={{textAlign:"right",whiteSpace:"nowrap"}}>
                   <button className="btn ghost sm" onClick={()=>setSelected({...r,w})}>Edit</button>{" "}
                   {active
@@ -5655,7 +5671,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
               {anyLunch && <th>Lunch ₱</th>}
               {anyBonus && <th>Bonus ₱</th>}
               <th>Misc ₱</th>
-              <SfTh k="net">Net ₱ (paid)</SfTh><th>≈ USD ref</th><SfTh k="method">Via</SfTh>
+              <SfTh k="net">Net ₱ (paid)</SfTh><th title="USD reference only — contractors are paid in PHP. Computed as Net ₱ ÷ FX. FX is the rate Wise locked at transfer time (USD→PHP) where available, otherwise a market approximation.">≈ USD ref</th><SfTh k="method">Via</SfTh>
               {(!period?.state || period.state==="open") && <th></th>}
             </tr></thead>
             <tbody>
@@ -5734,6 +5750,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
           })()}
           <p className="muted" style={{fontSize:12,marginTop:10}}>
             Contractors are <b>paid in PHP</b> (Net ₱). USD is a reference only (Net ₱ ÷ FX).
+            {" "}FX is the rate <b>Wise locked at transfer time</b> (USD→PHP) where available, otherwise a market approximation.
             <b> Gross ₱ is editable</b> — override it for any contractor and Net recomputes;
             a blue cell + ↺ marks an override (the saved statement records the original computed value).
             Yellow rows have no effective rate set — fix that before locking.</p>
@@ -6176,7 +6193,7 @@ function Reports({client,companyId,consolidated}){
           <thead><tr>
             <th style={{width:24}}></th>
             {consolidated&&<th>Company</th>}
-            <th>Period</th><th>Pay date</th><th>Contractors</th><th>Net ₱</th><th>≈ USD ref</th><th>Unpaid ₱</th>
+            <th>Period</th><th>Pay date</th><th>Contractors</th><th>Net ₱</th><th title="USD reference only — contractors are paid in PHP. Computed as Net ₱ ÷ FX. FX is the rate Wise locked at transfer time (USD→PHP) where available, otherwise a market approximation.">≈ USD ref</th><th>Unpaid ₱</th>
           </tr></thead>
           <tbody>
             {shown.map((p,i)=>{
@@ -6224,7 +6241,7 @@ function Reports({client,companyId,consolidated}){
                               <td style={r.miscDeduct?{color:"#b91c1c"}:{}}>{r.miscDeduct?("-"+money(r.miscDeduct,"PHP")):"—"}</td>
                               <td className="muted">{r.perfShort?money(r.perfShort,"PHP"):"—"}</td>
                               <td><b>{money(r.net,"PHP")}</b></td>
-                              <td>{methodLabel(r.method)||"—"}</td>
+                              <td><span title={codeHint("method",r.method)}>{methodLabel(r.method)||"—"}</span></td>
                               <td><span className="pill" style={paid(r.status)
                                     ?{background:"#dcfce7",color:"#065f46"}
                                     :{background:"#f3f4f6",color:"var(--muted)"}}>
@@ -8381,7 +8398,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
                         return (
                           <tr key={r.worker_id}>
                             <td>{r.name}{r.locked_at && <span title="Locked by reconcile" style={{marginLeft:4}}>🔒</span>}</td>
-                            <td>{methodLabel(r.method)||"—"}</td>
+                            <td><span title={codeHint("method",r.method)}>{methodLabel(r.method)||"—"}</span></td>
                             <td>{Number(r.net||0).toLocaleString(undefined,{minimumFractionDigits:2})}</td>
                             <td className="muted">{r.transfer_id?<code>{r.transfer_id}</code>:"—"}</td>
                             <td><span className="pill" style={sent?{background:"#dcfce7",color:"#065f46"}:{background:"#f3f4f6",color:"var(--muted)"}}>{sent?"sent":(r.status||"draft")}</span></td>
@@ -8547,7 +8564,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
                           </span>
                         )}
                       </td>
-                      <td>{methodLabel(r.method)||"—"}</td>
+                      <td><span title={codeHint("method",r.method)}>{methodLabel(r.method)||"—"}</span></td>
                       <td className="muted">{isWise?(r.recipient_id?`#${r.recipient_id}`:(r.email||"—")):(r.email||"—")}</td>
                       <td>
                         {r.net.toLocaleString(undefined,{minimumFractionDigits:2})}
