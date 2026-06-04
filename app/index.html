@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 04:52 PHT · c699eca";
+const BUILD = "2026-06-05 04:56 PHT · 01bf293";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -6256,7 +6256,8 @@ function ContractorHistory({client,companyId,consolidated}){
         .select("worked_hours,gross_php,health_allowance_php,pdd_lunch_php,thirteenth_month_php,bonus_php,net_php,payout_method,status,pay_periods(period_start,period_end,pay_date)")
         .eq("worker_id",wid);
       const {data:te}=await client.from("time_entries")
-        .select("work_date,tracked_seconds,pto_seconds").eq("worker_id",wid).limit(5000);
+        .select("work_date,tracked_seconds,pto_seconds").eq("worker_id",wid)
+        .order("work_date",{ascending:true}).limit(5000);
       if(cancel) return;
       const tmap={};
       (te||[]).forEach(r=>{ const p=periodFor(r.work_date);
@@ -6332,7 +6333,7 @@ function ContractorHistory({client,companyId,consolidated}){
              </tr>
              {open && hasDays && (
                <tr><td colSpan={10} style={{background:"#f8fafc",padding:"8px 10px"}}>
-                 <div style={{maxHeight:280,overflow:"auto"}}>
+                 <div>
                    <table className="keep-table"><thead><tr><th>Day</th><th>Worked h</th><th>PTO h</th></tr></thead>
                    <tbody>{r.days.map(d=>(
                      <tr key={d.date}><td>{fmtD(d.date)} <span className="muted" style={{fontSize:11}}>({d.date})</span></td>
