@@ -77,7 +77,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 01:50 PHT · 00ee9bd";
+const BUILD = "2026-06-05 05:34 PHT · b217046";
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -691,7 +691,8 @@ function WorldClock(){
 }
 function Home({ client, session }){
   const [w,setW]=useState(null); const [billable,setBillable]=useState(null);
-  const [latest,setLatest]=useState(undefined); const [anns,setAnns]=useState(null); const [moodPrompt,setMoodPrompt]=useState(null);  // null=none | {kind:'start'|'end'}
+  const [lastPaid,setLastPaid]=useState(undefined); const [nextPay,setNextPay]=useState(undefined);  // last paid / next pending statement
+  const [anns,setAnns]=useState(null); const [moodPrompt,setMoodPrompt]=useState(null);  // null=none | {kind:'start'|'end'}
   const per=curPeriod(); const {hour,clock}=phtParts();
   const greetEN=hour<12?"Good morning":hour<18?"Good afternoon":"Good evening";
   const greetTL=hour<12?"Magandang umaga":hour<18?"Magandang hapon":"Magandang gabi";
@@ -701,8 +702,13 @@ function Home({ client, session }){
     client.from("workers").select("id,first_name,profile_extras,shift_start,shift_end").maybeSingle().then(({data})=>setW(data||{}));
     client.from("time_entries").select("tracked_seconds,pto_seconds").gte("work_date",per.start).lte("work_date",per.end)
       .then(({data})=>setBillable((data||[]).reduce((s,r)=>s+(r.tracked_seconds||0)+(r.pto_seconds||0),0)/3600));
-    client.from("payments").select("net_php,status,pay_periods(pay_date)")
-      .then(({data})=>{ const l=(data||[]).slice().sort((a,b)=>String(b.pay_periods?.pay_date||"").localeCompare(String(a.pay_periods?.pay_date||""))); setLatest(l[0]||null); });
+    client.from("payments").select("net_php,status,pay_periods(pay_date,period_start,period_end)")
+      .then(({data})=>{ const isPaid=s=>s==="sent"||s==="reconciled";
+        const ps=(data||[]).map(p=>({net:Number(p.net_php||0),status:p.status,
+          pay:p.pay_periods?.pay_date,start:p.pay_periods?.period_start,end:p.pay_periods?.period_end}))
+          .sort((a,b)=>String(b.pay||"").localeCompare(String(a.pay||"")));
+        setLastPaid(ps.find(p=>isPaid(p.status))||null);   // most recent paid
+        setNextPay(ps.find(p=>!isPaid(p.status))||null); });   // most recent pending
     client.from("announcements").select("title,body,published_at").eq("active",true).order("published_at",{ascending:false}).limit(5)
       .then(({data})=>setAnns(data||[]));
   },[]);  // eslint-disable-line
@@ -747,7 +753,6 @@ function Home({ client, session }){
     if(wid){ const { error }=await client.from("mood_checkins").insert({worker_id:wid,mood:m,kind});   // mood = 1..5 Likert
       if(error) console.error("mood check-in failed:", error.message); }   // surfaced in DevTools if RLS/insert ever fails
   }
-  const paid=s=>s==="sent"||s==="reconciled";
   return (
     <div className="wrap">
       <div style={{margin:"6px 2px 4px"}}>
@@ -761,9 +766,16 @@ function Home({ client, session }){
         <div style={{fontWeight:700,marginBottom:6}}>This pay period</div>
         <div className="row"><span className="k">Period</span><span>{per.start} → {per.end}</span></div>
         <div className="row"><span className="k">Billable hours so far</span><span><b>{billable==null?"…":billable.toFixed(2)} h</b></span></div>
-        <div className="row"><span className="k">Next pay date</span><span>{per.pay}</span></div>
-        {latest && <div className="row" style={{borderTop:"1px solid var(--line)",marginTop:4,paddingTop:6}}>
-          <span className="k">Last pay</span><span>{peso(latest.net_php)} · <span className={"pill "+(paid(latest.status)?"paid":"pending")}>{paid(latest.status)?"paid":"pending"}</span></span></div>}
+        <div className="row" style={{borderTop:"1px solid var(--line)",marginTop:4,paddingTop:6}}>
+          <span className="k">Last pay</span>
+          <span>{lastPaid===undefined?"…":lastPaid
+            ? <><b>{peso(lastPaid.net)}</b> · {lastPaid.pay||"—"} <span className="pill paid">paid</span></>
+            : "—"}</span></div>
+        <div className="row">
+          <span className="k">Next pay</span>
+          <span>{nextPay===undefined?"…":nextPay
+            ? <><b>{peso(nextPay.net)}</b> · {nextPay.pay||"—"} <span className="pill pending">pending</span></>
+            : <>{per.pay} <span className="muted" style={{fontSize:11}}>· in progress</span></>}</span></div>
       </div>
       <h2 style={{color:"var(--accent)"}}>From New York</h2>
       <NyWeather/>
