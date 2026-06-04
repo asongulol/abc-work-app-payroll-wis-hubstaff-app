@@ -415,7 +415,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 00:29 PHT · 477d006";
+const BUILD = "2026-06-05 00:33 PHT · fbfaab2";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -3007,7 +3007,7 @@ function parseHubstaff(text){
 }
 
 // ============================ TIME IMPORT ====================================
-function TimeImport({client,companyId,consolidated}){
+function TimeImport({client,companyId,consolidated,goTab,openPeriodForEdit}){
   const [parsed,setParsed]=useState(null);
   const [err,setErr]=useState("");
   const [matches,setMatches]=useState([]);
@@ -4118,6 +4118,14 @@ function TimeApproval({client,companyId,consolidated}){
           logEvent(client,{company_id:companyId,action:"undo",entity:"approval",detail:{of:status,entries:ids.length}});
         }});
       reload();
+      // Approving moves the workflow forward — jump straight to Calculate (and
+      // load that period there, refreshing its list so the now-approved batch
+      // shows). Rejecting stays put.
+      if(status==="approved"){
+        const per = pStart ? periodFor(pStart) : null;   // canonical period boundaries
+        if(typeof openPeriodForEdit==="function" && per){ openPeriodForEdit({start:per.start, end:per.end}); }
+        else if(typeof goTab==="function"){ goTab("payroll"); }
+      }
     }catch(ex){ setMsg("Couldn't update approval: "+(ex.message||ex)); }
     finally{ setBusy(false); }
   }
@@ -9253,7 +9261,7 @@ function App() {
             each tab's in-memory state (selected period, loaded rows, filters)
             across tab switches. */}
         <div style={{display:tab==="contractors"?"block":"none"}}><Contractors {...{client:sb.client,companyId,consolidated,onBillingChange:recordBillingChange,pendingWorkerId,consumePendingWorker}} /></div>
-        <div style={{display:tab==="time"?"block":"none"}}><TimeImport {...{client:sb.client,companyId,consolidated}} /></div>
+        <div style={{display:tab==="time"?"block":"none"}}><TimeImport {...{client:sb.client,companyId,consolidated,goTab:go,openPeriodForEdit}} /></div>
         <div style={{display:tab==="imports"?"block":"none"}}><DeleteImports {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="payroll"?"block":"none"}}><Payroll {...{client:sb.client,companyId,consolidated,confirmBillingDirty,openContractor,goTab:go,pendingPeriod,consumePendingPeriod}} /></div>
         <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="process",confirmBillingDirty,openContractor,goTab:go,openPeriodForEdit}} /></div>
