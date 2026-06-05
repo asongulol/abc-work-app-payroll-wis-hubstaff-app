@@ -531,7 +531,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 02:52 PHT · f6186a8";
+const BUILD = "2026-06-06 03:24 PHT · e4f482b";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -9432,7 +9432,7 @@ function CountersignModal({ defaultName, onCancel, onSubmit }){
 // admin countersignature, and printable output. Writes onboarding_agreements
 // directly (is_admin() RLS); the contractor signature stays in onboarding_signatures.
 function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigChange }){
-  const [insts,setInsts]=useState(null); const [tpls,setTpls]=useState({}); const [waddr,setWaddr]=useState("");
+  const [insts,setInsts]=useState(null); const [tpls,setTpls]=useState({}); const [waddr,setWaddr]=useState(""); const [whire,setWhire]=useState("");
   const [admins,setAdmins]=useState([]); const [me,setMe]=useState(null);
   const [edit,setEdit]=useState({}); const [busy,setBusy]=useState(""); const [msg,setMsg]=useState(""); const [cs,setCs]=useState(null);
   const [dateEdit,setDateEdit]=useState({}); const [dbusy,setDbusy]=useState("");
@@ -9443,13 +9443,22 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigC
     client.from("agreement_templates").select("kind,body")
       .then(({data})=>{ const m={}; (data||[]).forEach(r=>m[r.kind]=r.body); setTpls(m); });
     client.from("admin_users").select("user_id,email").then(({data})=>setAdmins(data||[]));
-    client.from("workers").select("ph_address").eq("id",worker_id).maybeSingle().then(({data})=>setWaddr((data&&data.ph_address)||""));
+    client.from("workers").select("ph_address,hire_date").eq("id",worker_id).maybeSingle().then(({data})=>{ setWaddr((data&&data.ph_address)||""); setWhire((data&&data.hire_date)||""); });
     client.auth.getUser().then(({data})=>setMe(data&&data.user||null));
   }
   useEffect(load,[worker_id]);
   if(insts===null) return <p className="sub">Loading agreements…</p>;
   const today=new Date().toISOString().slice(0,10);
-  const startEdit=(k)=>{ const r=insts[k]||{}; setEdit(e=>({...e,[k]:{f_position:r.f_position||"",f_rate:r.f_rate||"",f_start_date:r.f_start_date||"",countersigner_user_id:r.countersigner_user_id||"",countersigner_name:r.countersigner_name||"",addendum_type:r.addendum_type||"",addendum_text:r.addendum_text||""}})); };
+  // Auto-populate every template from the initial setup: rate/position/start-date
+  // and the countersigner fall back to the IC Agreement prefill (what was entered
+  // when the contractor was added), and start-date further to the worker's hire
+  // date — so name/dates/etc. flow to ALL documents. Each doc's own prefill still
+  // overrides, so per-document differences can be applied by preparing that doc.
+  const icRow=insts["ic_agreement"]||{};
+  const effF=(r,field)=> (r&&r[field]) || (r!==icRow ? (icRow[field]||"") : "");
+  const effStart=(r)=> effF(r,"f_start_date") || whire || "";
+  const effCs=(r)=> (r&&r.countersigner_name) || icRow.countersigner_name || "";
+  const startEdit=(k)=>{ const r=insts[k]||{}; setEdit(e=>({...e,[k]:{f_position:effF(r,"f_position"),f_rate:effF(r,"f_rate"),f_start_date:effStart(r),countersigner_user_id:(r.countersigner_user_id||icRow.countersigner_user_id||""),countersigner_name:effCs(r),addendum_type:r.addendum_type||"",addendum_text:r.addendum_text||""}})); };
   const setF=(k,f,v)=>setEdit(e=>({...e,[k]:{...e[k],[f]:v}}));
   async function savePrep(k){
     const f=edit[k]; setBusy(k); setMsg("");
@@ -9494,8 +9503,8 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigC
   }
   function printDoc(k){
     const r=insts[k]||{}; const sig=signedBy[k];
-    const merged=mergeAgreement(tpls[k]||"",{ contractor_name:workerName, rate:r.f_rate, start_date:r.f_start_date,
-      position:r.f_position, countersigner_name:r.countersigner_name, contractor_address:waddr,
+    const merged=mergeAgreement(tpls[k]||"",{ contractor_name:workerName, rate:effF(r,"f_rate"), start_date:effStart(r),
+      position:effF(r,"f_position"), countersigner_name:effCs(r), contractor_address:waddr,
       addendum:agAddendum(r.addendum_type,r.addendum_text), today });
     const mark=(method,data,name)=> (method==="drawn"&&data)
       ? `<img src="${data}" alt="signature" style="height:46px;max-width:240px;object-fit:contain;display:block"/>`
@@ -9529,7 +9538,7 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigC
               </div>
             </div>
             <div className="muted" style={{fontSize:12,margin:"2px 0"}}>
-              {prepared? `${r.f_position||"—"} · ${r.f_rate||"—"} · start ${r.f_start_date||"—"} · countersigner ${r.countersigner_name||"unassigned"}${(k==="ic_agreement"&&r.addendum_text)?(" · +"+(r.addendum_type==="scope_of_work"?"Scope of Work":"addendum")):""}` : <i>Not prepared yet</i>}
+              {prepared? <>{`${effF(r,"f_position")||"—"} · ${effF(r,"f_rate")||"—"} · start ${effStart(r)||"—"} · countersigner ${effCs(r)||"unassigned"}`}{(k==="ic_agreement"&&r.addendum_text)?` · +${r.addendum_type==="scope_of_work"?"Scope of Work":"addendum"}`:""}{(k!=="ic_agreement"&&!(r.f_position||r.f_rate||r.f_start_date)&&(icRow.f_position||icRow.f_rate||icRow.f_start_date))?<span style={{color:"#2563eb"}}> · auto-filled from setup</span>:null}</> : <i>Not prepared yet</i>}
             </div>
             {sig && (dateEdit[k]!==undefined ? (
               <div style={{display:"flex",gap:6,alignItems:"center",margin:"2px 0",flexWrap:"wrap"}}>

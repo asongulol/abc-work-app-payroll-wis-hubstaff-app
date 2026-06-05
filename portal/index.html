@@ -119,7 +119,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 02:52 PHT · f6186a8";
+const BUILD = "2026-06-06 03:24 PHT · e4f482b";
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -1062,16 +1062,24 @@ function AgreementViewer({ client, agreement, onClose, onSigned }){
     let alive=true;
     (async()=>{
       const today=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Manila",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
-      const [{data:tpl},{data:inst},{data:w}] = await Promise.all([
+      const isIc = agreement.kind==="ic_agreement";
+      const [{data:tpl},{data:inst},{data:ic},{data:w}] = await Promise.all([
         client.from("agreement_templates").select("body").eq("kind",agreement.kind).maybeSingle(),
         client.from("onboarding_agreements").select("f_rate,f_start_date,f_position,countersigner_name,addendum_type,addendum_text").eq("agreement_kind",agreement.kind).maybeSingle(),
-        client.from("workers").select("first_name,middle_name,last_name,ph_address").maybeSingle(),
+        isIc ? Promise.resolve({data:null}) : client.from("onboarding_agreements").select("f_rate,f_start_date,f_position,countersigner_name").eq("agreement_kind","ic_agreement").maybeSingle(),
+        client.from("workers").select("first_name,middle_name,last_name,ph_address,hire_date").maybeSingle(),
       ]);
       if(!alive) return;
       const body = (tpl&&tpl.body) || AGREEMENT_TEXT[agreement.kind] || "";   // fallback to legacy placeholder
+      // Auto-populate from the initial setup: rate/position/start-date and the
+      // countersigner fall back to the IC Agreement prefill (what HR entered when
+      // adding the contractor), and start-date further to the worker's hire date —
+      // so every template shows the same name/dates as the admin's copy. Any
+      // per-document override on this agreement still wins.
+      const pick=(field)=> (inst&&inst[field]) || (ic&&ic[field]) || "";
       const merged = mergeAgreement(body, {
-        contractor_name: w?fullName(w):"", rate:inst&&inst.f_rate, start_date:inst&&inst.f_start_date,
-        position:inst&&inst.f_position, countersigner_name:inst&&inst.countersigner_name,
+        contractor_name: w?fullName(w):"", rate:pick("f_rate"), start_date:pick("f_start_date")||(w&&w.hire_date)||"",
+        position:pick("f_position"), countersigner_name:(inst&&inst.countersigner_name)||(ic&&ic.countersigner_name)||"",
         contractor_address: w&&w.ph_address, addendum: agAddendum(inst&&inst.addendum_type, inst&&inst.addendum_text), today });
       setText(merged);
     })();
