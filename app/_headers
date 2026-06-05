@@ -7,8 +7,16 @@
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
-  # The whole app is ONE HTML file (everything else loads from CDNs at runtime),
-  # so there is nothing worth caching locally. Always revalidate the shell with
-  # the server (cheap 304 via ETag) so a new deploy shows up immediately without
-  # needing a hard refresh.
+  # Images/favicon: revalidate (cheap 304s).
   Cache-Control: no-cache
+
+# The app shell is ONE HTML file (everything else loads from CDNs at runtime).
+# Use no-store so the browser NEVER reuses a stored copy — a new deploy always
+# shows up on a normal refresh, no hard-refresh needed. (no-cache still let some
+# browsers serve a stale shell via a 304; no-store removes that path entirely.)
+/
+  Cache-Control: no-store, must-revalidate
+/index.html
+  Cache-Control: no-store, must-revalidate
+/legacy.html
+  Cache-Control: no-store, must-revalidate
