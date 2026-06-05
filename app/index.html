@@ -531,7 +531,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 02:18 PHT · e0c221d";
+const BUILD = "2026-06-06 02:26 PHT · 6119c93";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -9856,7 +9856,7 @@ function OnboardingConfigModal({ client, onClose }){
     </div>
   );
 }
-function OnboardingAdmin({ client, companyId, consolidated }){
+function OnboardingAdmin({ client, companyId, consolidated, active }){
   const [showDone,setShowDone]=useState(false); const [sel,setSel]=useState(null); const [showTpl,setShowTpl]=useState(false); const [showCfg,setShowCfg]=useState(false); const [showWizard,setShowWizard]=useState(false);
   const [coName,setCoName]=useState("");
   useEffect(()=>{ if(companyId) client.from("companies").select("name").eq("id",companyId).maybeSingle().then(({data})=>setCoName((data&&data.name)||"")); else setCoName(""); },[client,companyId]);
@@ -9882,6 +9882,9 @@ function OnboardingAdmin({ client, companyId, consolidated }){
     status:r=>(r._pending>0?0:r.completed_at?3:r.stalled?1:2), updated:r=>r.updated_at,
   }, ["_name","_email"]);
   function refresh(){ reload(); reloadPend(); }
+  // Re-query when this tab becomes active so a contractor deleted on another tab
+  // (Contractors) can't linger here as a stale row / stale "needs review" count.
+  useEffect(()=>{ if(active){ reload(); reloadPend(); } },[active]); // eslint-disable-line
   return (
     <div className="card">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
@@ -10364,7 +10367,7 @@ function App() {
         <div style={{display:tab==="batches"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="batches",confirmBillingDirty,openContractor,reconcileOnly:true}} /></div>
         <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId,consolidated}} /></div>
-        <div style={{display:tab==="onboarding"?"block":"none"}}><OnboardingAdmin {...{client:sb.client,companyId,consolidated}} /></div>
+        <div style={{display:tab==="onboarding"?"block":"none"}}><OnboardingAdmin {...{client:sb.client,companyId,consolidated,active:tab==="onboarding"}} /></div>
         <div className="no-print" style={{textAlign:"center",color:"var(--muted)",fontSize:11,padding:"18px 0 32px",letterSpacing:".02em"}}>Build {BUILD}</div>
       </main>
       </div>{/* /shell */}
