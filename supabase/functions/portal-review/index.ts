@@ -112,6 +112,29 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const action = body.action;
     const document_id = body.document_id;
+
+    // ---- set_signed_date (admin correction of the editable "date signed") ----
+    // Operates on a SIGNATURE, not a document, so it runs before the document_id
+    // gate. Patches ONLY signed_date — the immutable evidence (signed_at, IP,
+    // signature_data, signed_legal_name, doc hash) is never touched.
+    if (action === "set_signed_date") {
+      const sd = String(body.signed_date || "").trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(sd)) return json({ error: "signed_date must be YYYY-MM-DD" }, 422);
+      const wid = String(body.worker_id || "").trim();
+      const ak = String(body.agreement_kind || "").trim();
+      if (!wid || !ak) return json({ error: "worker_id and agreement_kind are required" }, 400);
+      const upd = await fetch(`${SB}/rest/v1/onboarding_signatures?worker_id=eq.${wid}&agreement_kind=eq.${ak}&status=eq.signed`, {
+        method: "PATCH", headers: { ...svc, Prefer: "return=minimal" },
+        body: JSON.stringify({ signed_date: sd }),
+      });
+      if (!upd.ok) return json({ error: `update failed: ${await upd.text()}` }, 500);
+      await fetch(`${SB}/rest/v1/audit_log`, {
+        method: "POST", headers: { ...svc, Prefer: "return=minimal" },
+        body: JSON.stringify({ action: "signature.signed_date_set", actor: caller.email ?? null, entity: `${ak} · ${wid}`, detail: { worker_id: wid, agreement_kind: ak, signed_date: sd } }),
+      });
+      return json({ ok: true, signed_date: sd });
+    }
+
     if (!["approve", "needs_replacement", "waive", "defer"].includes(action)) return json({ error: "unknown action" }, 400);
     if (!document_id) return json({ error: "document_id required" }, 400);
 

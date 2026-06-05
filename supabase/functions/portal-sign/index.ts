@@ -114,6 +114,12 @@ Deno.serve(async (req) => {
     const profileName = [w.first_name, w.middle_name, w.last_name].filter(Boolean).join(" ");
     const name_mismatch = !!profileName && norm(profileName) !== norm(signed_legal_name);
 
+    // signed date: contractor-chosen (the UI auto-fills "today"); default to today
+    // in Asia/Manila. Stored separately from signed_at (the immutable timestamp).
+    const todayManila = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Manila" }).format(new Date());
+    const sd0 = String(body.signed_date || "").trim();
+    const signed_date = /^\d{4}-\d{2}-\d{2}$/.test(sd0) ? sd0 : todayManila;
+
     // capture the signature. IMMUTABLE: ignore-duplicates => ON CONFLICT DO
     // NOTHING, so an existing (worker, kind, version) signature row is NEVER
     // overwritten (it is legal evidence — IP/timestamp/data must not change).
@@ -123,7 +129,7 @@ Deno.serve(async (req) => {
       body: JSON.stringify({
         worker_id, agreement_kind, doc_version,
         doc_sha256: body.doc_sha256 ?? null,
-        signed_legal_name, signature_method,
+        signed_legal_name, signature_method, signed_date,
         signature_data: body.signature_data ?? null,
         scrolled_to_end: true,
         ip_address: clientIp(req),

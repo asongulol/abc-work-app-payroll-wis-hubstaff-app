@@ -119,7 +119,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 02:07 PHT · 27c5c6f";
+const BUILD = "2026-06-06 02:52 PHT · f6186a8";
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -971,6 +971,7 @@ function SignaturePad({ client, agreement, text, canSign, onSigned }){
   const [mode,setMode]=useState("type"); const [name,setName]=useState("");
   const [consent,setConsent]=useState(false); const [busy,setBusy]=useState(false);
   const [err,setErr]=useState(""); const [drawn,setDrawn]=useState(false);
+  const [signedDate,setSignedDate]=useState(()=>new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Manila"}).format(new Date()));  // auto-fills today; editable
   const canvasRef = React.useRef(null);
   useEffect(()=>{ client.from("workers").select("first_name,middle_name,last_name").maybeSingle()
     .then(({data})=>{ if(data) setName(fullName(data)); }); },[]);
@@ -1002,7 +1003,7 @@ function SignaturePad({ client, agreement, text, canSign, onSigned }){
     const { data, error } = await client.functions.invoke("portal-sign", { body: {
       action:"sign", agreement_kind:agreement.kind, doc_version:agreement.version||"1.0",
       doc_sha256, signed_legal_name:name.trim(), signature_method:(mode==="draw"?"drawn":"typed"),
-      signature_data, scrolled_to_end:true, device_fingerprint:deviceFingerprint(),
+      signature_data, scrolled_to_end:true, signed_date:signedDate, device_fingerprint:deviceFingerprint(),
     }});
     setBusy(false);
     if(error||(data&&data.error)){ setErr(await fnErr(error,data)); return; }
@@ -1017,6 +1018,8 @@ function SignaturePad({ client, agreement, text, canSign, onSigned }){
       </div>
       <label className="sub" style={{display:"block"}}>{t("ob.sign.legalname")}</label>
       <input value={name} onChange={e=>setName(e.target.value)} aria-label={t("ob.sign.legalname")} />
+      <label className="sub" style={{display:"block",marginTop:8}}>Date signed</label>
+      <input type="date" value={signedDate} onChange={e=>setSignedDate(e.target.value)} aria-label="Date signed" />
       {mode==="draw" && <div style={{margin:"6px 0"}}>
         <canvas ref={canvasRef} width={520} height={120} className="ob-canvas" aria-label="Signature drawing area"/>
         <button className="btn link" onClick={clearCanvas} style={{padding:"4px 0"}}>{t("ob.sign.clear")}</button>

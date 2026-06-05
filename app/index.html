@@ -531,7 +531,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 02:42 PHT · f9ee5a5";
+const BUILD = "2026-06-06 02:52 PHT · f6186a8";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -9431,10 +9431,11 @@ function CountersignModal({ defaultName, onCancel, onSubmit }){
 // Per-contractor agreement preparation (prefill + assign countersigner),
 // admin countersignature, and printable output. Writes onboarding_agreements
 // directly (is_admin() RLS); the contractor signature stays in onboarding_signatures.
-function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
+function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigChange }){
   const [insts,setInsts]=useState(null); const [tpls,setTpls]=useState({}); const [waddr,setWaddr]=useState("");
   const [admins,setAdmins]=useState([]); const [me,setMe]=useState(null);
   const [edit,setEdit]=useState({}); const [busy,setBusy]=useState(""); const [msg,setMsg]=useState(""); const [cs,setCs]=useState(null);
+  const [dateEdit,setDateEdit]=useState({}); const [dbusy,setDbusy]=useState("");
   const signedBy={}; (sigs||[]).filter(s=>s.status==="signed").forEach(s=>signedBy[s.agreement_kind]=s);
   function load(){
     client.from("onboarding_agreements").select("*").eq("worker_id",worker_id)
@@ -9477,6 +9478,20 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
     logEvent(client,{action:"agreement_countersigned",entity:`${workerName} · ${ONB_AGR_LABEL[k]||k}`,detail:{worker_id,agreement_kind:k,name:sig.name,method:sig.method}});
     load(); onChange&&onChange();
   }
+  // Correct the editable "date signed" after the fact. Patches ONLY signed_date
+  // server-side (portal-review set_signed_date) — the immutable signed_at/IP/
+  // signature evidence is never touched.
+  async function saveSignedDate(k){
+    const val=dateEdit[k]; if(!/^\d{4}-\d{2}-\d{2}$/.test(val||"")){ setMsg("Enter a valid date (YYYY-MM-DD)."); return; }
+    setDbusy(k); setMsg("");
+    const { data, error } = await client.functions.invoke("portal-review",
+      { body:{ action:"set_signed_date", worker_id, agreement_kind:k, signed_date:val } });
+    setDbusy("");
+    if(error||(data&&data.error)){ setMsg((data&&data.error)||await fnErrorMessage(error)); return; }
+    logEvent(client,{action:"signature_date_set",entity:`${workerName} · ${ONB_AGR_LABEL[k]||k}`,detail:{worker_id,agreement_kind:k,signed_date:val}});
+    setDateEdit(x=>{const n={...x};delete n[k];return n;});
+    onSigChange&&onSigChange();   // refresh sigs so the new date shows
+  }
   function printDoc(k){
     const r=insts[k]||{}; const sig=signedBy[k];
     const merged=mergeAgreement(tpls[k]||"",{ contractor_name:workerName, rate:r.f_rate, start_date:r.f_start_date,
@@ -9488,7 +9503,7 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
     const sigBlock=
       `<div style="margin-top:32px;display:flex;gap:48px;flex-wrap:wrap">`+
       `<div><div style="border-bottom:1px solid #000;min-width:240px;min-height:30px;padding-bottom:2px">${sig?mark(sig.signature_method,sig.signature_data,sig.signed_legal_name):""}</div>`+
-      `<div style="font-size:12px;color:#444">Contractor — ${escapeHtml(workerName)}<br>${sig?("Signed "+new Date(sig.signed_at).toLocaleString()+(sig.ip_address?(" · IP "+escapeHtml(sig.ip_address)):"")):"<i>Not yet signed</i>"}</div></div>`+
+      `<div style="font-size:12px;color:#444">Contractor — ${escapeHtml(workerName)}<br>${sig?("Signed "+escapeHtml(sig.signed_date||new Date(sig.signed_at).toISOString().slice(0,10))+(sig.ip_address?(" · IP "+escapeHtml(sig.ip_address)):"")):"<i>Not yet signed</i>"}</div></div>`+
       `<div><div style="border-bottom:1px solid #000;min-width:240px;min-height:30px;padding-bottom:2px">${r.countersigned_at?mark(r.countersign_method,r.countersign_data,r.countersigned_name):""}</div>`+
       `<div style="font-size:12px;color:#444">For ABC Kids NY${r.countersigner_name?(" — "+escapeHtml(r.countersigner_name)):""}<br>${r.countersigned_at?("Countersigned "+new Date(r.countersigned_at).toLocaleString()+(r.countersign_ip?(" · IP "+escapeHtml(r.countersign_ip)):"")):"<i>Not yet countersigned</i>"}</div></div>`+
       `</div>`;
@@ -9516,6 +9531,19 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
             <div className="muted" style={{fontSize:12,margin:"2px 0"}}>
               {prepared? `${r.f_position||"—"} · ${r.f_rate||"—"} · start ${r.f_start_date||"—"} · countersigner ${r.countersigner_name||"unassigned"}${(k==="ic_agreement"&&r.addendum_text)?(" · +"+(r.addendum_type==="scope_of_work"?"Scope of Work":"addendum")):""}` : <i>Not prepared yet</i>}
             </div>
+            {sig && (dateEdit[k]!==undefined ? (
+              <div style={{display:"flex",gap:6,alignItems:"center",margin:"2px 0",flexWrap:"wrap"}}>
+                <span className="muted" style={{fontSize:12}}>Date signed</span>
+                <input type="date" value={dateEdit[k]} onChange={ev=>setDateEdit(x=>({...x,[k]:ev.target.value}))} style={{fontSize:12}}/>
+                <button className="btn sm" disabled={dbusy===k} onClick={()=>saveSignedDate(k)}>{dbusy===k?"Saving…":"Save"}</button>
+                <button className="btn ghost sm" onClick={()=>setDateEdit(x=>{const n={...x};delete n[k];return n;})}>Cancel</button>
+              </div>
+            ) : (
+              <div className="muted" style={{fontSize:12,margin:"2px 0",display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+                Signed {sig.signed_date || (sig.signed_at? new Date(sig.signed_at).toISOString().slice(0,10) : "—")}
+                <button className="btn ghost sm" onClick={()=>setDateEdit(x=>({...x,[k]:sig.signed_date||(sig.signed_at?new Date(sig.signed_at).toISOString().slice(0,10):today)}))}>Edit date</button>
+              </div>
+            ))}
             {e ? (
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,margin:"6px 0"}}>
                 <label className="muted" style={{fontSize:12}}>Position / Role
@@ -9566,8 +9594,8 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
   const { data:wRows } = useQuery(client, c=>c.from("workers")
     .select("first_name,middle_name,last_name,email,work_email,mobile,ph_address,permanent_address,address_landmark,postal_code,date_of_birth,emergency_name,emergency_relationship,emergency_mobile,marital_status,education_level,course,year_graduated,school,gcash,paymaya,paypal,wise_tag,profile_extras")
     .eq("id",worker_id).limit(1), [client,worker_id]);
-  const { data:sigs } = useQuery(client, c=>c.from("onboarding_signatures")
-    .select("agreement_kind,doc_version,doc_sha256,signed_legal_name,signature_method,signature_data,ip_address,user_agent,device_fingerprint,signed_at,status")
+  const { data:sigs, reload:reloadSigs } = useQuery(client, c=>c.from("onboarding_signatures")
+    .select("agreement_kind,doc_version,doc_sha256,signed_legal_name,signature_method,signature_data,ip_address,user_agent,device_fingerprint,signed_at,signed_date,status")
     .eq("worker_id",worker_id).order("signed_at"), [client,worker_id]);
   const { data:docs, reload:reloadDocs } = useQuery(client, c=>c.from("documents")
     .select("id,kind,side,title,storage_path,issued_on,review_status,review_reason,reviewed_at,created_at")
@@ -9664,7 +9692,7 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
            </tr>))}</tbody></table></div>}
         <AgreementsPanel client={client} worker_id={worker_id}
           workerName={[w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ")||w.email||"Contractor"}
-          sigs={sigs} onChange={onChange}/>
+          sigs={sigs} onChange={onChange} onSigChange={reloadSigs}/>
 
         <h3 style={{marginBottom:4,marginTop:14}}>2 · Profile</h3>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px 16px",fontSize:13}}>
