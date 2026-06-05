@@ -98,6 +98,19 @@
   .qgrid{display:grid; grid-template-columns:1fr 1fr; gap:8px;}
   .qgrid a{display:flex; align-items:center; gap:10px; padding:11px 12px; border:1px solid var(--line); border-radius:10px; text-decoration:none; color:var(--text); background:#fff;}
   .qgrid .qico{width:24px; height:24px; display:flex; align-items:center; justify-content:center; font-size:20px;}
+  /* ---- shared sub-page polish (Pay slips / Time / Docs / Profile) ---- */
+  .pagehead{display:flex; align-items:center; gap:8px; margin:10px 2px 12px;}
+  .summary{display:flex; gap:10px; margin:0 0 12px;}
+  .summary .scell{flex:1; background:var(--accent-soft); border-radius:12px; padding:10px 12px;}
+  .summary .scell .v{font-size:18px; font-weight:800; color:var(--accent); line-height:1.1;}
+  .summary .scell .l{font-size:11px; color:var(--muted); margin-top:1px;}
+  .chev{color:var(--muted); font-size:13px; font-weight:500;}
+  .filedrop{display:block; border:1.5px dashed #cfd6e2; border-radius:12px; padding:18px 14px; text-align:center; color:var(--muted); background:#fbfcfe; cursor:pointer; font-size:14px;}
+  .filedrop:hover{border-color:var(--gold); color:var(--text);}
+  .filedrop input[type=file]{display:none;}
+  .docrow{display:flex; align-items:center; gap:12px;}
+  .docicon{width:40px; height:40px; border-radius:10px; background:var(--accent-soft); color:var(--accent); display:flex; align-items:center; justify-content:center; font-size:19px; flex:0 0 auto;}
+  .ptabs button{transition:color .15s, border-color .15s;}
   @media (prefers-reduced-motion: reduce){ *{transition:none !important; animation:none !important;} }
 </style>
 </head>
@@ -106,7 +119,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 05:41 PHT · aaefb34";
+const BUILD = "2026-06-05 23:49 PHT · fd6e219";
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -296,9 +309,15 @@ function PaySlips({ client }){
   if(rows===null) return <div className="wrap"><div className="empty">Loading…</div></div>;
   if(!rows.length) return <div className="wrap"><div className="empty">No pay slips yet.</div></div>;
   const paid = s => s==="sent"||s==="reconciled";
+  const received=rows.filter(p=>paid(p.status)).reduce((s,p)=>s+Number(p.net_php||0),0);
+  const lastP=rows.find(p=>paid(p.status));
   return (
     <div className="wrap">
-      <h2>Pay slips</h2>
+      <div className="pagehead"><span className="sticker">📮 Pay slips</span></div>
+      <div className="summary">
+        <div className="scell"><div className="v">{lastP?peso(lastP.net_php):"—"}</div><div className="l">Last pay received</div></div>
+        <div className="scell"><div className="v">{peso(received)}</div><div className="l">Total received</div></div>
+      </div>
       {rows.map(p=>{
         const pp=p.pay_periods||{}; const isOpen=open===p.id;
         const misc=Array.isArray(p.misc_items)?p.misc_items:[];
@@ -307,7 +326,7 @@ function PaySlips({ client }){
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
               <div>
                 <div style={{fontWeight:700}}>{pp.period_start} → {pp.period_end}</div>
-                <div className="sub">Pay date {pp.pay_date||"—"} · <span className={"pill "+(paid(p.status)?"paid":"pending")}>{paid(p.status)?"paid":"pending"}</span></div>
+                <div className="sub">Pay date {pp.pay_date||"—"} · <span className={"pill "+(paid(p.status)?"paid":"pending")}>{paid(p.status)?"paid":"pending"}</span> <span className="chev">{isOpen?"▾":"▸"}</span></div>
               </div>
               <div className="net">{peso(p.net_php)}</div>
             </div>
@@ -360,9 +379,14 @@ function TimeView({ client }){
     g.daysList=Object.values(g.byDay).filter(x=>x.tracked>0||x.pto>0).sort((a,b)=>a.date.localeCompare(b.date));
     g.days=g.daysList.length; return g; });
   const fmtDay=(d)=>{ try{ return new Date(d+"T00:00:00").toLocaleDateString(undefined,{weekday:"short",month:"short",day:"numeric"}); }catch{ return d; } };
+  const latest=periods[0];
   return (
     <div className="wrap">
-      <h2>Time</h2>
+      <div className="pagehead"><span className="sticker">⏱ Your time</span></div>
+      {latest && <div className="summary">
+        <div className="scell"><div className="v">{(hrs(latest.tracked)+hrs(latest.pto)).toFixed(1)} h</div><div className="l">{latest.key} total</div></div>
+        <div className="scell"><div className="v">{latest.days}</div><div className="l">day{latest.days===1?"":"s"} worked</div></div>
+      </div>}
       {periods.map(g=>{
         const isOpen=!!open[g.key];
         return (
@@ -373,7 +397,7 @@ function TimeView({ client }){
               <span className="sub" style={{fontWeight:500}}>{g.days} day{g.days===1?"":"s"} {isOpen?"▾":"▸"}</span>
             </div>
             <div className="row"><span className="k">Worked</span><span>{hrs(g.tracked).toFixed(2)} h</span></div>
-            {g.pto>0 && <div className="row"><span className="k">PTO</span><span>{hrs(g.pto).toFixed(2)} h</span></div>}
+            {g.pto>0 && <div className="row"><span className="k">PTO</span><span style={{color:"var(--gold)",fontWeight:600}}>{hrs(g.pto).toFixed(2)} h</span></div>}
             <div className="row" style={{fontWeight:700}}><span>Total</span><span>{(hrs(g.tracked)+hrs(g.pto)).toFixed(2)} h</span></div>
           </div>
           {isOpen && (
@@ -430,7 +454,7 @@ function DocsView({ client, session }){
   }
   return (
     <div className="wrap">
-      <h2>Documents</h2>
+      <div className="pagehead"><span className="sticker">📄 Documents</span></div>
       <div className="card">
         <div style={{fontWeight:700,marginBottom:6}}>Upload a document</div>
         <label className="sub">Type</label>
@@ -440,7 +464,10 @@ function DocsView({ client, session }){
           <option value="w8ben">W-8BEN</option>
           <option value="gov_id">Government ID</option>
         </select>
-        <input type="file" onChange={e=>setFile(e.target.files?.[0]||null)} style={{margin:"6px 0"}}/>
+        <label className="filedrop" style={{margin:"8px 0"}}>
+          {file ? <span style={{color:"var(--text)",fontWeight:600}}>📎 {file.name}</span> : <span>Tap to choose a file — PDF, JPG or PNG</span>}
+          <input type="file" onChange={e=>setFile(e.target.files?.[0]||null)}/>
+        </label>
         {msg && <div style={{fontSize:14,padding:"4px 0",color:msg.includes("✓")?"var(--good)":"var(--accent)"}}>{msg}</div>}
         <button className="btn" style={{width:"100%"}} disabled={busy} onClick={upload}>{busy?"Uploading…":"Upload"}</button>
       </div>
@@ -449,11 +476,14 @@ function DocsView({ client, session }){
        !rows.length ? <div className="empty">No documents on file yet.</div> :
        rows.map((d,i)=>(
         <div className="card" key={d.id||i}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <div style={{fontWeight:700}}>{label(d.kind)}</div>
+          <div className="docrow">
+            <span className="docicon">📄</span>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontWeight:700}}>{label(d.kind)}</div>
+              {d.title && <div className="sub" style={{margin:0,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{d.title}</div>}
+            </div>
             {d.storage_path && <button className="btn link" style={{padding:"4px 8px"}} onClick={()=>view(d)}>View</button>}
           </div>
-          {d.title && <div className="sub">{d.title}</div>}
           {d.signed_on && <div className="row"><span className="k">Signed</span><span>{d.signed_on}</span></div>}
           {d.expires_on && <div className="row"><span className="k">Expires</span><span>{d.expires_on}</span></div>}
         </div>
@@ -505,13 +535,18 @@ function ProfileView({ client, session, onSignOut }){
   const secEditable=secFields.some(f=>isEditable(f.k));
   return (
     <div className="wrap">
-      <h2>Profile</h2>
-      <div className="card">
-        <div style={{fontWeight:700,fontSize:18,marginBottom:4}}>{fullName(w)||"—"}</div>
+      <div className="pagehead"><span className="sticker">👤 Profile</span></div>
+      <div className="paycard">
+        <div style={{display:"flex",gap:12,alignItems:"center",marginBottom:8}}>
+          <div className="avatar">{((w.first_name?.[0]||"")+(w.last_name?.[0]||"")).toUpperCase()||"?"}</div>
+          <div style={{minWidth:0}}>
+            <div style={{fontWeight:800,fontSize:18}}>{fullName(w)||"—"}</div>
+            <div className="sub" style={{margin:0}}>Engaged since {w.hire_date||"—"}</div>
+          </div>
+        </div>
         <div className="row"><span className="k">Personal email</span><span>{w.email||session?.user?.email||"—"}</span></div>
         {w.work_email && <div className="row"><span className="k">Work email</span><span>{w.work_email}</span></div>}
         {w.work_number && <div className="row"><span className="k">Work number</span><span>{w.work_number}{w.work_extension?` ext. ${w.work_extension}`:""}</span></div>}
-        <div className="row"><span className="k">Engaged since</span><span>{w.hire_date||"—"}</span></div>
         <div className="row"><span className="k">Paid via</span><span>{w.payout_method||"—"}</span></div>
       </div>
       <div className="ptabs">
