@@ -70,6 +70,35 @@
   .empty{color:var(--muted); text-align:center; padding:24px 8px;}
   h2{font-size:18px; margin:14px 2px 2px;}
   code{background:#f3f4f6; padding:1px 5px; border-radius:5px; font-size:13px;}
+  /* ---- Home redesign: Skyline & Kumusta + Golden Hour (hybrid) ---- */
+  .avatar{width:44px; height:44px; border-radius:50%; background:var(--accent); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:16px; flex:0 0 auto; box-shadow:0 0 0 2px var(--gold);}
+  .stickwrap{margin:20px 0 6px 4px;}
+  .sticker{display:inline-flex; align-items:center; gap:6px; background:#fff; border:1px solid var(--line); border-radius:9px; padding:4px 10px; font-size:12px; font-weight:800; letter-spacing:.02em; color:var(--accent); box-shadow:0 2px 7px rgba(31,58,104,.14); transform:rotate(-2.5deg);}
+  .nyhero{position:relative; overflow:hidden; color:#fff; border-radius:14px; padding:16px 16px 0; margin:12px 0; background:linear-gradient(180deg,#14213d,#1F3A68 62%,#24305a); transition:background 1.2s ease;}
+  .nyhero .eyebrow{font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:rgba(255,255,255,.72);}
+  .nyhero .zones{display:flex; gap:8px; margin-top:10px; position:relative; z-index:3;}
+  .nyhero .z{flex:1;} .nyhero .z .lbl{font-size:12px; color:rgba(255,255,255,.8);}
+  .nyhero .z .t{font-size:22px; font-weight:800; line-height:1.15;} .nyhero .z .d{font-size:11px; color:rgba(255,255,255,.72);}
+  .nyhero .vline{width:1px; background:rgba(255,255,255,.18);}
+  .nyhero .ghr{height:1px; background:var(--gold); opacity:.85; margin:13px 0 9px; position:relative; z-index:3;}
+  .nyhero .fact{font-size:13.5px; line-height:1.45; color:rgba(255,255,255,.92); position:relative; z-index:3; padding-bottom:64px;}
+  .nyhero .fact b{color:var(--gold);}
+  .nyhero .sky{position:absolute; left:0; right:0; bottom:0; width:100%; height:74px; display:block; z-index:1;}
+  .nyhero .celestial{position:absolute; top:12px; right:14px; z-index:2;}
+  .nyhero .win{animation:winOn .5s ease both;}
+  @keyframes winOn{from{opacity:0} to{opacity:1}}
+  .paycard{background:#fff; border:1px solid var(--line); border-radius:var(--radius); padding:16px; margin:4px 0 12px; box-shadow:0 6px 20px rgba(31,58,104,.10);}
+  .bigpay{font-size:27px; font-weight:800; color:var(--accent); line-height:1.1;}
+  .obar{position:relative; height:8px; background:linear-gradient(90deg,#f0e6d2,#f6efe0); border-radius:999px; margin:10px 0 4px;}
+  .obar > i{display:block; height:100%; background:linear-gradient(90deg,#e6b860,var(--gold)); border-radius:999px; transition:width .7s ease;}
+  .obar .paysun{position:absolute; top:-7px; font-size:15px; transform:translateX(-50%);}
+  .hair{height:1px; background:var(--line); margin:12px 0;}
+  .annlist > .item{padding:10px 0; border-top:1px solid var(--line);} .annlist > .item:first-child{border-top:0;}
+  .annlist .dot{color:var(--gold); font-weight:900; margin-right:4px;}
+  .qgrid{display:grid; grid-template-columns:1fr 1fr; gap:8px;}
+  .qgrid a{display:flex; align-items:center; gap:10px; padding:11px 12px; border:1px solid var(--line); border-radius:10px; text-decoration:none; color:var(--text); background:#fff;}
+  .qgrid .qico{width:24px; height:24px; display:flex; align-items:center; justify-content:center; font-size:20px;}
+  @media (prefers-reduced-motion: reduce){ *{transition:none !important; animation:none !important;} }
 </style>
 </head>
 <body>
@@ -557,12 +586,11 @@ function Favicon({ domain, fallback }){
 function QuickLinks(){
   return (
     <div>
-      <h2 style={{color:"var(--accent)"}}>Quick links</h2>
-      <div className="card" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,padding:10}}>
+      <div className="stickwrap"><span className="sticker">🧰 Your toolkit</span></div>
+      <div className="qgrid">
         {QUICK_LINKS.map(l=>(
-          <a key={l.label} href={l.url} target="_blank" rel="noreferrer"
-             style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",border:"1px solid var(--line)",borderRadius:10,textDecoration:"none",color:"var(--text)"}}>
-            <Favicon domain={l.domain} fallback={l.icon}/>
+          <a key={l.label} href={l.url} target="_blank" rel="noreferrer">
+            <span className="qico"><Favicon domain={l.domain} fallback={l.icon}/></span>
             <span style={{minWidth:0}}><span style={{fontWeight:700,display:"block"}}>{l.label}</span>
               <span className="sub" style={{margin:0,fontSize:12}}>{l.desc}</span></span>
           </a>
@@ -616,22 +644,7 @@ function OnboardingDocReminder({ client, session }){
 }
 // NYC current weather via open-meteo (free, no key, CORS-friendly).
 const WCODE={0:["Clear","☀️"],1:["Mainly clear","🌤️"],2:["Partly cloudy","⛅"],3:["Overcast","☁️"],45:["Fog","🌫️"],48:["Fog","🌫️"],51:["Light drizzle","🌦️"],53:["Drizzle","🌦️"],55:["Drizzle","🌦️"],61:["Light rain","🌧️"],63:["Rain","🌧️"],65:["Heavy rain","🌧️"],66:["Freezing rain","🌧️"],67:["Freezing rain","🌧️"],71:["Light snow","🌨️"],73:["Snow","🌨️"],75:["Heavy snow","❄️"],77:["Snow grains","🌨️"],80:["Showers","🌦️"],81:["Showers","🌦️"],82:["Heavy showers","⛈️"],85:["Snow showers","🌨️"],86:["Snow showers","🌨️"],95:["Thunderstorm","⛈️"],96:["Thunderstorm","⛈️"],99:["Thunderstorm","⛈️"]};
-function NyWeather(){
-  const [c,setC]=useState(null); const [err,setErr]=useState(false);
-  useEffect(()=>{
-    fetch("https://api.open-meteo.com/v1/forecast?latitude=40.7128&longitude=-74.006&current=temperature_2m,weather_code&temperature_unit=fahrenheit&timezone=America%2FNew_York")
-      .then(r=>r.json()).then(d=>{ if(d&&d.current) setC(d.current); else setErr(true); }).catch(()=>setErr(true));
-  },[]);
-  if(err) return null;
-  const [desc,icon]=(c&&WCODE[c.weather_code])||["",""];
-  return (
-    <div className="card" style={{display:"flex",alignItems:"center",gap:12,borderLeft:"4px solid var(--gold)"}}>
-      <div style={{fontSize:34,lineHeight:1}}>{c?(icon||"🌡️"):"…"}</div>
-      <div><div style={{fontWeight:700}}>New York weather</div>
-        <div className="sub" style={{margin:0}}>{c?`${Math.round(c.temperature_2m)}°F · ${desc||"—"}`:"Loading…"}</div></div>
-    </div>
-  );
-}
+// (NyWeather merged into NyPanel — weather now tints the live "From New York" hero.)
 // Curated NYC trivia, rotated by day-of-year (NY date) — no external API.
 const NYC_TRIVIA=[
   "The NYC subway has 472 stations — more than any other system in the world.",
@@ -655,37 +668,63 @@ const NYC_TRIVIA=[
   "NYC's five boroughs are Manhattan, Brooklyn, Queens, the Bronx, and Staten Island.",
   "The nickname 'The Big Apple' spread from 1920s horse-racing slang.",
 ];
-function NyTrivia(){
-  const tz="America/New_York";
-  const s=new Intl.DateTimeFormat("en-CA",{timeZone:tz,year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
-  const [y,m,d]=s.split("-").map(Number);
-  const doy=Math.floor((Date.UTC(y,m-1,d)-Date.UTC(y,0,1))/86400000);
-  return (
-    <div className="card" style={{borderLeft:"4px solid var(--gold)"}}>
-      <div style={{fontWeight:700,marginBottom:2}}>🗽 NYC fact of the day</div>
-      <div style={{fontSize:14}}>{NYC_TRIVIA[doy%NYC_TRIVIA.length]}</div>
-    </div>
-  );
+// (NyTrivia merged into NyPanel — the daily NYC fact is now narrated by Milo in the hero.)
+// New York clock-hour (0-23) and the sky phase it implies. Drives the living
+// time-of-day hero: the panel's sky matches New York's real time right now.
+function nyHourNow(){ return Number(new Intl.DateTimeFormat("en-US",{timeZone:"America/New_York",hour:"numeric",hour12:false}).format(new Date())); }
+function skyPhase(h){
+  if(h>=5&&h<7)   return {grad:"linear-gradient(180deg,#2a3a6b,#6b5a8c 55%,#1F3A68)", night:false, sign:"New York is waking up."};
+  if(h>=7&&h<17)  return {grad:"linear-gradient(180deg,#2f5aa0,#5b8fd4 55%,#1F3A68)", night:false, sign:"It's a fresh day over in New York."};
+  if(h>=17&&h<19) return {grad:"linear-gradient(180deg,#4a3f7a,#b5703e 55%,#1F3A68)", night:false, sign:"Golden hour in the city right now."};
+  if(h>=19&&h<21) return {grad:"linear-gradient(180deg,#21305c,#3d3566 55%,#8a4a52)", night:true,  sign:"New York is settling into the evening."};
+  return                  {grad:"linear-gradient(180deg,#14213d,#1F3A68 62%,#24305a)", night:true,  sign:"New York is winding down for the night."};
 }
-// Live two-zone world clock: Philippine Time + New York Time, re-rendered
-// every 20s so the minutes stay current.
-function WorldClock(){
+// Fused "From New York" hero: live two-zone clocks (PHT + NYT, re-rendered every
+// 20s) + NY weather + the rotating NYC fact, over a sky that matches New York's
+// real time of day. At dusk/night the skyline windows light up; Milo the bodega
+// cat sits on a ledge and narrates the fact, with the Liberty torch at the edge.
+function NyPanel(){
   const [,tick]=useState(0);
+  const [wx,setWx]=useState(null);
   useEffect(()=>{ const id=setInterval(()=>tick(t=>t+1),20000); return ()=>clearInterval(id); },[]);
+  useEffect(()=>{
+    fetch("https://api.open-meteo.com/v1/forecast?latitude=40.7128&longitude=-74.006&current=temperature_2m,weather_code&temperature_unit=fahrenheit&timezone=America%2FNew_York")
+      .then(r=>r.json()).then(d=>{ if(d&&d.current) setWx(d.current); }).catch(()=>{});
+  },[]);
   const fmt=(tz)=>new Intl.DateTimeFormat("en-US",{timeZone:tz,hour:"numeric",minute:"2-digit",hour12:true}).format(new Date());
   const day=(tz)=>new Intl.DateTimeFormat("en-US",{timeZone:tz,weekday:"short",month:"short",day:"numeric"}).format(new Date());
-  const Z=({flag,label,tz,accent})=>(
-    <div style={{flex:1,textAlign:"center"}}>
-      <div className="sub" style={{margin:0,fontSize:12}}>{flag} {label}</div>
-      <div style={{fontWeight:800,fontSize:20,color:accent?"var(--accent)":"var(--text)"}}>{fmt(tz)}</div>
-      <div className="sub" style={{margin:0,fontSize:11}}>{day(tz)}</div>
-    </div>
-  );
+  const ph=skyPhase(nyHourNow());
+  const ds=new Intl.DateTimeFormat("en-CA",{timeZone:"America/New_York",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+  const [yy,mm,dd]=ds.split("-").map(Number);
+  const doy=Math.floor((Date.UTC(yy,mm-1,dd)-Date.UTC(yy,0,1))/86400000);
+  const fact=NYC_TRIVIA[doy%NYC_TRIVIA.length];
+  const [wdesc,wicon]=(wx&&WCODE[wx.weather_code])||["",""];
+  const wxStr=wx?` · ${wicon||"🌡️"} ${Math.round(wx.temperature_2m)}°F`:"";
+  const WIN=[[38,46,.1],[90,40,.25],[90,48,.4],[112,52,.55],[138,32,.7],[138,42,.85],[210,38,1],[232,50,1.15],[255,28,1.3],[255,38,1.45],[272,44,1.6],[324,40,1.75],[344,52,1.9]];
   return (
-    <div className="card" style={{display:"flex",alignItems:"center",gap:8,padding:"12px 14px"}}>
-      <Z flag="🇵🇭" label="Manila" tz="Asia/Manila"/>
-      <div style={{width:1,alignSelf:"stretch",background:"var(--line)"}}/>
-      <Z flag="🗽" label="New York" tz="America/New_York" accent/>
+    <div className="nyhero" style={{background:ph.grad}}>
+      <div className="eyebrow">🗽 From New York</div>
+      <svg className="celestial" width="30" height="30" viewBox="0 0 30 30" aria-hidden="true">
+        {ph.night
+          ? <g><circle cx="15" cy="15" r="9" fill="#D4A24C"/><circle cx="19" cy="13" r="8" fill="#1b2c4f"/></g>
+          : <g><circle cx="15" cy="15" r="13" fill="#F4C95D" opacity="0.18"/><circle cx="15" cy="15" r="8" fill="#F4C95D"/></g>}
+      </svg>
+      <div className="zones">
+        <div className="z"><div className="lbl">🇵🇭 Manila</div><div className="t">{fmt("Asia/Manila")}</div><div className="d">{day("Asia/Manila")}</div></div>
+        <div className="vline"></div>
+        <div className="z"><div className="lbl">🗽 New York</div><div className="t">{fmt("America/New_York")}</div><div className="d">{day("America/New_York")}{wxStr}</div></div>
+      </div>
+      <div className="ghr"></div>
+      <div className="fact"><b>Milo says:</b> {fact}</div>
+      <svg className="sky" viewBox="0 0 400 74" preserveAspectRatio="none" aria-hidden="true">
+        {ph.night && <g fill="#fff"><circle cx="40" cy="10" r="1" opacity="0.7"/><circle cx="120" cy="7" r="1" opacity="0.5"/><circle cx="300" cy="8" r="1" opacity="0.55"/><circle cx="360" cy="13" r="1" opacity="0.7"/></g>}
+        <g fill="#0c1730" opacity="0.85">
+          <rect x="0" y="50" width="30" height="24"/><rect x="32" y="40" width="22" height="34"/><rect x="56" y="54" width="26" height="20"/><rect x="84" y="32" width="18" height="42"/><rect x="104" y="46" width="28" height="28"/><rect x="134" y="24" width="12" height="50"/><rect x="148" y="36" width="26" height="38"/><rect x="176" y="52" width="30" height="22"/><rect x="206" y="30" width="16" height="44"/><rect x="224" y="42" width="26" height="32"/><rect x="252" y="20" width="10" height="54"/><rect x="264" y="36" width="22" height="38"/><rect x="288" y="48" width="28" height="26"/><rect x="318" y="32" width="16" height="42"/><rect x="336" y="44" width="26" height="30"/><rect x="364" y="54" width="20" height="20"/>
+        </g>
+        {ph.night && <g fill="#D4A24C">{WIN.map((p,i)=><rect key={i} className="win" style={{animationDelay:p[2]+"s"}} x={p[0]} y={p[1]} width="2" height="3"/>)}</g>}
+        <g transform="translate(392,26)"><rect x="-2" y="6" width="4" height="46" fill="#0c1730"/><ellipse cx="0" cy="3" rx="6" ry="3.5" fill="#0c1730"/><path d="M0 -10 L4 1 L-4 1 Z" fill="#D4A24C"/><circle cx="0" cy="-11" r="2.6" fill="#ffd98a"/></g>
+        <g transform="translate(140,16)"><ellipse cx="0" cy="9" rx="8" ry="6" fill="#EAEFF7"/><path d="M-6 5 L-8 -2 L-2 3 Z" fill="#EAEFF7"/><path d="M6 5 L8 -2 L2 3 Z" fill="#EAEFF7"/><path d="M8 10 q6 -1 5 -8" stroke="#EAEFF7" strokeWidth="2.6" fill="none" strokeLinecap="round"/><circle cx="-2.5" cy="7.5" r="1" fill="#16264A"/><circle cx="2.5" cy="7.5" r="1" fill="#16264A"/><rect x="-4.5" y="12" width="9" height="1.8" rx="1" fill="#D4A24C"/></g>
+      </svg>
     </div>
   );
 }
@@ -698,6 +737,19 @@ function Home({ client, session }){
   const greetTL=hour<12?"Magandang umaga":hour<18?"Magandang hapon":"Magandang gabi";
   const ex=(w&&w.profile_extras&&typeof w.profile_extras==="object")?w.profile_extras:{};
   const greetName=(ex.nickname||w?.first_name||"").trim();
+  // hybrid Home extras: avatar initials, NY-time sky phase (for the greeting sign-off
+  // + emoji), and the current pay-period progress toward payday.
+  const nyPh=skyPhase(nyHourNow());
+  const greetEmoji=nyPh.night?"🌙":"☀️";
+  const initials=((greetName||w?.first_name||"?").trim().split(/\s+/).map(s=>s[0]).slice(0,2).join("")||"?").toUpperCase();
+  const fmtMD=iso=>{ try{ return new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric",timeZone:"UTC"}).format(new Date(iso+"T00:00:00Z")); }catch{ return iso; } };
+  const todayISO=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Manila"}).format(new Date());
+  const dNum=iso=>Number(String(iso).slice(8,10));
+  const totalDays=Math.max(1,dNum(per.end)-dNum(per.start)+1);
+  const elapsedDays=Math.min(totalDays,Math.max(0,dNum(todayISO)-dNum(per.start)+1));
+  const pct=Math.round(elapsedDays/totalDays*100);
+  const payISO=(nextPay&&nextPay.pay)||per.pay;
+  const daysToPay=Math.round((Date.parse(payISO+"T00:00:00Z")-Date.parse(todayISO+"T00:00:00Z"))/86400000);
   useEffect(()=>{
     client.from("workers").select("id,first_name,profile_extras,shift_start,shift_end").maybeSingle().then(({data})=>setW(data||{}));
     client.from("payments").select("net_php,status,pay_periods(pay_date,period_start,period_end)")
@@ -753,38 +805,52 @@ function Home({ client, session }){
   }
   return (
     <div className="wrap">
-      <div style={{margin:"6px 2px 4px"}}>
-        <div style={{fontSize:13,color:"var(--muted)"}}>{clock} · PHT</div>
-        <h2 style={{margin:"2px 0"}}>{greetTL}{greetName?`, ${greetName}`:""} 👋</h2>
-        <div className="sub">{greetEN} — here's your day.</div>
+      <div style={{margin:"8px 2px 2px",fontSize:13,color:"var(--muted)"}}>{clock} · PHT</div>
+      <div style={{display:"flex",gap:12,alignItems:"center",margin:"6px 2px 2px"}}>
+        <div className="avatar">{initials}</div>
+        <div>
+          <h2 style={{margin:0,fontSize:19}}>{greetTL}{greetName?`, ${greetName}`:""} {greetEmoji}</h2>
+          <div className="sub" style={{margin:"1px 0 0"}}>{nyPh.sign}</div>
+        </div>
       </div>
-      <WorldClock/>
+      <NyPanel/>
       <OnboardingDocReminder client={client} session={session}/>
-      <div className="card" style={{borderTop:"3px solid var(--accent)"}}>
-        <div style={{fontWeight:700,marginBottom:6}}>This pay period</div>
-        <div className="row"><span className="k">Period</span><span>{per.start} → {per.end}</span></div>
-        <div className="row" style={{borderTop:"1px solid var(--line)",marginTop:4,paddingTop:6}}>
+      <div className="stickwrap"><span className="sticker">📮 Your pay</span></div>
+      <div className="paycard">
+        <div className="row" style={{alignItems:"flex-end",padding:0}}>
+          <div>
+            <div className="sub" style={{margin:0}}>Next pay</div>
+            <div className="bigpay">{nextPay===undefined?"…":peso(nextPay?nextPay.net:null)}</div>
+            <div className="sub" style={{margin:"2px 0 0"}}>{nextPay===undefined?" ":nextPay
+              ? `pays ${nextPay.pay||per.pay}${daysToPay>0?` · in ${daysToPay} day${daysToPay>1?"s":""}`:""}`
+              : `being prepared · pays ${per.pay}`}</div>
+          </div>
+          <span className="pill pending">pending</span>
+        </div>
+        <div style={{marginTop:12}}>
+          <div className="sub" style={{margin:0}}>Day {elapsedDays} of {totalDays} — sun's climbing toward payday</div>
+          <div className="obar"><i style={{width:pct+"%"}}></i><span className="paysun" style={{left:pct+"%"}}>☀️</span></div>
+          <div className="sub" style={{margin:"2px 0 0",display:"flex",justifyContent:"space-between"}}><span>{fmtMD(per.start)}</span><span>{fmtMD(per.end)}</span></div>
+        </div>
+        <div className="hair"></div>
+        <div className="row" style={{padding:0}}>
           <span className="k">Last pay</span>
           <span>{lastPaid===undefined?"…":lastPaid
             ? <><b>{peso(lastPaid.net)}</b> · {lastPaid.pay||"—"} <span className="pill paid">paid</span></>
-            : "—"}</span></div>
-        <div className="row">
-          <span className="k">Next pay</span>
-          <span>{nextPay===undefined?"…":nextPay
-            ? <><b>{peso(nextPay.net)}</b> · {nextPay.pay||"—"} <span className="pill pending">pending</span></>
-            : <>{per.pay} <span className="muted" style={{fontSize:11}}>· in progress</span></>}</span></div>
+            : "—"}</span>
+        </div>
       </div>
-      <h2 style={{color:"var(--accent)"}}>From New York</h2>
-      <NyWeather/>
-      <NyTrivia/>
+      <div className="stickwrap"><span className="sticker">📣 Word from the office</span></div>
       {anns===null?<div className="empty">Loading…</div>: !anns.length?<div className="empty">No announcements right now.</div>:
-        anns.map((a,i)=>(
-          <div className="card" key={i} style={{borderLeft:"4px solid var(--gold)"}}>
-            <div style={{fontWeight:700}}>{a.title}</div>
-            <div className="sub">{String(a.published_at).slice(0,10)}</div>
-            {a.body && <div style={{fontSize:14,marginTop:4,whiteSpace:"pre-wrap"}}>{a.body}</div>}
-          </div>
-        ))}
+        <div className="card annlist">
+          {anns.map((a,i)=>(
+            <div className="item" key={i}>
+              <div style={{fontWeight:700}}><span className="dot">•</span>{a.title}</div>
+              <div className="sub" style={{margin:"1px 0 3px"}}>{String(a.published_at).slice(0,10)}</div>
+              {a.body && <div style={{fontSize:14,whiteSpace:"pre-wrap"}}>{a.body}</div>}
+            </div>
+          ))}
+        </div>}
       <QuickLinks/>
       {moodPrompt && (
         <div role="dialog" aria-modal="true" aria-label="Shift mood check-in"
