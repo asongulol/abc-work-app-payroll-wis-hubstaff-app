@@ -522,7 +522,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 11:15 PHT · 96ad499";
+const BUILD = "2026-06-05 11:28 PHT · 23d23f4";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -7321,6 +7321,109 @@ function downloadCSV(filename, rowsOfArrays){
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
+// Reconciliation overview (Review & Recon tab): lists EVERY locked/paid period
+// with its Wise reconcile status and a one-click "reconcile all pending".
+// "Reconcile" here = finalize confirmed payments to status 'reconciled' and tag
+// the period "Paid · Wise OK". A payment is reconcilable when it is 'sent', has a
+// paid_at, and is either NON-Wise (nothing to match) or Wise WITH a matched
+// transfer id. Genuinely-unmatched Wise rows (sent, wise, no transfer) are left
+// 'sent' and flagged so they can be matched per-period. Status-only, reversible,
+// no money moves. company-scoped; the bulk action requires a single company.
+function ReconcileOverview({ client, companyId, consolidated, onPick }){
+  const [busy,setBusy]=useState(false);
+  const [msg,setMsg]=useState("");
+  const {data,loading,reload}=useQuery(client,c=>{
+    let q=c.from("payments").select("net_php,status,payout_method,wise_transfer_id,paid_at,pay_periods(id,period_start,period_end,state)");
+    if(!consolidated&&companyId)q=q.eq("company_id",companyId);
+    return q;
+  },[client,companyId,consolidated]);
+  const pays=data||[];
+  const byP={};
+  pays.forEach(p=>{ const pp=p.pay_periods; if(!pp) return;
+    const g=byP[pp.id]||(byP[pp.id]={id:pp.id,start:pp.period_start,end:pp.period_end,state:pp.state,
+      total:0,reconciled:0,readySent:0,unmatchedWise:0,drafts:0,net:0});
+    g.total++; g.net+=Number(p.net_php||0);
+    if(p.status==="reconciled") g.reconciled++;
+    else if(p.status==="draft"||p.status==="queued") g.drafts++;
+    else if(p.status==="sent"){
+      const ready = p.paid_at && (p.payout_method!=="wise" || p.wise_transfer_id);
+      if(ready) g.readySent++; else g.unmatchedWise++;
+    }
+  });
+  const periods=Object.values(byP).sort((a,b)=>String(b.start).localeCompare(String(a.start)));
+  const totalReadySent=periods.reduce((s,p)=>s+p.readySent,0);
+  const pendingPeriods=periods.filter(p=>p.readySent>0).length;
+
+  async function reconcileAll(){
+    if(!totalReadySent){ setMsg("Nothing pending — every confirmed payment is already reconciled."); return; }
+    const ok=await confirmDanger({
+      title:`Reconcile ${totalReadySent} payment(s)?`,
+      message:`Finalize ${totalReadySent} confirmed payment(s) across ${pendingPeriods} period(s) as reconciled and tag them "Paid · Wise OK".`,
+      consequence:"Status-only — no money moves, and it's reversible by re-polling. Wise payments with NO matched transfer are left as 'sent' (flagged) for you to match per-period first.",
+      confirmLabel:"Reconcile all pending",
+    });
+    if(!ok) return;
+    setBusy(true); setMsg("");
+    try{
+      let q=client.from("payments").update({status:"reconciled"});
+      if(!consolidated&&companyId) q=q.eq("company_id",companyId);
+      // null payout_method counts as non-Wise (paid, nothing to match) — matches the JS readySent counter.
+      q=q.eq("status","sent").not("paid_at","is",null).or("payout_method.is.null,payout_method.neq.wise,wise_transfer_id.not.is.null").select("id");
+      const {data:upd,error}=await q;
+      if(error) throw new Error(error.message);
+      logEvent(client,{ company_id:companyId, action:"wise_recipient_sync",
+        detail:{ kind:"reconcile_all", reconciled:(upd||[]).length, periods:pendingPeriods } });
+      setMsg(`Reconciled ${(upd||[]).length} payment(s) — now tagged Paid · Wise OK.`);
+      reload();
+    }catch(ex){ setMsg("Reconcile-all failed: "+(ex.message||ex)); }
+    finally{ setBusy(false); }
+  }
+
+  return (
+    <div className="card no-print" style={{marginTop:12}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+        <div><b>Reconciliation overview</b>
+          <div className="sub" style={{margin:"2px 0 0"}}>Every locked/paid period and its Wise reconcile status.</div></div>
+        {consolidated
+          ? <span className="muted" style={{fontSize:12}}>Pick a single company to reconcile</span>
+          : <button className="btn" disabled={busy||loading||!totalReadySent} onClick={reconcileAll}>
+              {busy?"Reconciling…":`Reconcile all pending (${totalReadySent})`}</button>}
+      </div>
+      {msg && <div style={{marginTop:8}}><Banner msg={msg}/></div>}
+      {loading?<Skeleton rows={4}/>:periods.length===0?<div className="empty">No locked or paid periods yet.</div>:
+      <div className="table-scroll" style={{marginTop:8}}><table>
+        <thead><tr><th>Period</th><th>Contractors</th><th>Reconcile status</th><th></th></tr></thead>
+        <tbody>
+          {periods.map(p=>{
+            const done = p.total>0 && p.reconciled===p.total;
+            return (
+              <tr key={p.id}>
+                <td className="card-title"><b>{p.start} → {p.end}</b> <span className="muted">{p.state}</span></td>
+                <td data-label="Contractors">{p.total}</td>
+                <td data-label="Reconcile status" style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                  {done
+                    ? <span className="pill active" title="All payments reconciled against Wise">✓ Paid · Wise OK</span>
+                    : <>
+                        {p.readySent>0 && <span className="pill warn" title="Confirmed payments ready to finalize">{p.readySent} to reconcile</span>}
+                        {p.unmatchedWise>0 && <span className="pill bad" title="Wise payment with no matched transfer — match it per-period first">{p.unmatchedWise} unmatched</span>}
+                        {p.reconciled>0 && <span className="pill active">{p.reconciled} ok</span>}
+                        {p.drafts>0 && <span className="pill" title="Not yet paid — handle in Process & Pay">{p.drafts} draft</span>}
+                      </>}
+                </td>
+                <td className="card-action" style={{textAlign:"right"}}>
+                  <button className="btn ghost sm" onClick={()=>onPick&&onPick(p.id)}>Open</button></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table></div>}
+      <p className="muted" style={{fontSize:11,marginTop:6}}>
+        “Reconcile all pending” finalizes confirmed payments (non-Wise, or Wise with a matched transfer).
+        For <b>unmatched</b> Wise rows, Open the period and run its per-period Reconcile to link the transfer first.</p>
+    </div>
+  );
+}
+
 function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirty,openContractor,reconcileOnly,goTab,openPeriodForEdit}){
   const gate = (label)=> typeof confirmBillingDirty==="function" ? confirmBillingDirty(label) : true;
   const [periods,setPeriods]=useState([]);
@@ -8130,6 +8233,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
                   </select></div>
               </div>
               {periods.length===0 && !consolidated && <p className="muted" style={{fontSize:12}}>No locked or paid batches yet — lock a batch on the Calculate tab first.</p>}
+              <ReconcileOverview {...{client,companyId,consolidated,onPick:load}} />
             </>)
           : (/* Process & Pay: a LIST of locked-but-not-yet-paid batches. */
             (()=>{ const ready=periods.filter(p=>p.state==="locked");
