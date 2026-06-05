@@ -119,7 +119,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 00:38 PHT · a6022f2";
+const BUILD = "2026-06-06 01:06 PHT · 6273d2b";
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -1225,7 +1225,18 @@ function Stage2Profile({ client, onAdvance }){
     // jump to Stage 3 the moment the required tabs validate (that skipped the
     // About tab entirely). Only advance to the next stage after the LAST tab.
     if(!isLast){ setSec(order[idx+1]); return; }
-    onAdvance && onAdvance();
+    // LAST tab ("about"): the server is authoritative on whether Stage 2 is done.
+    // Only finish when every REQUIRED tab validates — otherwise "Save & finish"
+    // would silently no-op. Tell the contractor exactly what's missing and jump there.
+    if(data.stage2_complete){ onAdvance && onAdvance(); return; }
+    const labelOf=k=>(STAGE2_SECTIONS.find(s=>s[0]===k)||[,k])[1];
+    const incomplete=["contact","personal","payout"].filter(tt=>Object.keys(validateTabClient(tt,form)).length>0);
+    if(incomplete.length){
+      setSec(incomplete[0]); setErrs(validateTabClient(incomplete[0],form));
+      setServerErr("Almost there — please complete the required fields in: "+incomplete.map(labelOf).join(", ")+".");
+    } else {
+      setServerErr("Some required details are still missing — please review each tab and try again.");
+    }
   }
   return (
     <div className="card">

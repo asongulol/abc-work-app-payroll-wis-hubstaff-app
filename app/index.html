@@ -522,7 +522,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 00:50 PHT · 3aea51a";
+const BUILD = "2026-06-06 01:06 PHT · 6273d2b";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -1565,7 +1565,7 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
           <div style={{margin:"6px 0"}}><label className="muted" style={{fontSize:12}}>Contract</label>
             <select style={inp} value={f.contract} onChange={e=>set("contract",e.target.value)}><option value="FT">Full-time</option><option value="PT">Part-time</option></select></div>
-          {field("Role / position","role")}
+          {field("Role / position","role","text","e.g. Billing Specialist — shows on the IC Agreement")}
         </div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>{field("Rate (PHP / period)","rate","number")}{field("Contract date","contract_date","date")}</div>
         {field("Hire date (start) *","hire_date","date")}
