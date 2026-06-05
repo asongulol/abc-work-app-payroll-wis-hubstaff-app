@@ -119,7 +119,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 06:51 PHT · 7c13eba";
+const BUILD = "2026-06-06 06:53 PHT · 722f411";
 
 // ── Unsaved-changes guard ──────────────────────────────────────────────────
 // Surfaces with in-progress edits register via useUnsavedGuard({dirty,label,
@@ -377,14 +377,19 @@ function PaySlips({ client }){
   if(rows===null) return <div className="wrap"><div className="empty">Loading…</div></div>;
   if(!rows.length) return <div className="wrap"><div className="empty">No pay slips yet.</div></div>;
   const paid = s => s==="sent"||s==="reconciled";
-  const received=rows.filter(p=>paid(p.status)).reduce((s,p)=>s+Number(p.net_php||0),0);
-  const lastP=rows.find(p=>paid(p.status));
+  const paidRows=rows.filter(p=>paid(p.status));
+  const received=paidRows.reduce((s,p)=>s+Number(p.net_php||0),0);
+  const lastP=paidRows[0];
+  // Remittance date of the FIRST (earliest) received pay slip — rows are sorted
+  // newest-first, so the earliest paid one is last. Prefer the actual paid date.
+  const firstPaid=paidRows[paidRows.length-1];
+  const sinceDate=firstPaid ? (firstPaid.paid_at ? String(firstPaid.paid_at).slice(0,10) : (firstPaid.pay_periods?.pay_date||null)) : null;
   return (
     <div className="wrap">
       <div className="pagehead"><span className="sticker">📮 Pay slips</span></div>
       <div className="summary">
         <div className="scell"><div className="v">{lastP?peso(lastP.net_php):"—"}</div><div className="l">Last pay received</div></div>
-        <div className="scell"><div className="v">{peso(received)}</div><div className="l">Total received</div></div>
+        <div className="scell"><div className="v">{peso(received)}</div><div className="l">Total received{sinceDate?` · since ${sinceDate}`:""}</div></div>
       </div>
       {rows.map(p=>{
         const pp=p.pay_periods||{}; const isOpen=open===p.id;
