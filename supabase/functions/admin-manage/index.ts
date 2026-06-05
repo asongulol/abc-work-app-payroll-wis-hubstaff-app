@@ -79,8 +79,22 @@ Deno.serve(async (req) => {
       });
       if (!lkRes.ok) return json({ error: `lookup failed: ${await lkRes.text()}` }, 500);
       const user_id = await lkRes.json();   // expect a uuid string or null
-      if (!user_id || typeof user_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(user_id))
-        return json({ error: `${email} hasn't signed in yet. Ask them to sign in with Google once (they'll see “Access pending”), then add them.`, code: "not_signed_in" }, 404);
+      const validUuid = user_id && typeof user_id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(user_id);
+
+      // Hasn't signed in yet → pre-add to pending_admins. A trigger on auth.users
+      // promotes them to a real admin with this role the moment they first sign in.
+      if (!validUuid) {
+        const pRes = await fetch(`${SB}/rest/v1/pending_admins`, {
+          method: "POST", headers: { ...svc, Prefer: "resolution=merge-duplicates,return=minimal" },
+          body: JSON.stringify({ email, role, added_by: caller.id }),
+        });
+        if (!pRes.ok) return json({ error: `couldn't pre-add: ${await pRes.text()}` }, 500);
+        await fetch(`${SB}/rest/v1/audit_log`, {
+          method: "POST", headers: { ...svc, Prefer: "return=minimal" },
+          body: JSON.stringify({ action: "admin.pre_added", actor: caller.email ?? null, entity: email, detail: { role } }),
+        });
+        return json({ ok: true, email, role, pending: true });
+      }
 
       // already an admin? don't silently change their role here
       const exRes = await fetch(`${SB}/rest/v1/admin_users?user_id=eq.${user_id}&select=role`, { headers: svc });
@@ -98,7 +112,7 @@ Deno.serve(async (req) => {
         method: "POST", headers: { ...svc, Prefer: "return=minimal" },
         body: JSON.stringify({ action: "admin.added", actor: caller.email ?? null, entity: email, detail: { user_id, role } }),
       });
-      return json({ ok: true, user_id, email, role });
+      return json({ ok: true, user_id, email, role, pending: false });
     }
 
     // ---- set_role (promote/demote) ----
@@ -122,10 +136,25 @@ Deno.serve(async (req) => {
       return json({ ok: true });
     }
 
-    // ---- remove_admin (revoke admin rights; auth user is left intact) ----
+    // ---- remove_admin (revoke admin rights / cancel a pending invite) ----
     if (body.action === "remove_admin") {
       const user_id = String(body.user_id || "").trim();
-      if (!user_id) return json({ error: "user_id required" }, 400);
+      const pendingEmail = String(body.email || "").trim().toLowerCase();
+      if (!user_id && !pendingEmail) return json({ error: "user_id or email required" }, 400);
+
+      if (!user_id) {
+        // cancel a pending invite (not yet a real admin)
+        const del = await fetch(`${SB}/rest/v1/pending_admins?email=eq.${encodeURIComponent(pendingEmail)}`, {
+          method: "DELETE", headers: { ...svc, Prefer: "return=minimal" },
+        });
+        if (!del.ok) return json({ error: `couldn't remove invite: ${await del.text()}` }, 500);
+        await fetch(`${SB}/rest/v1/audit_log`, {
+          method: "POST", headers: { ...svc, Prefer: "return=minimal" },
+          body: JSON.stringify({ action: "admin.invite_removed", actor: caller.email ?? null, entity: pendingEmail, detail: { email: pendingEmail } }),
+        });
+        return json({ ok: true });
+      }
+
       const del = await fetch(`${SB}/rest/v1/admin_users?user_id=eq.${user_id}`, {
         method: "DELETE", headers: { ...svc, Prefer: "return=minimal" },
       });

@@ -531,7 +531,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 06:41 PHT · 19450e0";
+const BUILD = "2026-06-06 06:48 PHT · 0fbee4a";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -952,10 +952,15 @@ function AccessErrorScreen({ onRetry, onSignOut }) {
 function AdminsModal({ client, meId, onClose }) {
   const mref=useModalA11y(onClose,{escClose:true});
   const [rows,setRows]=useState(null);
+  const [pending,setPending]=useState([]);
   const [email,setEmail]=useState(""); const [role,setRole]=useState("admin");
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [note,setNote]=useState("");
-  function load(){ client.from("admin_users").select("user_id,email,role,added_at").order("added_at")
-    .then(({data,error})=>{ if(error){ setMsg("Couldn't load the admin list: "+error.message); setRows([]); } else setRows(data||[]); }); }
+  function load(){
+    client.from("admin_users").select("user_id,email,role,added_at").order("added_at")
+      .then(({data,error})=>{ if(error){ setMsg("Couldn't load the admin list: "+error.message); setRows([]); } else setRows(data||[]); });
+    client.from("pending_admins").select("email,role,added_at").order("added_at")
+      .then(({data})=>setPending(data||[]));
+  }
   useEffect(load,[]);
   async function call(action, extra){
     setBusy(true); setMsg(""); setNote("");
@@ -972,11 +977,16 @@ function AdminsModal({ client, meId, onClose }) {
     if(!e){ setMsg("Enter an email."); return; }
     const d=await call("add_admin",{ email:e, role });
     if(!d) return;
-    setNote(`${e} added as ${d.role}.`);
+    setNote(d.pending
+      ? `${e} invited as ${d.role}. They'll have access the moment they first sign in with Google on this email.`
+      : `${e} added as ${d.role}.`);
     setEmail(""); setRole("admin"); load();
   }
   async function changeRole(user_id, newRole){ if(await call("set_role",{ user_id, role:newRole })) load(); }
-  async function remove(user_id, em){ if(!window.confirm(`Remove admin access for ${em}? They'll keep their Google account but lose access to this app.`)) return; if(await call("remove_admin",{ user_id })) load(); }
+  async function remove(user_id, em){
+    if(!window.confirm(user_id ? `Remove admin access for ${em}? They'll keep their Google account but lose access to this app.` : `Cancel the pending invite for ${em}?`)) return;
+    if(await call("remove_admin", user_id ? { user_id } : { email: em })) load();
+  }
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="adm-title" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
@@ -984,7 +994,7 @@ function AdminsModal({ client, meId, onClose }) {
           <h2 id="adm-title" style={{margin:0}}>Admins</h2>
           <button className="btn ghost sm" onClick={onClose}>Close</button>
         </div>
-        <p className="sub">Owners can add or remove admins. New admins sign in with Google on their work email (allowed domains: <b>abckidsny.com</b>, <b>abbilabs.com</b>). <b>Owners</b> manage this list; <b>admins</b> have full app access but can't.</p>
+        <p className="sub">Add anyone by their work email — even before they've signed in. They get access the moment they first sign in with Google (allowed domains: <b>abckidsny.com</b>, <b>abbilabs.com</b>). <b>Owners</b> manage this list; <b>admins</b> have full app access but can't.</p>
         <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",margin:"8px 0"}}>
           <input style={{flex:1,minWidth:200,padding:"6px 8px"}} type="email" placeholder="name@abckidsny.com" value={email}
                  onChange={e=>setEmail(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter"&&!busy) add(); }} />
@@ -1006,6 +1016,12 @@ function AdminsModal({ client, meId, onClose }) {
                         : <button className="btn ghost sm" disabled={busy} onClick={()=>changeRole(a.user_id,"admin")}>Make admin</button>}
                       <button className="btn ghost sm" disabled={busy} onClick={()=>remove(a.user_id,a.email)}>Remove</button>
                     </div>}
+              </div>
+            ))}
+            {pending.map(p=>(
+              <div key={"pending:"+p.email} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,borderTop:"1px solid #e5e7eb",padding:"8px 0",flexWrap:"wrap"}}>
+                <div><b>{p.email}</b> <span className="pill" style={{marginLeft:6,background:"#fef3c7",color:"#92400e"}}>{p.role} · invited</span> <span className="muted" style={{fontSize:11,marginLeft:6}}>hasn't signed in yet</span></div>
+                <button className="btn ghost sm" disabled={busy} onClick={()=>remove(null,p.email)}>Remove</button>
               </div>
             ))}
           </div>}
