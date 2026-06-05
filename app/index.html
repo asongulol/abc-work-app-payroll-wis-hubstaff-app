@@ -531,7 +531,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 03:24 PHT · e4f482b";
+const BUILD = "2026-06-06 04:09 PHT · 46fc32d";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -1020,8 +1020,88 @@ function DraftNotice({show, onFresh}){
   if(!show) return null;
   return <div className="banner" style={{marginTop:8,marginBottom:4,background:"#eff6ff",borderColor:"#bfdbfe",color:"#1e40af",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}><span>↩ Resumed your saved draft.</span><button className="btn ghost sm" onClick={onFresh}>Start fresh</button></div>;
 }
+
+// ── Unsaved-changes guard ──────────────────────────────────────────────────
+// Any surface with in-progress edits registers via useUnsavedGuard({dirty,label,
+// save,discard}). Navigation choke points (tab switch, modal close) and the
+// browser unload event consult the registry; if anything is dirty they open ONE
+// blocking prompt. "Save" runs the surface's own smart save (commit when the
+// entry is complete, keep an autosaved draft when it isn't); "Discard" drops the
+// edits. Mirrors the confirmDanger/<DangerConfirm/> promise-host pattern.
+const _guards = new Map();                 // id -> {dirty,label,save,discard}
+function _setGuard(id, rec){ if(rec && rec.dirty) _guards.set(id, rec); else _guards.delete(id); }
+function _dirtyGuards(){ return [..._guards.values()]; }
+function unsavedDirty(){ return _guards.size>0; }
+function useUnsavedGuard(rec){
+  const id = React.useId();
+  React.useEffect(()=>{ _setGuard(id, rec); });            // refresh each render (live closures + dirty)
+  React.useEffect(()=>()=>{ _guards.delete(id); }, []);    // drop on unmount
+}
+let _ucOpen = null;       // setter installed by the mounted <UnsavedChangesModal/>
+let _ucResolve = null;    // resolver for the in-flight prompt
+// Returns Promise<boolean>: true = caller may proceed (saved/discarded/nothing dirty).
+function confirmUnsaved(){
+  const gs=_dirtyGuards();
+  if(!gs.length) return Promise.resolve(true);
+  if(typeof _ucOpen!=="function") return Promise.resolve(window.confirm("You have unsaved changes. Leave and lose them?"));
+  return new Promise(resolve=>{
+    if(_ucResolve){ const prev=_ucResolve; _ucResolve=null; prev(false); }   // settle any stale prompt
+    _ucResolve=resolve; _ucOpen(gs.map(g=>g.label).filter(Boolean));
+  });
+}
+// Decision handler invoked by the modal buttons. Returns whether nav should proceed.
+async function _ucDecide(decision){
+  const gs=_dirtyGuards(); const resolve=_ucResolve; _ucResolve=null;
+  let proceed=false;
+  try{
+    if(decision==="save"){ for(const g of gs){ if(g.save){ const ok=await g.save(); if(ok===false) throw new Error("save_incomplete"); } } proceed=true; }
+    else if(decision==="discard"){ for(const g of gs){ if(g.discard){ try{ g.discard(); }catch(_e){} } } proceed=true; }
+    else proceed=false;   // stay
+  }catch(_e){ proceed=false; try{ notify("Couldn't save — fix the highlighted fields, or choose Discard.",{type:"error"}); }catch(_e2){} }
+  if(resolve) resolve(proceed);
+  return proceed;
+}
+// Wrap a close/dismiss handler so it prompts when the surface is dirty.
+function guardedClose(onClose){ return async ()=>{ if(await confirmUnsaved()) onClose&&onClose(); }; }
+// Host: always mounted, holds the open/closed state, renders the dialog ONLY when
+// open so the inner useModalA11y (focus trap + restore + Escape) engages exactly
+// while shown — never as a persistent global keytrap.
+function UnsavedChangesModal(){
+  const [labels,setLabels]=useState(null);   // null = closed; array = open
+  useEffect(()=>{ _ucOpen=(ls)=>setLabels(ls||[]);
+    return ()=>{ _ucOpen=null; if(_ucResolve){ const r=_ucResolve; _ucResolve=null; r(false); } }; },[]);
+  if(labels===null) return null;
+  return <UnsavedDialog labels={labels} onDone={()=>setLabels(null)} />;
+}
+function UnsavedDialog({ labels, onDone }){
+  const [busy,setBusy]=useState(false);
+  async function act(d){
+    setBusy(true);
+    const proceed=await _ucDecide(d);
+    setBusy(false);
+    if(proceed || d==="stay") onDone();   // keep open if a Save failed, so they can fix/Discard
+  }
+  const mref=useModalA11y(()=>{ if(!busy) act("stay"); }, {escClose:true});  // focus trap + restore + Escape
+  const canSave=_dirtyGuards().some(g=>g.save);
+  const where=(labels&&labels.length)?` in ${labels.join(", ")}`:"";
+  return (
+    <div className="modal-bg" onClick={()=>!busy&&act("stay")}>
+      <div className="modal" ref={mref} onClick={e=>e.stopPropagation()} style={{maxWidth:440}}
+           role="dialog" aria-modal="true" aria-labelledby="uc-title">
+        <h2 id="uc-title" style={{marginTop:0}}>Unsaved changes</h2>
+        <p className="sub" style={{whiteSpace:"pre-wrap"}}>You have unsaved changes{where}. {canSave?"Save them before leaving, or discard them?":"Leave and discard them?"}</p>
+        <div className="actions">
+          <button className="btn ghost" disabled={busy} onClick={()=>act("stay")}>Stay on page</button>
+          <button className="btn danger" disabled={busy} onClick={()=>act("discard")}>Discard changes</button>
+          {canSave && <button className="btn" disabled={busy} onClick={()=>act("save")}>{busy?"Saving…":"Save"}</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
 function BulkImport({ client, companyId, consolidated, onClose, onDone }){
-  const mref=useModalA11y(onClose,{escClose:false}); // data-entry: no Escape-close
+  const close=guardedClose(onClose);   // prompt to keep-draft / discard if a roster is pasted
+  const mref=useModalA11y(close,{escClose:false}); // data-entry: no Escape-close
   const DKEY="eis_import_draft_"+(companyId||"none");
   const _d0=draftLoad(DKEY);
   const [text,setText]=useState((_d0&&typeof _d0.v==="string")?_d0.v:"");
@@ -1037,6 +1117,7 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
   useAutoDraft(DKEY, text, !!(text&&text.trim()), doneRef);   // auto-save the pasted roster
   useEffect(()=>{ if(result){ doneRef.current=true; draftClear(DKEY); } },[result]);  // eslint-disable-line
   function startFresh(){ draftClear(DKEY); setText(""); setDraftRestored(false); setParseErr(""); }
+  useUnsavedGuard({ dirty: !result && !!(text&&text.trim()), label:"the bulk import", save: ()=>true, discard: ()=>startFresh() });
 
   // Delimiter-aware CSV/TSV parse (same state machine as parseCSV, parameterized).
   function parseDelimited(t,delim){
@@ -1316,13 +1397,13 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
   const chg=c=>Object.keys(c).slice(0,4).map(k=>`${k}: ${c[k].from??"∅"}→${c[k].to}`).join(", ")+(Object.keys(c).length>4?` +${Object.keys(c).length-4} more`:"");
 
   return (
-    <div className="modal-bg" onClick={onClose}>
+    <div className="modal-bg" onClick={close}>
       <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="bi-title" onClick={e=>e.stopPropagation()} style={{maxWidth:980}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
           <div><h2 id="bi-title" style={{margin:0}}>Bulk import contractors</h2>
             <p className="sub" style={{margin:"4px 0 0"}}>Paste from a spreadsheet or upload a CSV. Existing contractors are
               matched <b>by Wise recipient id/UUID first</b>, then Hubstaff id, then name — and <b>updated in place</b>. Single company.</p></div>
-          <button className="btn ghost sm" onClick={onClose}>Close</button>
+          <button className="btn ghost sm" onClick={close}>Close</button>
         </div>
 
         {(consolidated||!companyId) &&
@@ -1413,7 +1494,8 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
 // Writes portal_settings.editable_fields (read by the portal + enforced by the
 // portal-self edge function). Payout destination is deliberately NOT offered.
 function PortalSettingsModal({ client, onClose }){
-  const mref=useModalA11y(onClose,{escClose:false});
+  const close=guardedClose(onClose);
+  const mref=useModalA11y(close,{escClose:false});
   const CANDIDATES=[
     {k:"first_name",label:"First name"},{k:"middle_name",label:"Middle name"},{k:"last_name",label:"Last name"},
     {k:"mobile",label:"Mobile"},{k:"ph_address",label:"PH address"},{k:"date_of_birth",label:"Date of birth"},
@@ -1424,23 +1506,26 @@ function PortalSettingsModal({ client, onClose }){
     {k:"nickname",label:"Nickname"},{k:"favorite_color",label:"Favorite color"},{k:"favorite_food",label:"Favorite food"},{k:"tshirt_size",label:"T-shirt size"},{k:"shoe_size",label:"Shoe size"},{k:"hobbies",label:"Hobbies"},{k:"motto",label:"Personal motto"},
   ];
   const [sel,setSel]=useState(null); const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
+  const ucBase=React.useRef(null);
+  const ucKey=(a)=>JSON.stringify((a||[]).slice().sort());
   useEffect(()=>{ client.from("portal_settings").select("editable_fields").eq("id",1).maybeSingle()
-    .then(({data})=>setSel(Array.isArray(data?.editable_fields)?data.editable_fields:[])); },[]);
+    .then(({data})=>{ const v=Array.isArray(data?.editable_fields)?data.editable_fields:[]; setSel(v); ucBase.current=ucKey(v); }); },[]);
   const toggle=k=>setSel(s=>s.includes(k)?s.filter(x=>x!==k):[...s,k]);
+  useUnsavedGuard({ dirty: sel!==null && ucBase.current!==null && ucKey(sel)!==ucBase.current, label:"portal editable-fields", save: ()=>save() });
   async function save(){
     setBusy(true);setMsg("");
     const {error}=await client.from("portal_settings").upsert({id:1,editable_fields:sel,updated_at:new Date().toISOString()},{onConflict:"id"});
-    if(error) setMsg("Error: "+error.message);
-    else { setMsg("Saved."); logEvent(client,{action:"edit_contractor",entity:"portal settings",detail:{editable_fields:sel}}); }
-    setBusy(false);
+    if(error){ setMsg("Error: "+error.message); setBusy(false); return false; }
+    setMsg("Saved."); logEvent(client,{action:"edit_contractor",entity:"portal settings",detail:{editable_fields:sel}});
+    ucBase.current=ucKey(sel); setBusy(false); return true;
   }
   return (
-    <div className="modal-bg" onClick={onClose}>
+    <div className="modal-bg" onClick={close}>
       <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="ps-title" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
           <div><h2 id="ps-title" style={{margin:0}}>Portal — editable fields</h2>
             <p className="sub" style={{margin:"4px 0 0"}}>Tick the profile fields contractors may edit themselves in the portal. Payout destination (Wise recipient ID/UUID) is always admin-only.</p></div>
-          <button className="btn ghost sm" onClick={onClose}>Close</button>
+          <button className="btn ghost sm" onClick={close}>Close</button>
         </div>
         {sel===null ? <Skeleton rows={4}/> :
         <div style={{marginTop:12}}>
@@ -1461,7 +1546,8 @@ function PortalSettingsModal({ client, onClose }){
 
 // Admin: post announcements shown on every contractor's portal welcome page.
 function AnnouncementsModal({ client, onClose }){
-  const mref=useModalA11y(onClose,{escClose:false});
+  const close=guardedClose(onClose);   // prompt to keep-draft / discard if a draft announcement is typed
+  const mref=useModalA11y(close,{escClose:false});
   const AKEY="eis_announce_draft";
   const _ad=draftLoad(AKEY);
   const [rows,setRows]=useState(null);
@@ -1471,6 +1557,7 @@ function AnnouncementsModal({ client, onClose }){
   const [draftRestored,setDraftRestored]=useState(!!(_ad&&_ad.v&&(((_ad.v.title||"").trim())||((_ad.v.body||"").trim()))));
   useAutoDraft(AKEY, {title,body}, !!(title.trim()||body.trim()), null);   // auto-save the draft announcement
   function startFresh(){ draftClear(AKEY); setTitle(""); setBody(""); setDraftRestored(false); }
+  useUnsavedGuard({ dirty: !!(title.trim()||body.trim()), label:"the draft announcement", save: ()=>true, discard: ()=>startFresh() });
   function load(){ client.from("announcements").select("id,title,body,active,published_at").order("published_at",{ascending:false}).then(({data})=>setRows(data||[])); }
   useEffect(load,[]);
   async function post(){
@@ -1484,12 +1571,12 @@ function AnnouncementsModal({ client, onClose }){
   async function toggle(a){ await client.from("announcements").update({active:!a.active}).eq("id",a.id); load(); }
   async function del(a){ if(!window.confirm("Delete this announcement?"))return; await client.from("announcements").delete().eq("id",a.id); load(); }
   return (
-    <div className="modal-bg" onClick={onClose}>
+    <div className="modal-bg" onClick={close}>
       <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="an-title" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
           <div><h2 id="an-title" style={{margin:0}}>Announcements</h2>
             <p className="sub" style={{margin:"4px 0 0"}}>Shown to every contractor on their portal welcome page ("From New York").</p></div>
-          <button className="btn ghost sm" onClick={onClose}>Close</button>
+          <button className="btn ghost sm" onClick={close}>Close</button>
         </div>
         <div style={{marginTop:12,borderBottom:"1px solid var(--border)",paddingBottom:12}}>
           <DraftNotice show={draftRestored} onFresh={startFresh}/>
@@ -1560,6 +1647,12 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
   function clearDraft(){ doneRef.current=true; try{ localStorage.removeItem(DRAFT_KEY); }catch(_e){} }
   function startFresh(){ try{ localStorage.removeItem(DRAFT_KEY); }catch(_e){} setF(DEFAULTS); setStep(1); setDraftRestored(false); setErr(""); setErrs({}); }
   const ne=v=>v!=null&&String(v).trim()!=="";
+  // Unsaved-changes guard. This flow autosaves a localStorage draft continuously,
+  // so "Save" just keeps that draft (nothing is created until "Create contractor")
+  // and "Discard" clears it. Not dirty once the contractor has been created (result).
+  const ucDirty = !result && (ne(f.first_name)||ne(f.last_name)||ne(f.email)||ne(f.role)||ne(f.rate)||ne(f.ic_addendum_text)||(Array.isArray(f.extra_docs)&&f.extra_docs.some(ne)));
+  useUnsavedGuard({ dirty: ucDirty, label:"the new-contractor form", save: ()=>true, discard: ()=>startFresh() });
+  const close=guardedClose(onClose);   // prompt to keep-draft / discard if there are entries
   function validateStep(s){
     const e={};
     if(s===1){
@@ -1672,10 +1765,10 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
     );
   }
   return (
-    <div className="modal-bg" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+    <div className="modal-bg" onClick={close}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <h2 style={{margin:0}}>Add contractor <span className="muted" style={{fontSize:13,fontWeight:400}}>· {companyName||"this company"}</span></h2>
-        <button className="btn ghost sm" onClick={onClose}>Cancel</button>
+        <button className="btn ghost sm" onClick={close}>Cancel</button>
       </div>
       <div style={{display:"flex",gap:6,margin:"10px 0"}}>{[1,2,3].map(n=>(<div key={n} style={{flex:1,height:4,borderRadius:2,background:n<=step?"#1F3A68":"#e5e7eb"}}/>))}</div>
       <p className="sub" style={{marginTop:0}}>Step {step} of 3 · {step===1?"Identity":step===2?"Engagement (IC terms)":"Portal & onboarding"}</p>
@@ -1999,7 +2092,8 @@ function Field({label,children}){return(
 );}
 
 function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
-  const mref=useModalA11y(onClose,{escClose:false}); // data-entry form: no Escape-close (don't lose edits)
+  const close=guardedClose(onClose);   // prompt to Save/Discard if there are unsaved edits
+  const mref=useModalA11y(close,{escClose:false}); // data-entry form: no Escape-close (don't lose edits)
   // Tiny helper so every billing save point reports a uniform record.
   const reportBilling = (field)=>{
     if(typeof onBillingChange==="function"){
@@ -2020,18 +2114,26 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
       .eq("id", w.id).single();
     if(error || !data) return;
     setPhoto(data.photo_url||"");
-    setF({
-      first_name:data.first_name||"", middle_name:data.middle_name||"",
-      last_name:data.last_name||"", email:data.email||"", work_email:data.work_email||"",
-      mobile:data.mobile||"", work_number:data.work_number||"", work_extension:data.work_extension||"", ph_address:data.ph_address||"",
-      hire_date:data.hire_date||"", date_of_birth:data.date_of_birth||"",
-      health_allowance_eligible:!!data.health_allowance_eligible,
-      thirteenth_month_eligible:!!data.thirteenth_month_eligible,
-      emergency_name:data.emergency_name||"", emergency_relationship:data.emergency_relationship||"", emergency_mobile:data.emergency_mobile||"",
-      permanent_address:data.permanent_address||"", address_landmark:data.address_landmark||"", postal_code:data.postal_code||"",
-      marital_status:data.marital_status||"", education_level:data.education_level||"", course:data.course||"", year_graduated:data.year_graduated||"", school:data.school||"",
-      favorite_color:(data.profile_extras||{}).favorite_color||"", favorite_food:(data.profile_extras||{}).favorite_food||"", motto:(data.profile_extras||{}).motto||"",
-    });
+    // Repaint the editable profile fields ONLY when the admin has no unsaved
+    // typing — otherwise an instant-save sub-action (payout method, rate, photo,
+    // Wise recipient) would silently clobber in-progress edits. Keep the dirty
+    // baseline in sync so a DB-side refresh (e.g. pull-from-Wise) isn't flagged.
+    if(ucBase.current===ucSnap()){
+      const nf={
+        first_name:data.first_name||"", middle_name:data.middle_name||"",
+        last_name:data.last_name||"", email:data.email||"", work_email:data.work_email||"",
+        mobile:data.mobile||"", work_number:data.work_number||"", work_extension:data.work_extension||"", ph_address:data.ph_address||"",
+        hire_date:data.hire_date||"", date_of_birth:data.date_of_birth||"",
+        health_allowance_eligible:!!data.health_allowance_eligible,
+        thirteenth_month_eligible:!!data.thirteenth_month_eligible,
+        emergency_name:data.emergency_name||"", emergency_relationship:data.emergency_relationship||"", emergency_mobile:data.emergency_mobile||"",
+        permanent_address:data.permanent_address||"", address_landmark:data.address_landmark||"", postal_code:data.postal_code||"",
+        marital_status:data.marital_status||"", education_level:data.education_level||"", course:data.course||"", year_graduated:data.year_graduated||"", school:data.school||"",
+        favorite_color:(data.profile_extras||{}).favorite_color||"", favorite_food:(data.profile_extras||{}).favorite_food||"", motto:(data.profile_extras||{}).motto||"",
+      };
+      setF(nf);
+      ucBase.current=JSON.stringify({f:nf,contract,role,hubName});
+    }
     setPayMethod(data.payout_method||"");
     const list=Array.isArray(data.wise_recipients)?data.wise_recipients:[];
     setRecips(list);
@@ -2151,6 +2253,15 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   const [rate,setRate]=useState("");
   const [rateEff,setRateEff]=useState(new Date().toISOString().slice(0,10));
   const set=(k,v)=>setF(x=>({...x,[k]:v}));
+  // Unsaved-changes guard: dirty when any field diverges from the snapshot taken
+  // when the modal opened; reset after a successful "Save details".
+  const ucSnap=()=>JSON.stringify({f,contract,role,hubName});
+  const ucBase=React.useRef(null);
+  if(ucBase.current===null) ucBase.current=ucSnap();
+  useUnsavedGuard({ dirty: ucBase.current!==ucSnap(), label:"this contractor’s profile", save: ()=>saveDetails() });
+  // Pay-tab sub-forms (rate / Wise recipient / UUID) have their own commit buttons,
+  // so a generic Save can't persist them — guard discard-only against accidental loss.
+  useUnsavedGuard({ dirty: !!(newId.trim()||newLabel.trim()||(rate||"").trim()) || (uuidDraft||"")!==(defUuid||""), label:"an unsaved payout entry" });
 
   // Full rate history for (worker, company), sorted newest-first. Drives the
   // inline 'Save rate' default (most-recent row) AND the new History table
@@ -2290,11 +2401,13 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
         .update({contract, role:role||null, hubstaff_name:hubName||null})
         .eq("worker_id",w.id).eq("company_id",r.company_id));
     }
-    if(e1||e2){setSavedMsg("Error: "+((e1||e2).message));return;}
+    if(e1||e2){setSavedMsg("Error: "+((e1||e2).message));return false;}
     logEvent(client,{company_id:r.company_id,action:"edit_contractor",
       entity:`${f.first_name} ${f.last_name}`,detail:{changed:{...wDiff,...linkDiff,...cultureDiff}}});
     setSavedMsg("Details saved.");
     notifySaved();
+    ucBase.current=ucSnap();   // edits are now the saved baseline → no longer dirty
+    return true;
   }
   async function saveRate(){
     const amt=parseFloat(rate);
@@ -2386,9 +2499,9 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   const inp={width:"100%"};
   const [ptab,setPtab]=useState("profile");
   return (
-    <div className="modal-bg" onClick={onClose}>
+    <div className="modal-bg" onClick={close}>
       <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="pm-title" onClick={e=>e.stopPropagation()}>
-        <button className="x" aria-label="Close" onClick={onClose}><span aria-hidden="true">×</span></button>
+        <button className="x" aria-label="Close" onClick={close}><span aria-hidden="true">×</span></button>
         <h2 id="pm-title">{fullName(f)}</h2>
         <p className="sub">{r.companies?.name} · {w.status}</p>
         <div style={{display:"flex",alignItems:"center",gap:14,margin:"6px 0 2px"}}>
@@ -6013,7 +6126,8 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
 // hands the assembled payload back to the parent which patches the row and
 // triggers debounced saveDraft via the standard recalcNet pipeline.
 function MiscModal({ row, onClose, onSave }){
-  const mref=useModalA11y(onClose,{escClose:false}); // money-adjustment form: no Escape-close
+  const close=guardedClose(onClose);
+  const mref=useModalA11y(close,{escClose:false}); // money-adjustment form: no Escape-close
   const rate = Number(row.rate)||0;
   // Effective hourly rate per the spec: (semi-monthly rate × 24 periods/yr) ÷ 2080 hrs/yr
   const hourlyRate = rate>0 ? +((rate*24)/2080).toFixed(4) : 0;
@@ -6052,6 +6166,10 @@ function MiscModal({ row, onClose, onSave }){
   const ducsSum  = deducs.reduce((s,e)=>s+(Number(e.amount)||0),0);
   const netImpact = haNum + t13Num + pddNum + bonusNum + earnsSum + hoursSum - ducsSum;
 
+  const ucSnap=()=>JSON.stringify({ha,t13,pdd,bonus,earns,hours,deducs});
+  const ucBase=React.useRef(null);
+  if(ucBase.current===null) ucBase.current=ucSnap();
+  useUnsavedGuard({ dirty: ucBase.current!==ucSnap(), label:"these pay adjustments", save: ()=>{ commitSave(); return true; } });
   function commitSave(){
     // Reject malformed: label required + amount/hours required & positive.
     const cleanEarns = earns
@@ -6075,15 +6193,16 @@ function MiscModal({ row, onClose, onSave }){
     const t13_blank = t13===""||t13==null;
     onSave({ ha:haNum, t13: t13_blank?"":t13Num, t13_blank,
              pdd:pddNum, bonus:bonusNum, misc_items });
+    ucBase.current=ucSnap();   // committed to the row → no longer dirty
   }
 
   const numInp = {width:120,padding:"4px 6px",fontSize:13};
   const lblInp = {flex:1,padding:"4px 6px",fontSize:13,minWidth:160};
   const sectionStyle = {borderTop:"1px solid var(--border)",paddingTop:10,marginTop:10};
   return (
-    <div className="modal-bg" onClick={onClose}>
+    <div className="modal-bg" onClick={close}>
       <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="misc-title" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
-        <button className="x" aria-label="Close" onClick={onClose}><span aria-hidden="true">×</span></button>
+        <button className="x" aria-label="Close" onClick={close}><span aria-hidden="true">×</span></button>
         <h2 id="misc-title" style={{marginBottom:0}}>Misc · {row.name}</h2>
         <p className="sub" style={{marginTop:2,fontSize:12}}>
           Rate ₱{rate.toLocaleString()} · effective hourly ₱{hourlyRate.toLocaleString(undefined,{minimumFractionDigits:2})} (rate×24÷2080)
@@ -6202,7 +6321,7 @@ function MiscModal({ row, onClose, onSave }){
             </b>
           </div>
           <div>
-            <button className="btn ghost" onClick={onClose}>Cancel</button>
+            <button className="btn ghost" onClick={close}>Cancel</button>
             {" "}
             <button className="btn" onClick={commitSave}>Save</button>
           </div>
@@ -9401,7 +9520,7 @@ function CountersignModal({ defaultName, onCancel, onSubmit }){
     else onSubmit({ method:"typed", data:name.trim(), name:name.trim() });
   }
   return (
-    <div className="modal-bg" onClick={e=>{e.stopPropagation();onCancel();}}>
+    <div className="modal-bg" onClick={e=>e.stopPropagation()}>
       <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="cs-title" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <h2 id="cs-title" style={{margin:0}}>Countersign</h2>
@@ -9754,7 +9873,7 @@ function ReasonPicker({ doc, onCancel, onSubmit }){
     onSubmit(reason);
   }
   return (
-    <div className="modal-bg" onClick={e=>{e.stopPropagation();onCancel();}}>
+    <div className="modal-bg" onClick={e=>e.stopPropagation()}>
       <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="rp-title" onClick={e=>e.stopPropagation()} style={{maxWidth:460}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <h2 id="rp-title" style={{margin:0}}>Needs replacement</h2>
@@ -9786,23 +9905,27 @@ function AgreementTemplatesModal({ client, onClose }){
   function load(){ client.from("agreement_templates").select("kind,title,version,body").then(({data})=>{
     const list=(data||[]); setRows(list); const cur=list.find(r=>r.kind===sel)||list[0]; if(cur){ setSel(cur.kind); setBody(cur.body||""); } }); }
   useEffect(load,[]);
-  const mref=useModalA11y(onClose,{escClose:false, dep:rows!==null}); // re-establish trap once templates load
-  if(rows===null) return <div className="modal-bg" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}><Skeleton rows={4}/></div></div>;
+  const close=guardedClose(onClose);   // prompt to Save/Discard if the template body has unsaved edits
+  const mref=useModalA11y(close,{escClose:false, dep:rows!==null}); // re-establish trap once templates load
+  const _curTpl=(rows||[]).find(r=>r.kind===sel);
+  useUnsavedGuard({ dirty: rows!==null && body!==((_curTpl&&_curTpl.body)||""), label:`the ${ONB_AGR_LABEL[sel]||sel} template`, save: ()=>save() });
+  if(rows===null) return <div className="modal-bg" onClick={close}><div className="modal" onClick={e=>e.stopPropagation()}><Skeleton rows={4}/></div></div>;
   const pick=(k)=>{ const r=rows.find(x=>x.kind===k); setSel(k); setBody((r&&r.body)||""); setMsg(""); };
   async function save(){
     setBusy(true); setMsg("");
     const { error } = await client.from("agreement_templates").update({body,updated_at:new Date().toISOString()}).eq("kind",sel);
     setBusy(false);
-    if(error){ setMsg("Save failed: "+error.message); return; }
+    if(error){ setMsg("Save failed: "+error.message); return false; }
     setMsg("Saved."); logEvent(client,{action:"agreement_template_saved",entity:ONB_AGR_LABEL[sel]||sel,detail:{kind:sel}});
     setRows(rs=>rs.map(r=>r.kind===sel?{...r,body}:r));
+    return true;
   }
   return (
-    <div className="modal-bg" onClick={onClose}>
+    <div className="modal-bg" onClick={close}>
       <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="at-title" onClick={e=>e.stopPropagation()} style={{maxWidth:820}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <h2 id="at-title" style={{margin:0}}>Agreement templates</h2>
-          <button className="btn ghost sm" onClick={onClose}>Close</button>
+          <button className="btn ghost sm" onClick={close}>Close</button>
         </div>
         <p className="sub">Paste the standard agreement text. Use <code>{"{{contractor_name}}"}</code>, <code>{"{{position}}"}</code>, <code>{"{{rate}}"}</code>, <code>{"{{start_date}}"}</code>, <code>{"{{countersigner_name}}"}</code>, <code>{"{{today}}"}</code> where the preparer's values should be filled in per contractor.</p>
         <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
@@ -9833,17 +9956,22 @@ function OnboardingConfigModal({ client, onClose }){
   const [mode,setMode]=useState("form");        // "form" | "json"
   const [text,setText]=useState("");
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
-  const mref=useModalA11y(onClose,{escClose:false, dep:cfg!==null}); // re-establish trap once config loads
+  const close=guardedClose(onClose);   // prompt to Save/Discard if the config has unsaved edits
+  const mref=useModalA11y(close,{escClose:false, dep:cfg!==null}); // re-establish trap once config loads
+  const ucBase=React.useRef(null); const jsonBase=React.useRef("");   // jsonBase tracks the textarea baseline so merely VIEWING raw JSON isn't "dirty"
+  const ucSnap=()=>JSON.stringify({enabled,docs,agrs});   // form state only — raw-JSON edits tracked separately
+  useEffect(()=>{ if(cfg!==null) ucBase.current=ucSnap(); }, [cfg]);   // baseline = freshly loaded/saved config
+  useUnsavedGuard({ dirty: (ucBase.current!==null && ucSnap()!==ucBase.current) || (mode==="json" && text!==jsonBase.current), label:"the onboarding configuration", save: ()=>save() });
   function hydrate(c){
     setCfg(c); setEnabled(!!c.onboarding_enabled);
     setDocs(Array.isArray(c.documents)&&c.documents.length ? c.documents.map(d=>({...d})) : ONB_DEFAULT_DOCS.map(d=>({...d})));
     setAgrs(Array.isArray(c.agreements) ? c.agreements.slice().sort((a,b)=>(a.order||0)-(b.order||0)).map(a=>({...a})) : []);
-    setText(JSON.stringify(c,null,2));
+    const j=JSON.stringify(c,null,2); setText(j); jsonBase.current=j;
   }
   function load(){ client.from("portal_settings").select("onboarding_config").eq("id",1).maybeSingle()
     .then(({data})=>hydrate((data&&data.onboarding_config)||{})); }
   useEffect(load,[]);
-  if(cfg===null) return <div className="modal-bg" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}><Skeleton rows={4}/></div></div>;
+  if(cfg===null) return <div className="modal-bg" onClick={close}><div className="modal" onClick={e=>e.stopPropagation()}><Skeleton rows={4}/></div></div>;
 
   // Build the object to save from the form, PRESERVING any keys not in the form.
   function buildFromForm(){
@@ -9864,16 +9992,17 @@ function OnboardingConfigModal({ client, onClose }){
   async function save(){
     let toSave;
     if(mode==="json"){
-      let parsed; try{ parsed=JSON.parse(text); }catch(ex){ setMsg("Invalid JSON: "+ex.message); return; }
-      if(typeof parsed!=="object"||Array.isArray(parsed)){ setMsg("Config must be a JSON object."); return; }
+      let parsed; try{ parsed=JSON.parse(text); }catch(ex){ setMsg("Invalid JSON: "+ex.message); return false; }
+      if(typeof parsed!=="object"||Array.isArray(parsed)){ setMsg("Config must be a JSON object."); return false; }
       parsed.onboarding_enabled=enabled; toSave=parsed;
     } else { toSave=buildFromForm(); }
     setBusy(true); setMsg("");
     const { error } = await client.from("portal_settings").update({onboarding_config:toSave}).eq("id",1);
     setBusy(false);
-    if(error){ setMsg("Save failed: "+error.message); return; }
+    if(error){ setMsg("Save failed: "+error.message); return false; }
     hydrate(toSave); setMsg("Saved ✓");
     logEvent(client,{action:"onboarding_config_saved",entity:"portal onboarding",detail:{onboarding_enabled:enabled,docs:(toSave.documents||[]).length,agreements:(toSave.agreements||[]).length}});
+    return true;
   }
 
   const upd=(set,i,patch)=>set(arr=>arr.map((x,j)=>j===i?{...x,...patch}:x));
@@ -9884,11 +10013,11 @@ function OnboardingConfigModal({ client, onClose }){
   const chk=(checked,onChange,lbl)=>(<label style={{display:"inline-flex",gap:6,alignItems:"center",fontSize:13,marginRight:14}}><input type="checkbox" checked={checked} onChange={onChange}/>{lbl}</label>);
 
   return (
-    <div className="modal-bg" onClick={onClose}>
+    <div className="modal-bg" onClick={close}>
       <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="oc-title" onClick={e=>e.stopPropagation()} style={{maxWidth:760,maxHeight:"86vh",overflowY:"auto"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <h2 id="oc-title" style={{margin:0}}>Onboarding setup</h2>
-          <button className="btn ghost sm" onClick={onClose}>Close</button>
+          <button className="btn ghost sm" onClick={close}>Close</button>
         </div>
 
         <label style={{display:"flex",gap:8,alignItems:"center",margin:"10px 0",fontSize:14}}>
@@ -9955,7 +10084,7 @@ function OnboardingConfigModal({ client, onClose }){
 
             <details style={{marginTop:10}}>
               <summary className="muted" style={{fontSize:13,cursor:"pointer"}}>Advanced — preview / edit raw JSON</summary>
-              <p className="sub" style={{margin:"6px 0 4px"}}><button style={linkBtn} onClick={()=>{ setText(JSON.stringify(buildFromForm(),null,2)); setMode("json"); }}>Switch to raw JSON editing →</button> — preserves other settings (e.g. profile_tabs).</p>
+              <p className="sub" style={{margin:"6px 0 4px"}}><button style={linkBtn} onClick={()=>{ const j=JSON.stringify(buildFromForm(),null,2); setText(j); jsonBase.current=j; setMode("json"); }}>Switch to raw JSON editing →</button> — preserves other settings (e.g. profile_tabs).</p>
               <pre style={{maxHeight:170,overflow:"auto",background:"#f3f4f6",borderRadius:8,padding:10,fontSize:11}}>{JSON.stringify(preview,null,2)}</pre>
             </details>
           </>
@@ -9977,9 +10106,16 @@ function OnboardingAdmin({ client, companyId, consolidated, active }){
     .select("worker_id,current_stage,stage1_complete,stage2_complete,stage3_complete,name_mismatch_flag,stalled,started_at,completed_at,updated_at,workers(first_name,middle_name,last_name,email)")
     .order("updated_at",{ascending:false}), [client]);
   const { data:pendDocs, reload:reloadPend } = useQuery(client, c=>c.from("documents")
-    .select("worker_id,review_status").in("kind",ONB_DOC_KINDS).in("review_status",["pending","deferred"]), [client]);
+    .select("worker_id,kind,side,review_status,created_at").in("kind",ONB_DOC_KINDS), [client]);
   const pendBy={}, deferBy={};
-  (pendDocs||[]).forEach(d=>{ if(d.review_status==="deferred") deferBy[d.worker_id]=(deferBy[d.worker_id]||0)+1; else pendBy[d.worker_id]=(pendBy[d.worker_id]||0)+1; });
+  // Count only the LATEST document per (worker,kind,side): a stale deferred /
+  // needs-replacement row is superseded once the contractor re-uploads, so it
+  // no longer counts as pending review or an open follow-up.
+  const _latestDoc={};
+  (pendDocs||[]).forEach(d=>{ const k=d.worker_id+"|"+d.kind+"|"+(d.side||""); const at=d.created_at||"";
+    if(!_latestDoc[k]||at>_latestDoc[k].at) _latestDoc[k]={status:d.review_status,at,worker_id:d.worker_id}; });
+  Object.values(_latestDoc).forEach(v=>{ if(v.status==="deferred") deferBy[v.worker_id]=(deferBy[v.worker_id]||0)+1;
+    else if(v.status==="pending") pendBy[v.worker_id]=(pendBy[v.worker_id]||0)+1; });
   const all=(progs||[]).map(p=>{ const w=p.workers||{}; return {...p,
     _name:[w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ")||w.email||p.worker_id,
     _email:w.email||"", _pending:pendBy[p.worker_id]||0, _deferred:deferBy[p.worker_id]||0, _pct:onbPct(p) }; });
@@ -10371,8 +10507,9 @@ function App() {
   // tab and auto-open that contractor's profile modal. Contractors consumes
   // the id via useEffect.
   const [pendingWorkerId, setPendingWorkerId] = useState(null);
-  const openContractor = React.useCallback((workerId)=>{
+  const openContractor = React.useCallback(async (workerId)=>{
     if(!workerId) return;
+    if(unsavedDirty() && !(await confirmUnsaved())) return;
     setPendingWorkerId(String(workerId));
     setTab("contractors");
     const w=document.querySelector(".wrap");
@@ -10385,8 +10522,9 @@ function App() {
   // in Process & Pay jumps straight to Calculate with that batch loaded for
   // editing. Calculate (Payroll) consumes pendingPeriod via useEffect.
   const [pendingPeriod, setPendingPeriod] = useState(null);   // {start,end} | null
-  const openPeriodForEdit = React.useCallback((p)=>{
+  const openPeriodForEdit = React.useCallback(async (p)=>{
     if(!p||!p.start) return;
+    if(unsavedDirty() && !(await confirmUnsaved())) return;
     setPendingPeriod({start:p.start, end:p.end});
     setTab("payroll");
     const w=document.querySelector(".wrap");
@@ -10410,6 +10548,15 @@ function App() {
     return ok;
   }, [billingDirty]);
 
+  // Browser refresh / tab-close backstop: native prompt when any guarded surface
+  // is dirty (the in-app prompt can't intercept a hard unload). Mounted once for
+  // the whole session; placed before the early returns so hook order is stable.
+  useEffect(()=>{
+    const h=(e)=>{ if(unsavedDirty()){ e.preventDefault(); e.returnValue=""; } };
+    window.addEventListener("beforeunload",h);
+    return ()=>window.removeEventListener("beforeunload",h);
+  }, []);
+
   if (!sb.client) return <ConnectScreen onConnect={sb.connect} />;
   if (!sb.authReady) return <div className="connect"><div className="card"><p className="sub">Loading…</p></div></div>;
   if (!sb.session) return <SignInScreen client={sb.client} onBack={sb.disconnect} />;
@@ -10421,7 +10568,7 @@ function App() {
     ["Run payroll", [["time","Time & Approval"],["payroll","Calculate"],["process","Process and Pay"]]],
     ["Review",  [["batches","Review & Recon Batches"],["reports","Reports"],["imports","Imports"],["audit","Audit Log"]]],
   ];
-  function go(id){ setTab(id); const w=document.querySelector(".wrap"); if(w) w.scrollIntoView({block:"start"}); window.scrollTo(0,0); }
+  async function go(id){ if(id===tab) return; if(unsavedDirty() && !(await confirmUnsaved())) return; setTab(id); const w=document.querySelector(".wrap"); if(w) w.scrollIntoView({block:"start"}); window.scrollTo(0,0); }
   // One icon per destination, used by the sidebar, the mobile bottom bar and the More-sheet.
   const NAV_ICON={overview:"🏠",contractors:"👥",onboarding:"🧭",documents:"📄",time:"⏱",payroll:"🧮",process:"💸",batches:"📦",reports:"📊",imports:"🗂",audit:"📝"};
   // Mobile bottom bar: 4 most-used + a "More" button (opens the full grouped sheet).
@@ -10439,7 +10586,7 @@ function App() {
         <div className="topbar-actions">
           <div className="company-switcher"><CompanySwitcher {...{client:sb.client,companyId,setCompanyId,consolidated,setConsolidated}} /></div>
           {sb.session?.user?.email && <span className="sub" style={{fontSize:12,whiteSpace:"nowrap"}} title="Signed in">{sb.session.user.email}</span>}
-          <button className="btn ghost sm" onClick={sb.signOut}>Sign out</button>
+          <button className="btn ghost sm" onClick={async()=>{ if(unsavedDirty() && !(await confirmUnsaved())) return; sb.signOut(); }}>Sign out</button>
         </div>
       </header>
       <div className="shell">
@@ -10529,7 +10676,7 @@ class ErrorBoundary extends React.Component{
   }
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<><ErrorBoundary><App /></ErrorBoundary><Toaster /></>);
+ReactDOM.createRoot(document.getElementById("root")).render(<><ErrorBoundary><App /></ErrorBoundary><Toaster /><UnsavedChangesModal /></>);
 </script>
 </body>
 </html>

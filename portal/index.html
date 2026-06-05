@@ -119,7 +119,72 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 03:24 PHT · e4f482b";
+const BUILD = "2026-06-06 04:09 PHT · 46fc32d";
+
+// ── Unsaved-changes guard ──────────────────────────────────────────────────
+// Surfaces with in-progress edits register via useUnsavedGuard({dirty,label,
+// save,discard}); the bottom-tab nav, sign-out, the signing modal's Close, and
+// the browser unload event consult the registry and, when something is dirty,
+// open ONE blocking prompt (Save / Discard / Stay). "Save" runs the surface's
+// own save when the entry is complete; incomplete onboarding steps keep their
+// partial entry where the flow already persists per-step.
+const _guards = new Map();
+function _setGuard(id, rec){ if(rec && rec.dirty) _guards.set(id, rec); else _guards.delete(id); }
+function _dirtyGuards(){ return [..._guards.values()]; }
+function unsavedDirty(){ return _guards.size>0; }
+function useUnsavedGuard(rec){
+  const id = React.useId();
+  useEffect(()=>{ _setGuard(id, rec); });
+  useEffect(()=>()=>{ _guards.delete(id); }, []);
+}
+let _ucOpen=null, _ucResolve=null;
+function confirmUnsaved(){
+  const gs=_dirtyGuards();
+  if(!gs.length) return Promise.resolve(true);
+  if(typeof _ucOpen!=="function") return Promise.resolve(window.confirm("You have unsaved changes. Leave and lose them?"));
+  return new Promise(resolve=>{ if(_ucResolve){ const p=_ucResolve; _ucResolve=null; p(false); } _ucResolve=resolve; _ucOpen(gs.map(g=>g.label).filter(Boolean)); });
+}
+async function _ucDecide(decision){
+  const gs=_dirtyGuards(); const resolve=_ucResolve; _ucResolve=null;
+  let proceed=false;
+  try{
+    if(decision==="save"){ for(const g of gs){ if(g.save){ const ok=await g.save(); if(ok===false) throw new Error("save_incomplete"); } } proceed=true; }
+    else if(decision==="discard"){ for(const g of gs){ if(g.discard){ try{ g.discard(); }catch(_e){} } } proceed=true; }
+    else proceed=false;
+  }catch(_e){ proceed=false; }
+  if(resolve) resolve(proceed);
+  return proceed;
+}
+function guardedClose(onClose){ return async ()=>{ if(await confirmUnsaved()) onClose&&onClose(); }; }
+function UnsavedGuardModal(){
+  const [labels,setLabels]=useState(null);
+  const [busy,setBusy]=useState(false);
+  useEffect(()=>{ _ucOpen=(ls)=>{ setLabels(ls||[]); setBusy(false); };
+    return ()=>{ _ucOpen=null; if(_ucResolve){ const r=_ucResolve; _ucResolve=null; r(false); } }; },[]);
+  const act=async(d)=>{ setBusy(true); const proceed=await _ucDecide(d); setBusy(false); if(proceed||d==="stay") setLabels(null); };
+  const stayRef=React.useRef(null);
+  useEffect(()=>{ if(labels===null) return; if(stayRef.current) stayRef.current.focus();
+    const onKey=(e)=>{ if(e.key==="Escape"&&!busy) act("stay"); };
+    window.addEventListener("keydown",onKey); return ()=>window.removeEventListener("keydown",onKey); },[labels,busy]);  // eslint-disable-line
+  if(labels===null) return null;
+  const canSave=_dirtyGuards().some(g=>g.save);
+  const where=(labels&&labels.length)?` in ${labels.join(", ")}`:"";
+  return (
+    <div className="ob-modal-bg" role="dialog" aria-modal="true" aria-label="Unsaved changes" style={{alignItems:"center"}}>
+      <div className="ob-modal" style={{maxWidth:420,borderRadius:16,margin:12,maxHeight:"none"}}>
+        <div className="ob-modal-head"><b>Unsaved changes</b></div>
+        <div style={{padding:14}}>
+          <p className="sub" style={{marginTop:0}}>You have unsaved changes{where}. {canSave?"Save them before leaving, or discard them?":"Leave and discard them?"}</p>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",justifyContent:"flex-end",marginTop:10}}>
+            <button className="btn ghost" ref={stayRef} disabled={busy} onClick={()=>act("stay")}>Stay</button>
+            <button className="btn ghost" disabled={busy} onClick={()=>act("discard")} style={{color:"#b91c1c"}}>Discard</button>
+            {canSave && <button className="btn" disabled={busy} onClick={()=>act("save")}>{busy?"Saving…":"Save"}</button>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -522,12 +587,12 @@ function ProfileView({ client, session, onSignOut }){
     setBusy(true); setMsg(""); setErr("");
     const fields={};
     FIELD_DEFS.forEach(f=>{ if(isEditable(f.k) && (form[f.k]||"")!==curVal(f)) fields[f.k]=form[f.k]; });
-    if(!Object.keys(fields).length){ setMsg("Nothing changed."); setBusy(false); return; }
+    if(!Object.keys(fields).length){ setMsg("Nothing changed."); setBusy(false); return true; }
     const {data,error}=await client.functions.invoke("portal-self",{body:{action:"update_profile",fields}});
-    if(error||data?.error){ setErr(await fnErr(error,data)); }
-    else { setMsg("Saved — thank you!"); load(); }
-    setBusy(false);
+    if(error||data?.error){ setErr(await fnErr(error,data)); setBusy(false); return false; }
+    setMsg("Saved — thank you!"); load(); setBusy(false); return true;
   }
+  useUnsavedGuard({ dirty: !!w && FIELD_DEFS.some(f=>isEditable(f.k) && (form[f.k]||"")!==curVal(f)), label:"your profile", save: ()=>save() });
   if(!w) return <div className="wrap"><div className="empty">Loading…</div></div>;
   const anyEditable=FIELD_DEFS.some(f=>isEditable(f.k));
   const SECS=[["contact","Contact"],["personal","Personal"],["payout","Payout"],["about","About me"]];
@@ -917,7 +982,9 @@ function Portal({ client, session }){
   const [first,setFirst]=useState("");
   useEffect(()=>{ client.from("workers").select("first_name").maybeSingle()
     .then(({data})=>setFirst((data&&data.first_name||"").trim())); },[]);
-  const signOut=()=>client.auth.signOut();
+  // Gate tab switches + sign-out on unsaved edits (e.g. an in-progress Profile edit).
+  const goTab=async(id)=>{ if(id===tab) return; if(unsavedDirty() && !(await confirmUnsaved())) return; setTab(id); };
+  const signOut=async()=>{ if(unsavedDirty() && !(await confirmUnsaved())) return; client.auth.signOut(); };
   return (
     <div>
       <div className="top">
@@ -933,11 +1000,11 @@ function Portal({ client, session }){
       {tab==="me"   && <ProfileView client={client} session={session} onSignOut={signOut}/>}
       <div style={{textAlign:"center",color:"var(--muted)",fontSize:11,padding:"10px 0 84px"}}>Build {BUILD}</div>
       <div className="tabs">
-        <button className={tab==="home"?"on":""} onClick={()=>setTab("home")}><span className="ic">🏠</span>Home</button>
-        <button className={tab==="pay"?"on":""}  onClick={()=>setTab("pay")}><span className="ic">₱</span>Pay slips</button>
-        <button className={tab==="time"?"on":""} onClick={()=>setTab("time")}><span className="ic">⏱</span>Time</button>
-        <button className={tab==="docs"?"on":""} onClick={()=>setTab("docs")}><span className="ic">📄</span>Docs</button>
-        <button className={tab==="me"?"on":""}   onClick={()=>setTab("me")}><span className="ic">👤</span>Profile</button>
+        <button className={tab==="home"?"on":""} onClick={()=>goTab("home")}><span className="ic">🏠</span>Home</button>
+        <button className={tab==="pay"?"on":""}  onClick={()=>goTab("pay")}><span className="ic">₱</span>Pay slips</button>
+        <button className={tab==="time"?"on":""} onClick={()=>goTab("time")}><span className="ic">⏱</span>Time</button>
+        <button className={tab==="docs"?"on":""} onClick={()=>goTab("docs")}><span className="ic">📄</span>Docs</button>
+        <button className={tab==="me"?"on":""}   onClick={()=>goTab("me")}><span className="ic">👤</span>Profile</button>
       </div>
     </div>
   );
@@ -973,8 +1040,13 @@ function SignaturePad({ client, agreement, text, canSign, onSigned }){
   const [err,setErr]=useState(""); const [drawn,setDrawn]=useState(false);
   const [signedDate,setSignedDate]=useState(()=>new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Manila"}).format(new Date()));  // auto-fills today; editable
   const canvasRef = React.useRef(null);
+  const prefillRef = React.useRef("");
   useEffect(()=>{ client.from("workers").select("first_name,middle_name,last_name").maybeSingle()
-    .then(({data})=>{ if(data) setName(fullName(data)); }); },[]);
+    .then(({data})=>{ if(data){ const n=fullName(data); setName(n); prefillRef.current=n; } }); },[]);
+  // Unsaved-changes guard: a drawn signature lives only on the canvas, and a ticked
+  // consent / edited name are easy to lose on an accidental Close. No "save" —
+  // signing needs the scroll + consent gate — so the prompt offers Discard / Stay.
+  useUnsavedGuard({ dirty: consent || drawn || (!!name && name!==prefillRef.current), label:"your signature" });
   useEffect(()=>{
     if(mode!=="draw") return;
     const c = canvasRef.current; if(!c) return;
@@ -1058,6 +1130,7 @@ function AgreementViewer({ client, agreement, onClose, onSigned }){
   const [reached,setReached]=useState(false);
   const [text,setText]=useState(null);   // null = loading
   const scrollRef = React.useRef(null); const bottomRef = React.useRef(null);
+  const close=guardedClose(onClose);   // prompt to discard if a signature is in progress
   useEffect(()=>{
     let alive=true;
     (async()=>{
@@ -1098,7 +1171,7 @@ function AgreementViewer({ client, agreement, onClose, onSigned }){
       <div className="ob-modal">
         <div className="ob-modal-head">
           <b>{agreement.title}</b>
-          <button className="btn ghost" style={{padding:"4px 10px",fontSize:13,color:"var(--accent)",borderColor:"var(--accent)"}} onClick={onClose}>{t("ob.close")}</button>
+          <button className="btn ghost" style={{padding:"4px 10px",fontSize:13,color:"var(--accent)",borderColor:"var(--accent)"}} onClick={close}>{t("ob.close")}</button>
         </div>
         <div className="ob-doc" ref={scrollRef} tabIndex={0}>
           {text==null ? <div className="empty">Loading…</div> : <>
@@ -1217,12 +1290,17 @@ function validateTabClient(tab, f){
 function Stage2Profile({ client, onAdvance }){
   const [form,setForm]=useState(null); const [sec,setSec]=useState("contact");
   const [errs,setErrs]=useState({}); const [busy,setBusy]=useState(false); const [serverErr,setServerErr]=useState("");
+  // Unsaved-changes guard: dirty when the current entry diverges from the last
+  // loaded/saved snapshot. Each tab persists via its own "Save & continue", so the
+  // prompt offers Discard / Stay (plus the browser-unload backstop).
+  const ucBase=React.useRef(null);
+  useUnsavedGuard({ dirty: !!form && ucBase.current!==null && JSON.stringify(form)!==ucBase.current, label:"your onboarding details" });
   useEffect(()=>{
     const cols = FIELD_DEFS.map(f=>f.ex?null:f.k).filter(Boolean).join(",")+",profile_extras";
     client.from("workers").select(cols).maybeSingle().then(({data})=>{
       const row=data||{}; const ex=(row.profile_extras&&typeof row.profile_extras==="object")?row.profile_extras:{};
       const f=Object.fromEntries(FIELD_DEFS.map(d=>[d.k,(d.ex?ex[d.k]:row[d.k])||""]));
-      setForm(f);
+      setForm(f); ucBase.current=JSON.stringify(f);
       const firstBad=["contact","personal","payout"].find(t=>Object.keys(validateTabClient(t,f)).length);
       setSec(firstBad||"about");
     });
@@ -1241,6 +1319,7 @@ function Stage2Profile({ client, onAdvance }){
     setBusy(false);
     if(error||(data&&data.error)){ setServerErr(await fnErr(error,data)); return; }
     if(data.field_errors&&data.field_errors.length){ const fe={}; data.field_errors.forEach(x=>fe[x.field]=x.msg); setErrs(fe); return; }
+    ucBase.current=JSON.stringify(form);   // current tab persisted → clear the dirty baseline
     // Walk EVERY tab in order, including the optional "About you" tab — don't
     // jump to Stage 3 the moment the required tabs validate (that skipped the
     // About tab entirely). Only advance to the next stage after the LAST tab.
@@ -1417,6 +1496,14 @@ function App(){
     return ()=>{ cancelled=true; };
   },[client,session]);
 
+  // Browser refresh / tab-close backstop: native prompt when any guarded surface
+  // is dirty (the in-app prompt can't intercept a hard unload).
+  useEffect(()=>{
+    const h=(e)=>{ if(unsavedDirty()){ e.preventDefault(); e.returnValue=""; } };
+    window.addEventListener("beforeunload",h);
+    return ()=>window.removeEventListener("beforeunload",h);
+  },[]);
+
   const loading = <div className="wrap"><div className="empty">Loading…</div></div>;
   if(!client || !ready) return loading;
   if(!session) return <Login client={client}/>;
@@ -1427,7 +1514,7 @@ function App(){
   return <Portal client={client} session={session}/>;
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+ReactDOM.createRoot(document.getElementById("root")).render(<><App/><UnsavedGuardModal/></>);
 </script>
 </body>
 </html>
