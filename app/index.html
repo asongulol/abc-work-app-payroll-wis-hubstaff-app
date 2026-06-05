@@ -531,7 +531,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 05:23 PHT · 68da18e";
+const BUILD = "2026-06-06 06:25 PHT · afc8e1d";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -7875,6 +7875,10 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
   const [pers,setPers]=useState(null);   // {start,end,pay_date}
   const [rows,setRows]=useState(null);
   const [msg,setMsg]=useState("");
+  // When a period is opened, scroll its detail into view; a floating "↑ Top"
+  // button returns to the period list.
+  const detailRef=React.useRef(null);
+  useEffect(()=>{ if(!periodId) return; const t=setTimeout(()=>{ if(detailRef.current) detailRef.current.scrollIntoView({behavior:"smooth",block:"start"}); }, 80); return ()=>clearTimeout(t); },[periodId]);
   // Undo: { label, fn } — status only, never touches money. Stays until dismissed.
   const [undo,setUndo]=useState(null);
   // Wise batch currencies — default USD source -> PHP target; user can change.
@@ -8737,6 +8741,10 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
         <Banner msg={msg} />
       </div>
 
+      <div ref={detailRef} style={{scrollMarginTop:12}} aria-hidden="true" />
+      {periodId && <button className="btn sm" onClick={()=>window.scrollTo({top:0,behavior:"smooth"})}
+        style={{position:"fixed",right:16,bottom:84,zIndex:40,boxShadow:"0 2px 10px rgba(0,0,0,.25)"}}
+        title="Back to the period list" aria-label="Back to top">↑ Top</button>}
       {((rows && rows.length>0) || (reconcileOnly && periodId)) && <>
         {!reconcileOnly && <div className="card">
           <h3 style={{margin:"0 0 4px"}}>Summary · pay date {pers?.pay_date||"—"}</h3>
