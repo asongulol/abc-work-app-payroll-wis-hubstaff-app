@@ -143,10 +143,12 @@ Deno.serve(async (req) => {
 
     // ---- approve ----
     // NBI freshness guard: day-accurate, using the configured freshness window.
-    if (doc.kind === "nbi_clearance" && doc.issued_on) {
+    // The reviewing admin may override (they're looking at the actual document);
+    // the override is recorded in the audit log below.
+    if (doc.kind === "nbi_clearance" && doc.issued_on && !body.override) {
       const months = Number((cfg.documents || []).find((d: any) => d.kind === "nbi_clearance")?.freshness_months) || 6;
       if (isStale(doc.issued_on, months, now)) {
-        return json({ error: `NBI clearance is older than ${months} months — request a replacement instead`, code: "nbi_stale" }, 422);
+        return json({ error: `NBI clearance is older than ${months} months — request a replacement, or use “Approve anyway” to override`, code: "nbi_stale" }, 422);
       }
     }
     const upd = await fetch(`${SB}/rest/v1/documents?id=eq.${document_id}`, {
@@ -157,7 +159,7 @@ Deno.serve(async (req) => {
     if (!upd.ok) return json({ error: `update failed: ${await upd.text()}` }, 500);
     await fetch(`${SB}/rest/v1/audit_log`, {
       method: "POST", headers: { ...svc, Prefer: "return=minimal" },
-      body: JSON.stringify({ action: "document.approved", actor: caller.email ?? null, entity: `${doc.kind} · ${worker_id}`, detail: { document_id, kind: doc.kind } }),
+      body: JSON.stringify({ action: "document.approved", actor: caller.email ?? null, entity: `${doc.kind} · ${worker_id}`, detail: { document_id, kind: doc.kind, freshness_override: !!body.override } }),
     });
 
     const re = await reEvalStage3(SB, svc, worker_id, cfg, now);

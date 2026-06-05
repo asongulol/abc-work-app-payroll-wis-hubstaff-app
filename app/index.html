@@ -522,7 +522,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 01:06 PHT · 6273d2b";
+const BUILD = "2026-06-06 01:54 PHT · 71dd317";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -9443,7 +9443,7 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
   const w=(wRows||[])[0]||{};
   const workerName=[w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ")||w.email||"Contractor";
   const ex=(w.profile_extras&&typeof w.profile_extras==="object")?w.profile_extras:{};
-  const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [revDoc,setRevDoc]=useState(null);
+  const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [revDoc,setRevDoc]=useState(null); const [revErr,setRevErr]=useState(null);
   async function view(d){
     if(!d.storage_path) return;
     const win=window.open("about:blank","_blank");   // open synchronously (popup-blocker safe), then redirect
@@ -9451,13 +9451,20 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
     if(error||!data){ if(win)win.close(); setMsg("Open failed: "+((error&&error.message)||"no url")); return; }
     if(win) win.location=data.signedUrl; else window.open(data.signedUrl,"_blank");
   }
-  async function review(d,action,reason){
-    setBusy(true); setMsg("");
-    const { data, error } = await client.functions.invoke("portal-review",{body:{action,document_id:d.id,reason:reason||null}});
+  async function review(d,action,reason,override){
+    setBusy(true); setMsg(""); setRevErr(null);
+    const { data, error } = await client.functions.invoke("portal-review",{body:{action,document_id:d.id,reason:reason||null,override:!!override}});
     setBusy(false);
-    if(error||(data&&data.error)){ setMsg((data&&data.error)||await fnErrorMessage(error)); return; }
-    logEvent(client,{action:"document_review",entity:(ONB_DOC_LABEL[d.kind]||d.kind),detail:{document_id:d.id,action,reason:reason||null}});
+    if(error||(data&&data.error)){ setRevErr({id:d.id,text:(data&&data.error)||await fnErrorMessage(error)}); return; }
+    logEvent(client,{action:"document_review",entity:(ONB_DOC_LABEL[d.kind]||d.kind),detail:{document_id:d.id,action,reason:reason||null,override:!!override}});
     reloadDocs(); onChange&&onChange();
+  }
+  // NBI freshness is enforced server-side (portal-review); mirror it here only to
+  // label stale rows + swap "Approve" for "Approve anyway" (override). Default 6mo.
+  function isNbiStale(d){
+    if(d.kind!=="nbi_clearance"||!d.issued_on) return false;
+    const dt=new Date(d.issued_on+"T00:00:00Z"); if(isNaN(dt.getTime())) return false;
+    const e=new Date(dt); e.setUTCMonth(e.getUTCMonth()+6); return e.getTime()<Date.now();
   }
   // Admin onboarding overrides (is_admin() write policy on onboarding_progress).
   async function applyProg(patch, label, warn){
@@ -9542,11 +9549,14 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
                 <Badge s={badge}/>
               </div>
               {d.review_status==="needs_replacement"&&d.review_reason&&<div className="muted" style={{fontSize:12}}>Reason: {d.review_reason}</div>}
-              <div style={{display:"flex",gap:6,marginTop:6}}>
+              {isNbiStale(d) && <div style={{fontSize:12,color:"#b45309",marginTop:4}}>⚠ Issued {d.issued_on} — older than 6 months (NBI freshness rule).</div>}
+              <div style={{display:"flex",gap:6,marginTop:6,flexWrap:"wrap"}}>
                 <button className="btn ghost sm" onClick={()=>view(d)} disabled={!d.storage_path}>View</button>
-                {d.review_status!=="approved"&&<button className="btn sm" disabled={busy} onClick={()=>review(d,"approve")}>Approve</button>}
+                {d.review_status!=="approved" && !isNbiStale(d) && <button className="btn sm" disabled={busy} onClick={()=>review(d,"approve")}>Approve</button>}
+                {d.review_status!=="approved" && isNbiStale(d) && <button className="btn sm" disabled={busy} title="Override the freshness rule — recorded in the audit log" onClick={()=>review(d,"approve",null,true)}>Approve anyway</button>}
                 {d.review_status!=="needs_replacement"&&<button className="btn ghost sm" disabled={busy} onClick={()=>setRevDoc(d)}>Needs replacement</button>}
               </div>
+              {revErr&&revErr.id===d.id&&<div className="err" style={{marginTop:6,fontSize:13}}>{revErr.text}</div>}
             </div>
            );
          })}
