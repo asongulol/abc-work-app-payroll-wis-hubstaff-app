@@ -119,7 +119,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 04:48 PHT · a133ffa";
+const BUILD = "2026-06-06 06:51 PHT · 7c13eba";
 
 // ── Unsaved-changes guard ──────────────────────────────────────────────────
 // Surfaces with in-progress edits register via useUnsavedGuard({dirty,label,
@@ -414,7 +414,6 @@ function PaySlips({ client }){
               <div className="row" style={{fontWeight:700,borderTop:"1px solid var(--line)",marginTop:4,paddingTop:6}}><span>Net pay</span><span>{peso(p.net_php)}</span></div>
               {/* Payout details */}
               <div className="row" style={{borderTop:"1px solid var(--line)",marginTop:4,paddingTop:6}}><span className="k">Paid via</span><span>{p.payout_method||"—"}</span></div>
-              {p.fx_rate>0 && <div className="row"><span className="k">≈ USD (reference)</span><span>${(Number(p.net_php)/Number(p.fx_rate)).toFixed(2)} <span className="sub">@ {Number(p.fx_rate).toFixed(2)}</span></span></div>}
               {p.wise_transfer_id && <div className="row"><span className="k">Wise transfer</span><span><code>{p.wise_transfer_id}</code></span></div>}
               {p.paid_at && <div className="row"><span className="k">Date sent</span><span>{String(p.paid_at).slice(0,10)}</span></div>}
             </div>}
