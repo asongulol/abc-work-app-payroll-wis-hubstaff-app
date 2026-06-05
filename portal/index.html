@@ -119,7 +119,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 01:06 PHT · 6273d2b";
+const BUILD = "2026-06-06 02:07 PHT · 27c5c6f";
 
 // Same Supabase project + anon key as the admin app. Safe to ship: RLS scopes a
 // signed-in contractor to ONLY their own rows (verified), and grants nothing
@@ -652,24 +652,33 @@ function OnboardingDocReminder({ client, session }){
   if(docs===null||cfg===null) return null;
   const ONB_KINDS=["resume","diploma","nbi_clearance","gov_id"];
   const DEFAULT_DOCS=[{kind:"resume",title:"Resume / CV",required:true},{kind:"diploma",title:"Diploma or Transcript of Records",required:true},{kind:"nbi_clearance",title:"NBI Clearance",required:true,freshness_months:6},{kind:"gov_id",title:"Government-issued ID or Passport",required:true,sides:["front","back"]}];
+  const KLABEL={resume:"Resume / CV",diploma:"Diploma / TOR",nbi_clearance:"NBI Clearance",gov_id:"Government ID",professional_license:"Professional License"};
+  const labelKind=k=>KLABEL[k]||String(k||"").replace(/_/g," ").replace(/\b\w/g,c=>c.toUpperCase());
   const cfgDocs=(Array.isArray(cfg.documents)&&cfg.documents.length)?cfg.documents:DEFAULT_DOCS;
   const byKey={}; (docs||[]).forEach(d=>{ const k=d.kind+"|"+(d.side||""); (byKey[k]=byKey[k]||[]).push(d); });
   const latest=(kind,side)=>{ const a=byKey[kind+"|"+(side||"")]; return a&&a[0]; };
   const engaged=(docs||[]).some(d=>ONB_KINDS.includes(d.kind));
-  const slots=[];
+  const ACTION=["needs_replacement","deferred"];   // an admin explicitly asked for these
+  const slots=[]; const seen=new Set();
   cfgDocs.forEach(d=>{
     const optional=d.required===false;
-    if(Array.isArray(d.sides)) d.sides.forEach(side=>slots.push({kind:d.kind,side,label:d.title+" ("+side+")",optional}));
-    else slots.push({kind:d.kind,side:null,label:d.title,optional});
+    if(Array.isArray(d.sides)) d.sides.forEach(side=>{ slots.push({kind:d.kind,side,label:d.title+" ("+side+")",optional}); seen.add(d.kind+"|"+side); });
+    else { slots.push({kind:d.kind,side:null,label:d.title,optional}); seen.add(d.kind+"|"); }
   });
-  const outstanding=slots.filter(s=>{ const l=latest(s.kind,s.side); return !l || l.review_status==="needs_replacement"; });
-  if(!engaged || !outstanding.length) return null;
-  const anyBounced=outstanding.some(s=>{ const l=latest(s.kind,s.side); return l&&l.review_status==="needs_replacement"; });
+  // include any deferred / sent-back document whose kind isn't a config slot (per-hire extras)
+  (docs||[]).forEach(d=>{ const key=d.kind+"|"+(d.side||""); if(seen.has(key))return; seen.add(key);
+    if(ACTION.includes(d.review_status)) slots.push({kind:d.kind,side:d.side||null,label:labelKind(d.kind)+(d.side?" ("+d.side+")":""),optional:false}); });
+  const outstanding=slots.filter(s=>{ const l=latest(s.kind,s.side); return !l || ACTION.includes(l.review_status); });
+  const actionItems=outstanding.filter(s=>{ const l=latest(s.kind,s.side); return l && ACTION.includes(l.review_status); });
+  const hasAction=actionItems.length>0;
+  if(!outstanding.length || (!engaged && !hasAction)) return null;
+  const accent=hasAction?"#b45309":"var(--gold)";
+  const showSlots=open||hasAction;   // auto-open the uploader when HR is waiting on something
   return (
-    <div className="card" style={{borderLeft:"4px solid var(--gold)"}}>
-      <div style={{fontWeight:700,marginBottom:2}}>📄 {outstanding.length} document{outstanding.length>1?"s":""} still needed</div>
-      <p className="sub" style={{marginTop:0}}>Please upload these so HR can finish your file.{anyBounced?" Some were sent back for a replacement — see the reason below.":""}</p>
-      {!open
+    <div className="card" style={{borderLeft:"4px solid "+accent,background:hasAction?"#fffaf0":"var(--card)"}}>
+      <div style={{fontWeight:800,fontSize:16,marginBottom:2}}>{hasAction?"📌 ":"📄 "}{outstanding.length} document{outstanding.length>1?"s":""} to upload</div>
+      <p className="sub" style={{marginTop:0}}>{hasAction?"Your HR team asked for these — upload right here to finish your file.":"Please upload these so HR can finish your file."}</p>
+      {!showSlots
         ? <button className="btn" style={{width:"100%"}} onClick={()=>setOpen(true)}>Upload documents</button>
         : <div>{outstanding.map(s=>(
             <UploadSlot key={s.kind+(s.side||"")} client={client} session={session} wid={wid} slot={s} doc={latest(s.kind,s.side)} onChange={load}/>
@@ -848,8 +857,8 @@ function Home({ client, session }){
           <div className="sub" style={{margin:"1px 0 0"}}>{nyPh.sign}</div>
         </div>
       </div>
-      <NyPanel/>
       <OnboardingDocReminder client={client} session={session}/>
+      <NyPanel/>
       <div className="stickwrap"><span className="sticker">📮 Your pay</span></div>
       <div className="paycard">
         <div className="row" style={{alignItems:"flex-end",padding:0}}>
@@ -1294,6 +1303,7 @@ function UploadSlot({ client, session, wid, slot, doc, onChange }){
   }
   const badge = status==="approved"?{cls:"paid",txt:t("ob.doc.approved")}
     : status==="needs_replacement"?{cls:"pending",txt:t("ob.doc.needs")}
+    : status==="deferred"?{cls:"pending",txt:"To upload"}
     : status?{cls:"pending",txt:t("ob.doc.pending")}:null;
   return (
     <div style={{borderTop:"1px solid var(--line)",padding:"10px 0"}}>
@@ -1301,7 +1311,7 @@ function UploadSlot({ client, session, wid, slot, doc, onChange }){
         <div style={{fontWeight:600}}>{slot.label}{slot.optional && <span className="sub" style={{fontWeight:400}}> · optional</span>}</div>
         {badge && <span className={"pill "+badge.cls}>{badge.txt}</span>}
       </div>
-      {status==="needs_replacement" && doc&&doc.review_reason &&
+      {(status==="needs_replacement"||status==="deferred") && doc&&doc.review_reason &&
         <div className="err" style={{marginTop:4}}>{t("ob.doc.reason")}: {doc.review_reason}</div>}
       {status!=="approved" && <div>
         {slot.kind==="nbi_clearance" && <div>
