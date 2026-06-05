@@ -531,7 +531,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 04:48 PHT · a133ffa";
+const BUILD = "2026-06-06 05:05 PHT · 4380d65";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -2241,6 +2241,18 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     }catch(ex){ setPortalMsg("Couldn't revoke: "+(ex.message||ex)); }
     finally{ setPortalBusy(false); }
   }
+  async function resetPortalPassword(){
+    if(!window.confirm("Generate a new temporary password for this contractor's portal login? Their old password stops working immediately — share the new one with them.")) return;
+    setPortalBusy(true); setPortalMsg(""); setPortalPw("");
+    try{
+      const {data,error}=await client.functions.invoke("portal-admin",{body:{action:"reset_password",worker_id:w.id}});
+      if(error) throw new Error(await fnErrorMessage(error));
+      if(data?.error) throw new Error(data.error);
+      setPortalPw(data.password||"");
+      logEvent(client,{company_id:r.company_id,action:"edit_contractor",entity:fullName(f),detail:{portal_login:"password_reset"}});
+    }catch(ex){ setPortalMsg("Couldn't reset password: "+(ex.message||ex)); }
+    finally{ setPortalBusy(false); }
+  }
   // Enroll (or re-enroll) a contractor into onboarding — collect agreements +
   // documents. Clears completed_at + stage flags so the portal routes them
   // through the onboarding flow on next sign-in (their existing profile/docs are
@@ -2605,6 +2617,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
                   <span className={"pill "+(portalLogin.status==="active"?"active":"inactive")}>
                     {portalLogin.status==="active"?"login active":"revoked"}</span>
                   <span className="muted" style={{fontSize:12}}>{portalLogin.email}</span>
+                  <button className="btn ghost sm" disabled={portalBusy} onClick={resetPortalPassword}>Reset password</button>
                   {portalLogin.status==="active" &&
                     <button className="btn ghost sm" disabled={portalBusy} onClick={revokePortalLogin}>Revoke</button>}
                 </div>
@@ -2626,7 +2639,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
                 {onb && onb.completed_at ? "Require again" : "Require onboarding"}</button>}
           </div>
           {portalPw && <div className="banner" style={{marginTop:8,background:"#ecfdf5",borderColor:"#a7f3d0",color:"#065f46"}}>
-            Login created — share these <b>once</b> (the contractor should change the password after first sign-in):<br/>
+            Portal credentials — share these <b>once</b> (the contractor should change the password after first sign-in):<br/>
             <b>Email:</b> {portalLogin?.email} &nbsp;·&nbsp; <b>Temp password:</b> <code>{portalPw}</code>
           </div>}
           {w.wise_tag && <div className="banner" style={{marginTop:8,background:"#eff6ff",borderColor:"#bfdbfe",color:"#1e40af"}}>

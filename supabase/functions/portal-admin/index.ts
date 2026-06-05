@@ -101,6 +101,29 @@ Deno.serve(async (req) => {
       return json({ ok: true });
     }
 
+    // Re-issue a temp password for an EXISTING contractor login (admin lost the
+    // original, or the contractor is locked out). Updates the auth user's
+    // password; the contractor should change it after signing in.
+    if (body.action === "reset_password") {
+      const worker_id = body.worker_id;
+      if (!worker_id) return json({ error: "need worker_id" }, 400);
+      const exRes = await fetch(`${SB}/rest/v1/contractor_logins?worker_id=eq.${worker_id}&select=auth_user_id,email,status`, { headers: svc });
+      const ex = await exRes.json();
+      const row = Array.isArray(ex) && ex[0];
+      if (!row || !row.auth_user_id) return json({ error: "this contractor has no portal login yet — create one first" }, 404);
+      const pw = String(body.password || "").trim() ||
+        ("Abc-" + Math.random().toString(36).slice(2, 8) + "-" + Math.floor(Math.random() * 9000 + 1000));
+      const upd = await fetch(`${SB}/auth/v1/admin/users/${row.auth_user_id}`, {
+        method: "PUT", headers: svc, body: JSON.stringify({ password: pw }),
+      });
+      if (!upd.ok) return json({ error: `couldn't reset password: ${await upd.text()}` }, upd.status);
+      await fetch(`${SB}/rest/v1/audit_log`, {
+        method: "POST", headers: { ...svc, Prefer: "return=minimal" },
+        body: JSON.stringify({ action: "portal_login.reset_password", actor: caller.email ?? null, entity: `${row.email || worker_id}`, detail: { worker_id } }),
+      });
+      return json({ ok: true, email: row.email, password: pw });
+    }
+
     // Permanently delete a contractor. Two tiers of protection, enforced here
     // (server-side, unbypassable):
     //   - ABSOLUTE block if any payments / time_entries exist (financial records
