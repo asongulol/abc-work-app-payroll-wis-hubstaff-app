@@ -531,7 +531,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 04:17 PHT · 3caec7f";
+const BUILD = "2026-06-06 04:48 PHT · a133ffa";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -2205,10 +2205,13 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   const [portalBusy,setPortalBusy]=useState(false);
   const [portalPw,setPortalPw]=useState("");               // temp password, shown once after create
   const [portalMsg,setPortalMsg]=useState("");
+  const [onb,setOnb]=useState(undefined);                  // onboarding_progress: undefined=loading, null=none, obj=exists
   useEffect(()=>{ let live=true;
-    if(!w?.id||!client){ setPortalLogin(null); return; }
+    if(!w?.id||!client){ setPortalLogin(null); setOnb(null); return; }
     client.from("contractor_logins").select("email,status,last_login_at").eq("worker_id",w.id).maybeSingle()
       .then(({data})=>{ if(live) setPortalLogin(data||null); }).catch(()=>{ if(live) setPortalLogin(null); });
+    client.from("onboarding_progress").select("current_stage,completed_at").eq("worker_id",w.id).maybeSingle()
+      .then(({data})=>{ if(live) setOnb(data||null); }).catch(()=>{ if(live) setOnb(null); });
     return ()=>{ live=false; };
   },[w?.id]);   // eslint-disable-line
   async function createPortalLogin(){
@@ -2236,6 +2239,27 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
       setPortalLogin(pl=>pl?{...pl,status:"revoked"}:pl);
       logEvent(client,{company_id:r.company_id,action:"edit_contractor",entity:fullName(f),detail:{portal_login:"revoked"}});
     }catch(ex){ setPortalMsg("Couldn't revoke: "+(ex.message||ex)); }
+    finally{ setPortalBusy(false); }
+  }
+  // Enroll (or re-enroll) a contractor into onboarding — collect agreements +
+  // documents. Clears completed_at + stage flags so the portal routes them
+  // through the onboarding flow on next sign-in (their existing profile/docs are
+  // shown for review; signatures stay an append-only record). Pay is unaffected.
+  async function requireOnboarding(){
+    const done = onb && onb.completed_at;
+    if(!window.confirm(`${done?"Re-require":"Require"} onboarding for ${fullName(f)}?\n\nOn their next sign-in they'll sign the agreements, review their profile, and upload the required documents before using the portal. Their pay and time are unaffected.`)) return;
+    setPortalBusy(true); setPortalMsg("");
+    try{
+      const { error } = await client.from("onboarding_progress").upsert({
+        worker_id:w.id, current_stage:"stage1_sign",
+        stage1_complete:false, stage2_complete:false, stage3_complete:false,
+        completed_at:null, updated_at:new Date().toISOString()
+      },{onConflict:"worker_id"});
+      if(error) throw error;
+      setOnb({current_stage:"stage1_sign",completed_at:null});
+      setPortalMsg("Onboarding required — they'll complete it on next sign-in.");
+      logEvent(client,{company_id:r.company_id,action:"edit_contractor",entity:fullName(f),detail:{onboarding:done?"re_required":"required"}});
+    }catch(ex){ setPortalMsg("Couldn't set onboarding: "+(ex.message||ex)); }
     finally{ setPortalBusy(false); }
   }
   // --- editable fields ---
@@ -2588,6 +2612,18 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
                 <button className="btn sm" disabled={portalBusy} onClick={createPortalLogin}>
                   {portalBusy?"Creating…":"Create portal login"}</button>
               )}
+          </div>
+          {/* Onboarding (documents & signatures) — required for new hires; can be
+              required for an existing/grandfathered contractor to collect theirs. */}
+          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginTop:8}}>
+            <span className="sub" style={{fontSize:12}}>Onboarding (documents &amp; signatures):</span>
+            {onb===undefined ? <span className="muted" style={{fontSize:12}}>…</span>
+              : onb && onb.completed_at ? <span className="pill active">complete</span>
+              : onb ? <span className="pill inactive">in progress · {String(onb.current_stage||"").replace("stage","stage ").replace("_"," ")}</span>
+              : <span className="muted" style={{fontSize:12}}>not started</span>}
+            {(onb===null || (onb && onb.completed_at)) &&
+              <button className="btn ghost sm" disabled={portalBusy} title="Ask this contractor to sign agreements and upload documents on next sign-in" onClick={requireOnboarding}>
+                {onb && onb.completed_at ? "Require again" : "Require onboarding"}</button>}
           </div>
           {portalPw && <div className="banner" style={{marginTop:8,background:"#ecfdf5",borderColor:"#a7f3d0",color:"#065f46"}}>
             Login created — share these <b>once</b> (the contractor should change the password after first sign-in):<br/>

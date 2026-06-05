@@ -119,7 +119,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 04:17 PHT · 3caec7f";
+const BUILD = "2026-06-06 04:48 PHT · a133ffa";
 
 // ── Unsaved-changes guard ──────────────────────────────────────────────────
 // Surfaces with in-progress edits register via useUnsavedGuard({dirty,label,
@@ -1242,6 +1242,7 @@ function OnboardingFlow({ client, session, cfg, prog:prog0, onDone }){
   const [prog,setProg]=useState(prog0||null);
   const [signed,setSigned]=useState([]);
   const [intro,setIntro]=useState(false);
+  const signOut=()=>client.auth.signOut();   // exit midway — progress is saved per step, resumes next sign-in
   async function refresh(){
     const [{data:p},{data:sg}] = await Promise.all([
       client.from("onboarding_progress").select("current_stage,stage1_complete,stage2_complete,stage3_complete,completed_at").maybeSingle(),
@@ -1256,6 +1257,10 @@ function OnboardingFlow({ client, session, cfg, prog:prog0, onDone }){
   const stage = (prog && prog.current_stage) || "stage1_sign";
   return (
     <div className="wrap ob-wrap">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginBottom:8}}>
+        <span className="sub" style={{fontSize:12}}>You can stop anytime — your progress is saved and you'll pick up here next time.</span>
+        <button className="btn ghost" style={{padding:"6px 10px",fontSize:13,whiteSpace:"nowrap"}} onClick={signOut}>Finish later / Sign out</button>
+      </div>
       <ProgressHeader prog={prog} cfg={cfg} signedCount={signedCount}/>
       {!intro && <WelcomeIntro onStart={()=>setIntro(true)}/>}
       {intro && stage==="stage1_sign" &&
