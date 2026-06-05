@@ -131,130 +131,6 @@ Deno.serve(async (req) => {
     // The default sync path below now pulls that endpoint and merges
     // paid+approved PTO into the per-day rollup.
 
-    // action: PTO-only refresh for a historical period — pulls Hubstaff's
-    // time_off_requests for [start, stop], finds existing time_entries by
-    // (company_id, source_name, work_date), and UPDATEs only pto_seconds.
-    //
-    // DOES NOT:
-    //   - touch tracked_seconds (preserves the historical record of what was paid)
-    //   - create new rows (doesn't retroactively add hours that weren't billed)
-    //   - call Calculate (payments stay frozen)
-    //
-    // Returns a diff report: which rows had PTO added vs which Hubstaff PTO
-    // had no matching DB row (skipped). Safe to call multiple times — re-runs
-    // simply re-assert the same value.
-    if (body.action === "pto_refresh") {
-      const supaUrl = Deno.env.get("SUPABASE_URL");
-      const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-      if (!supaUrl || !serviceKey) {
-        return json({ error: "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set" }, 500);
-      }
-      const orgId = Number(body.org_id);
-      const companyId = String(body.company_id || "").trim();
-      const start = String(body.start || "").trim();
-      const stop = String(body.stop || "").trim();
-      if (!Number.isFinite(orgId) || orgId <= 0) return json({ error: "need org_id" }, 400);
-      if (!companyId) return json({ error: "need company_id" }, 400);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(stop)) {
-        return json({ error: "need start and stop as YYYY-MM-DD" }, 400);
-      }
-      const auth = { Authorization: `Bearer ${token}` };
-      const restHeaders = {
-        "apikey": serviceKey,
-        "Authorization": `Bearer ${serviceKey}`,
-        "Content-Type": "application/json",
-      };
-
-      // 1. Pull org members + name resolution (same path the default sync uses)
-      const members = await pageAll(`${API}/organizations/${orgId}/members`, token, "members");
-      const userIds = [...new Set(members.map((m: any) => m.user_id ?? m.id).filter(Boolean))];
-      const nameById: Record<number, string> = {};
-      for (let i = 0; i < userIds.length; i += 50) {
-        const qs = userIds.slice(i, i + 50).map((id) => `id%5B%5D=${id}`).join("&");
-        const r = await fetch(`${API}/users?${qs}`, { headers: auth });
-        if (!r.ok) break;
-        const data = await r.json();
-        for (const u of (data.users ?? [])) nameById[u.id] = u.name ?? `user ${u.id}`;
-      }
-
-      // 2. Pull PTO and aggregate per (user_id, date)
-      const startMs = new Date(`${start}T00:00:00Z`).getTime();
-      const stopMs  = new Date(`${stop}T23:59:59Z`).getTime();
-      const ptoReqs = await pageAll(`${API}/organizations/${orgId}/time_off_requests`, token, "time_off_requests");
-      const ptoBy: Record<string, number> = {};  // key = `${uid}|${date}` → seconds
-      for (const req of (ptoReqs as any[])) {
-        if (req?.status !== "approved") continue;
-        const uid = req?.user_id;
-        if (!uid) continue;
-        const days = Array.isArray(req?.time_off_request_days) ? req.time_off_request_days : [];
-        for (const d of days) {
-          const date = d?.date;
-          if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
-          const dMs = new Date(`${date}T00:00:00Z`).getTime();
-          if (dMs < startMs || dMs > stopMs) continue;
-          const secs = Number(d?.amount_used ?? 0);
-          if (!Number.isFinite(secs) || secs <= 0) continue;
-          const k = `${uid}|${date}`;
-          ptoBy[k] = (ptoBy[k] ?? 0) + secs;
-        }
-      }
-
-      // 3. Fetch existing time_entries for this company+period
-      const teQs = new URLSearchParams();
-      teQs.set("select", "id,source_name,work_date,pto_seconds,tracked_seconds");
-      teQs.set("company_id", `eq.${companyId}`);
-      teQs.set("work_date", `gte.${start}`);
-      teQs.append("work_date", `lte.${stop}`);
-      const teRes = await fetch(`${supaUrl}/rest/v1/time_entries?${teQs}`, { headers: restHeaders });
-      if (!teRes.ok) return json({ error: `time_entries fetch ${teRes.status}: ${await teRes.text()}` }, 500);
-      const teRows: any[] = await teRes.json();
-
-      // Index DB rows by (source_name, work_date). Also index by stripped/lowercased
-      // name so a CSV import that used a slightly different spelling can still match.
-      const teByKey: Record<string, any> = {};
-      for (const r of teRows) {
-        teByKey[`${r.source_name}|${r.work_date}`] = r;
-      }
-
-      // 4. Walk PTO entries; if a matching DB row exists, UPDATE its pto_seconds.
-      let updated = 0, unchanged = 0, no_db_row = 0;
-      const updates: any[] = [];
-      const orphans: any[] = [];   // PTO with no matching DB row
-      for (const [k, secs] of Object.entries(ptoBy)) {
-        const [uidStr, date] = k.split("|");
-        const uid = Number(uidStr);
-        const hubName = nameById[uid] || `user ${uid}`;
-        // Match by hubstaff name first, then any DB row that uses that name as source_name.
-        const dbRow = teByKey[`${hubName}|${date}`];
-        if (!dbRow) {
-          orphans.push({ hubstaff_user_id: uid, name: hubName, date, pto_seconds: secs });
-          no_db_row++;
-          continue;
-        }
-        if (Number(dbRow.pto_seconds || 0) === secs) {
-          unchanged++;
-          continue;
-        }
-        const uRes = await fetch(
-          `${supaUrl}/rest/v1/time_entries?id=eq.${dbRow.id}`,
-          { method: "PATCH", headers: { ...restHeaders, "Prefer": "return=minimal" },
-            body: JSON.stringify({ pto_seconds: secs }) });
-        if (uRes.ok) {
-          updated++;
-          updates.push({ name: hubName, date, old_pto: dbRow.pto_seconds||0, new_pto: secs });
-        }
-      }
-
-      return json({
-        period: { start, stop, company_id: companyId, org_id: orgId },
-        pto_days_pulled: Object.keys(ptoBy).length,
-        time_entries_scanned: teRows.length,
-        updated, unchanged, no_db_row,
-        sample_updates: updates.slice(0, 20),
-        sample_orphans: orphans.slice(0, 20),
-      });
-    }
-
     // action: read a single Hubstaff user — used by the per-profile drift check.
     // READ ONLY. Returns just the small identity fields the app needs.
     if (body.action === "get_user") {
@@ -283,6 +159,221 @@ Deno.serve(async (req) => {
     // API). The `hubstaff:write` scope covers other resources (projects,
     // tasks, time entries) but not member-profile updates. The drift-detection
     // UI now points the user at Hubstaff's web UI to fix mismatches manually.
+
+    // ---- CRON INGEST (server-side daily write; secret-gated) ----------------
+    // Pulls Hubstaff daily activity for a recent window and UPSERTs time_entries
+    // for ONE company. Mirrors the app's importer EXACTLY: ID-first match on
+    // hubstaff_user_id, name fallback (strict sorted-token key, then loose
+    // first+last), persisting the id on first name-match. MATCH-BEFORE-CREATE:
+    // unmatched members are REPORTED, never inserted (an automated job must not
+    // auto-create workers). Never overwrites a row a human already decided
+    // (approval != 'pending'). Populates activity_pct = round(overall/tracked*100)
+    // — the field the browser API-sync leaves null. The whole action is gated by
+    // a shared secret stored in public.app_secrets (RLS-locked; readable only by
+    // the service role this function runs as), so it is NOT publicly invocable.
+    if (body.action === "cron_ingest") {
+      const provided = req.headers.get("x-cron-secret") ?? body.secret ?? "";
+      const sRes = await fetch(`${SB_URL}/rest/v1/app_secrets?key=eq.cron_secret&select=value`, { headers: tokHdr });
+      const expected = sRes.ok ? (await sRes.json())?.[0]?.value : null;
+      if (!expected || provided !== expected) return json({ error: "unauthorized" }, 401);
+
+      const orgId = Number(body.org_id);
+      const companyId = String(body.company_id ?? "").trim();
+      if (!Number.isFinite(orgId) || orgId <= 0 || !companyId) {
+        return json({ error: "need org_id and company_id" }, 400);
+      }
+      // Window = a small lookback ending at `today` (the cron passes the date so
+      // the function is deterministic; default to the server's UTC date). Re-
+      // pulling the last few days captures time edited/added late in Hubstaff.
+      const lookback = Math.max(0, Math.min(31, Number(body.lookback_days ?? 3)));
+      const today = /^\d{4}-\d{2}-\d{2}$/.test(String(body.today ?? ""))
+        ? String(body.today) : new Date().toISOString().slice(0, 10);
+      const startMs = new Date(`${today}T00:00:00Z`).getTime() - lookback * 86400000;
+      const stopMs = new Date(`${today}T23:59:59Z`).getTime();
+      const start = new Date(startMs).toISOString().slice(0, 10);
+      const stop = today;
+
+      // name normalization — MIRRORS app/index.html nameTokens/nameKey/looseKey
+      const nameTokens = (raw: any): string[] => {
+        if (!raw) return [];
+        const s = String(raw).normalize("NFD").replace(/[̀-ͯ]/g, "")
+          .replace(/[.,]/g, " ").replace(/\bMa\b/ig, "Maria")
+          .replace(/\b(jr|sr|ii|iii|iv|n)\b/ig, " ");
+        return s.split(/\s+/).filter(Boolean).map((x) => x.toLowerCase());
+      };
+      const nameKey = (raw: any): string => { const t = nameTokens(raw); return t.length ? [...t].sort().join(" ") : ""; };
+      const looseKey = (raw: any): string => { const t = nameTokens(raw); if (!t.length) return ""; return t.length === 1 ? t[0] : `${t[0]} ${t[t.length - 1]}`; };
+
+      const auth = { headers: { Authorization: `Bearer ${token}` } };
+
+      // members -> names
+      const members = await pageAll(`${API}/organizations/${orgId}/members`, token, "members");
+      const userIds = [...new Set(members.map((m: any) => m.user_id ?? m.id).filter(Boolean))];
+      const nameById: Record<number, string> = {};
+      for (let i = 0; i < userIds.length; i += 50) {
+        const qs = userIds.slice(i, i + 50).map((id) => `id%5B%5D=${id}`).join("&");
+        const r = await fetch(`${API}/users?${qs}`, auth);
+        if (!r.ok) break;
+        const data = await r.json();
+        for (const u of (data.users ?? [])) nameById[u.id] = u.name ?? `user ${u.id}`;
+      }
+      for (const id of userIds.filter((id) => !(id in nameById))) {
+        const r = await fetch(`${API}/users/${id}`, auth);
+        if (!r.ok) continue;
+        const d = await r.json(); const u = d.user ?? d;
+        nameById[id] = u?.name ?? `user ${id}`;
+      }
+
+      // daily activities: tracked + overall (active) seconds per user per day
+      const acts = await pageAll(
+        `${API}/organizations/${orgId}/activities/daily?date%5Bstart%5D=${start}&date%5Bstop%5D=${stop}`,
+        token, "daily_activities",
+      );
+      const trackedDay: Record<number, Record<string, number>> = {};
+      const overallDay: Record<number, Record<string, number>> = {};
+      for (const a of acts) {
+        const uid = a.user_id, day = a.date;
+        if (!uid || !day) continue;
+        (trackedDay[uid] ??= {})[day] = (trackedDay[uid][day] ?? 0) + (a.tracked ?? 0);
+        (overallDay[uid] ??= {})[day] = (overallDay[uid][day] ?? 0) + (a.overall ?? 0);
+      }
+
+      // PTO per user per day (approved; per-day amounts inside the window)
+      const ptoDay: Record<number, Record<string, number>> = {};
+      try {
+        const ptoReqs = await pageAll(`${API}/organizations/${orgId}/time_off_requests`, token, "time_off_requests");
+        for (const r2 of (ptoReqs as any[])) {
+          if (r2?.status !== "approved") continue;
+          const uid = r2?.user_id; if (!uid) continue;
+          for (const d of (Array.isArray(r2?.time_off_request_days) ? r2.time_off_request_days : [])) {
+            const date = d?.date;
+            if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+            const dMs = new Date(`${date}T00:00:00Z`).getTime();
+            if (dMs < startMs || dMs > stopMs) continue;
+            const secs = Number(d?.amount_used ?? 0);
+            if (!Number.isFinite(secs) || secs <= 0) continue;
+            (ptoDay[uid] ??= {})[date] = (ptoDay[uid][date] ?? 0) + secs;
+          }
+        }
+      } catch (_) { /* PTO optional — continue tracked-only */ }
+
+      // company worker links -> match index (id / strict / loose), mirroring indexLinks
+      const wcRes = await fetch(
+        `${SB_URL}/rest/v1/worker_companies?company_id=eq.${companyId}` +
+        `&select=worker_id,hubstaff_name,hubstaff_user_id,status,workers(first_name,last_name,status)`,
+        { headers: tokHdr });
+      const links: any[] = wcRes.ok ? await wcRes.json() : [];
+      const byId: Record<number, any> = {}, strict: Record<string, any> = {}, loose: Record<string, any> = {};
+      for (const l of links) {
+        const val = { worker_id: l.worker_id };
+        if (l.hubstaff_user_id != null && !(l.hubstaff_user_id in byId)) byId[l.hubstaff_user_id] = val;
+        const realName = `${l.workers?.first_name ?? ""} ${l.workers?.last_name ?? ""}`;
+        for (const src of [l.hubstaff_name, realName].filter(Boolean)) {
+          const sk = nameKey(src), lk = looseKey(src);
+          if (sk && !(sk in strict)) strict[sk] = val;
+          if (lk && !(lk in loose)) loose[lk] = val;
+        }
+      }
+      const matchMember = (uid: number, nm: string) =>
+        (uid != null && byId[uid]) || strict[nameKey(nm)] || loose[looseKey(nm)] || null;
+
+      // canonical source_name per worker: reuse the label already on their rows so
+      // we UPDATE the same row instead of inserting a second under a new spelling
+      // (the unique key is company_id+source_name+work_date, and some workers'
+      // existing source_name differs from their current Hubstaff display name).
+      const workerIds = [...new Set(links.map((l: any) => l.worker_id).filter(Boolean))];
+      const canonical: Record<string, string> = {};
+      if (workerIds.length) {
+        const inList = workerIds.map((w) => `"${w}"`).join(",");
+        const cRes = await fetch(
+          `${SB_URL}/rest/v1/time_entries?company_id=eq.${companyId}&worker_id=in.(${inList})` +
+          `&select=worker_id,source_name,work_date&order=work_date.desc`,
+          { headers: tokHdr });
+        if (cRes.ok) for (const row of await cRes.json()) {
+          if (row.worker_id && !(row.worker_id in canonical)) canonical[row.worker_id] = row.source_name;
+        }
+      }
+
+      // existing rows in the window already DECIDED by a human (approval !=
+      // 'pending') are protected — keyed by source_name|day AND worker_id|day so a
+      // relabeled row is still shielded.
+      const exRes = await fetch(
+        `${SB_URL}/rest/v1/time_entries?company_id=eq.${companyId}` +
+        `&work_date=gte.${start}&work_date=lte.${stop}&select=worker_id,source_name,work_date,approval`,
+        { headers: tokHdr });
+      const decidedSrc = new Set<string>(), decidedWrk = new Set<string>();
+      if (exRes.ok) for (const row of await exRes.json()) {
+        if (row.approval && row.approval !== "pending") {
+          decidedSrc.add(`${row.source_name}|${row.work_date}`);
+          if (row.worker_id) decidedWrk.add(`${row.worker_id}|${row.work_date}`);
+        }
+      }
+
+      const days: string[] = [];
+      for (let t = new Date(`${start}T00:00:00Z`).getTime(); t <= stopMs; t += 86400000) {
+        days.push(new Date(t).toISOString().slice(0, 10));
+      }
+
+      const rows: any[] = [];
+      const unmatched = new Set<string>();
+      const persistIds: Array<{ worker_id: string; uid: number }> = [];
+      let skippedDecided = 0;
+
+      for (const uid of userIds) {
+        const nm = nameById[uid] ?? `user ${uid}`;
+        const hit = matchMember(uid, nm);
+        if (!hit) {
+          if (trackedDay[uid] || ptoDay[uid]) unmatched.add(nm);  // only flag members with time
+          continue;
+        }
+        const wId = hit.worker_id;
+        const src = canonical[wId] ?? nm;
+        const link = links.find((l: any) => l.worker_id === wId);
+        if (uid != null && link && link.hubstaff_user_id == null) persistIds.push({ worker_id: wId, uid });
+        for (const day of days) {
+          const tracked = trackedDay[uid]?.[day] ?? 0;
+          const pto = ptoDay[uid]?.[day] ?? 0;
+          if (tracked === 0 && pto === 0) continue;   // don't write empty days
+          if (decidedSrc.has(`${src}|${day}`) || decidedWrk.has(`${wId}|${day}`)) { skippedDecided++; continue; }
+          const ov = overallDay[uid]?.[day] ?? 0;
+          const activity = tracked > 0 ? Math.round((ov / tracked) * 100) : null;
+          rows.push({
+            company_id: companyId, worker_id: wId, source_name: src, work_date: day,
+            tracked_seconds: tracked, pto_seconds: pto,
+            activity_pct: activity, approval: "pending",
+          });
+        }
+      }
+
+      // Upsert. merge-duplicates updates ONLY the columns in the payload, so
+      // pay_period_id / import_batch_id / approved_* on an existing row are
+      // preserved; decided rows were filtered out above so approval is never
+      // clobbered from a human decision back to 'pending'.
+      let written = 0;
+      if (rows.length) {
+        const up = await fetch(
+          `${SB_URL}/rest/v1/time_entries?on_conflict=company_id,source_name,work_date`,
+          { method: "POST",
+            headers: { ...tokHdr, Prefer: "resolution=merge-duplicates,return=minimal" },
+            body: JSON.stringify(rows) });
+        if (!up.ok) return json({ error: `upsert failed (${up.status}): ${await up.text()}` }, 500);
+        written = rows.length;
+      }
+      // persist the stable Hubstaff id on links that matched by name (id-first next run)
+      for (const p of persistIds) {
+        await fetch(
+          `${SB_URL}/rest/v1/worker_companies?company_id=eq.${companyId}&worker_id=eq.${p.worker_id}&hubstaff_user_id=is.null`,
+          { method: "PATCH", headers: { ...tokHdr, Prefer: "return=minimal" },
+            body: JSON.stringify({ hubstaff_user_id: p.uid }) });
+      }
+
+      return json({
+        ok: true, window: { start, stop }, company_id: companyId,
+        members_seen: userIds.length, rows_written: written,
+        ids_persisted: persistIds.length, skipped_decided: skippedDecided,
+        unmatched: [...unmatched],
+      });
+    }
 
     const { org_id, start, stop } = body;
     if (!org_id || !start || !stop) return json({ error: "need org_id, start, stop" }, 400);
