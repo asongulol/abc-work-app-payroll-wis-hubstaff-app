@@ -531,7 +531,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 02:26 PHT · 6119c93";
+const BUILD = "2026-06-06 02:30 PHT · aa7bf1d";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -1493,16 +1493,34 @@ function AnnouncementsModal({ client, onClose }){
 // Guided "Add contractor" wizard: admin captures the IC essentials, the
 // contractor completes the rest via onboarding. Creates NOTHING until Create.
 function AddContractorWizard({ client, companyId, companyName, onClose, onCreated }){
-  const [step,setStep]=useState(1);
   const today=new Date().toISOString().slice(0,10);
-  const [f,setF]=useState({ first_name:"", middle_name:"", last_name:"", email:"",
+  const DEFAULTS={ first_name:"", middle_name:"", last_name:"", email:"",
     ph_address:"", permanent_address:"", date_of_birth:"",
     contract:"FT", role:"", rate:"", contract_date:today, hire_date:today,
     ic_addendum_type:"", ic_addendum_text:"", extra_docs:[],
-    health_allowance_eligible:true, thirteenth_month_eligible:true, invite:true });
+    health_allowance_eligible:true, thirteenth_month_eligible:true, invite:true };
+  // Per-company draft so a half-finished hire survives a refresh/close/navigation.
+  // Nothing touches the DB until "Create contractor"; the draft lives in
+  // localStorage and is cleared on create or "Start fresh".
+  const DRAFT_KEY="eis_hire_draft_"+(companyId||"none");
+  const loadedDraft=(()=>{ try{ const r=localStorage.getItem(DRAFT_KEY); if(!r) return null; const d=JSON.parse(r); return (d&&d.f&&typeof d.f==="object")?d:null; }catch{ return null; } })();
+  const [step,setStep]=useState(loadedDraft?Math.min(3,Math.max(1,loadedDraft.step||1)):1);
+  const [f,setF]=useState(loadedDraft?{...DEFAULTS,...loadedDraft.f}:DEFAULTS);
+  const [draftRestored,setDraftRestored]=useState(!!loadedDraft);
   const set=(k,v)=>setF(x=>({...x,[k]:v}));
   const [busy,setBusy]=useState(false); const [err,setErr]=useState(""); const [errs,setErrs]=useState({});
   const [result,setResult]=useState(null);
+  const doneRef=React.useRef(false);
+  useEffect(()=>{
+    if(doneRef.current) return;
+    const id=setTimeout(()=>{ if(doneRef.current) return;
+      const has=s=>s!=null&&String(s).trim()!=="";
+      const hasContent=has(f.first_name)||has(f.last_name)||has(f.email)||has(f.role)||has(f.rate)||has(f.ic_addendum_text)||(Array.isArray(f.extra_docs)&&f.extra_docs.some(has));
+      try{ if(hasContent) localStorage.setItem(DRAFT_KEY, JSON.stringify({f, step, companyName:companyName||"", at:Date.now()})); }catch(_e){} }, 500);
+    return ()=>clearTimeout(id);
+  },[f, step]);  // eslint-disable-line
+  function clearDraft(){ doneRef.current=true; try{ localStorage.removeItem(DRAFT_KEY); }catch(_e){} }
+  function startFresh(){ try{ localStorage.removeItem(DRAFT_KEY); }catch(_e){} setF(DEFAULTS); setStep(1); setDraftRestored(false); setErr(""); setErrs({}); }
   const ne=v=>v!=null&&String(v).trim()!=="";
   function validateStep(s){
     const e={};
@@ -1572,6 +1590,7 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
         }
       }catch(_e){ /* non-fatal */ }
       logEvent(client,{company_id:companyId,action:"add_contractor",entity:`${f.first_name} ${f.last_name}`,detail:{from:"wizard",contract:f.contract,invited:!!f.invite,rate:parseFloat(f.rate)||null,addendum:f.ic_addendum_type||null,extra_docs:(f.extra_docs||[]).filter(t=>(t||"").trim()).length}});
+      clearDraft();   // created — discard the saved draft
       setResult(invited||{ok:true}); onCreated&&onCreated();
     }catch(ex){
       // Roll back the just-created worker so a late failure (e.g. invite on an
@@ -1615,6 +1634,7 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
       </div>
       <div style={{display:"flex",gap:6,margin:"10px 0"}}>{[1,2,3].map(n=>(<div key={n} style={{flex:1,height:4,borderRadius:2,background:n<=step?"#1F3A68":"#e5e7eb"}}/>))}</div>
       <p className="sub" style={{marginTop:0}}>Step {step} of 3 · {step===1?"Identity":step===2?"Engagement (IC terms)":"Portal & onboarding"}</p>
+      {draftRestored && <div className="banner" style={{marginTop:0,marginBottom:8,background:"#eff6ff",borderColor:"#bfdbfe",color:"#1e40af",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}><span>↩ Resumed your saved draft.</span><button className="btn ghost sm" onClick={startFresh}>Start fresh</button></div>}
       {step===1 && <div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>{field("First name *","first_name")}{field("Middle name","middle_name")}{field("Last name *","last_name")}</div>
         {field("Personal email *","email","email","name@example.com")}
@@ -1671,7 +1691,8 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
         </div>
       </div>}
       {err && <div className="err" style={{marginTop:8}}>{err}</div>}
-      <div style={{display:"flex",justifyContent:"space-between",marginTop:12}}>
+      <div className="muted" style={{fontSize:11,marginTop:10}}>✓ Progress auto-saved on this device — you can close and pick up where you left off.</div>
+      <div style={{display:"flex",justifyContent:"space-between",marginTop:8}}>
         <button className="btn ghost sm" disabled={step===1||busy} onClick={back}>Back</button>
         {step<3 ? <button className="btn" onClick={next}>Next</button>
           : <button className="btn" disabled={busy||(f.invite&&!ne(f.email))} onClick={create}>{busy?"Creating…":"Create contractor"}</button>}
