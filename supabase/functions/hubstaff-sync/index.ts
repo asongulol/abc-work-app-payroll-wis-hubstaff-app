@@ -375,6 +375,123 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ---- activity_backfill ----
+    // Fill activity_pct on EXISTING time_entries from Hubstaff daily activity,
+    // WITHOUT touching tracked hours, approval, pay_period, or anything else — so
+    // it is safe even on approved/locked rows (activity is informational, never
+    // pay-affecting). It UPDATEs by primary key only: never inserts a row, never
+    // changes a human decision. Window: explicit {start,stop} or {lookback_days}
+    // (cap 366). By default only fills rows whose activity_pct is null; pass
+    // overwrite:true to refresh all. Secret-gated like cron_ingest.
+    if (body.action === "activity_backfill") {
+      const provided = req.headers.get("x-cron-secret") ?? body.secret ?? "";
+      const sRes = await fetch(`${SB_URL}/rest/v1/app_secrets?key=eq.cron_secret&select=value`, { headers: tokHdr });
+      const expected = sRes.ok ? (await sRes.json())?.[0]?.value : null;
+      if (!expected || provided !== expected) return json({ error: "unauthorized" }, 401);
+
+      const orgId = Number(body.org_id);
+      const companyId = String(body.company_id ?? "").trim();
+      if (!Number.isFinite(orgId) || orgId <= 0 || !companyId) return json({ error: "need org_id and company_id" }, 400);
+
+      const overwrite = body.overwrite === true;
+      let start: string, stop: string;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(String(body.start ?? "")) && /^\d{4}-\d{2}-\d{2}$/.test(String(body.stop ?? ""))) {
+        start = String(body.start); stop = String(body.stop);
+      } else {
+        const lookback = Math.max(1, Math.min(366, Number(body.lookback_days ?? 90)));
+        const today = /^\d{4}-\d{2}-\d{2}$/.test(String(body.today ?? "")) ? String(body.today) : new Date().toISOString().slice(0, 10);
+        start = new Date(new Date(`${today}T00:00:00Z`).getTime() - lookback * 86400000).toISOString().slice(0, 10);
+        stop = today;
+      }
+
+      const nameTokens = (raw: any): string[] => { if (!raw) return []; const s = String(raw).normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[.,]/g, " ").replace(/\bMa\b/ig, "Maria").replace(/\b(jr|sr|ii|iii|iv|n)\b/ig, " "); return s.split(/\s+/).filter(Boolean).map((x) => x.toLowerCase()); };
+      const nameKey = (raw: any) => { const t = nameTokens(raw); return t.length ? [...t].sort().join(" ") : ""; };
+      const looseKey = (raw: any) => { const t = nameTokens(raw); if (!t.length) return ""; return t.length === 1 ? t[0] : `${t[0]} ${t[t.length - 1]}`; };
+      const auth = { headers: { Authorization: `Bearer ${token}` } };
+
+      const members = await pageAll(`${API}/organizations/${orgId}/members`, token, "members");
+      const userIds = [...new Set(members.map((m: any) => m.user_id ?? m.id).filter(Boolean))];
+      const nameById: Record<number, string> = {};
+      for (let i = 0; i < userIds.length; i += 50) { const qs = userIds.slice(i, i + 50).map((id) => `id%5B%5D=${id}`).join("&"); const r = await fetch(`${API}/users?${qs}`, auth); if (!r.ok) break; const d = await r.json(); for (const u of (d.users ?? [])) nameById[u.id] = u.name ?? `user ${u.id}`; }
+      for (const id of userIds.filter((id) => !(id in nameById))) { const r = await fetch(`${API}/users/${id}`, auth); if (!r.ok) continue; const d = await r.json(); const u = d.user ?? d; nameById[id] = u?.name ?? `user ${id}`; }
+
+      // Hubstaff's activities/daily rejects ranges > 31 days, so fetch in ≤31-day
+      // chunks and accumulate across the whole requested window.
+      const trackedDay: Record<number, Record<string, number>> = {}, overallDay: Record<number, Record<string, number>> = {};
+      const stopMsAll = new Date(`${stop}T00:00:00Z`).getTime();
+      for (let cs = new Date(`${start}T00:00:00Z`).getTime(); cs <= stopMsAll; cs += 31 * 86400000) {
+        const ceMs = Math.min(cs + 30 * 86400000, stopMsAll);
+        const cStart = new Date(cs).toISOString().slice(0, 10);
+        const cStop = new Date(ceMs).toISOString().slice(0, 10);
+        const acts = await pageAll(`${API}/organizations/${orgId}/activities/daily?date%5Bstart%5D=${cStart}&date%5Bstop%5D=${cStop}`, token, "daily_activities");
+        for (const a of acts) { const uid = a.user_id, day = a.date; if (!uid || !day) continue; (trackedDay[uid] ??= {})[day] = (trackedDay[uid][day] ?? 0) + (a.tracked ?? 0); (overallDay[uid] ??= {})[day] = (overallDay[uid][day] ?? 0) + (a.overall ?? 0); }
+      }
+
+      const wcRes = await fetch(`${SB_URL}/rest/v1/worker_companies?company_id=eq.${companyId}&select=worker_id,hubstaff_name,hubstaff_user_id,workers(first_name,last_name)`, { headers: tokHdr });
+      const links: any[] = wcRes.ok ? await wcRes.json() : [];
+      const byId: Record<number, any> = {}, strict: Record<string, any> = {}, loose: Record<string, any> = {};
+      for (const l of links) { const val = { worker_id: l.worker_id }; if (l.hubstaff_user_id != null && !(l.hubstaff_user_id in byId)) byId[l.hubstaff_user_id] = val; const realName = `${l.workers?.first_name ?? ""} ${l.workers?.last_name ?? ""}`; for (const src of [l.hubstaff_name, realName].filter(Boolean)) { const sk = nameKey(src), lk = looseKey(src); if (sk && !(sk in strict)) strict[sk] = val; if (lk && !(lk in loose)) loose[lk] = val; } }
+      const matchMember = (uid: number, nm: string) => (uid != null && byId[uid]) || strict[nameKey(nm)] || loose[looseKey(nm)] || null;
+
+      // activity map: worker_id|day -> activity_pct (only where tracked > 0)
+      const actMap: Record<string, number> = {};
+      const unmatched = new Set<string>();
+      for (const uid of userIds) {
+        const nm = nameById[uid] ?? `user ${uid}`;
+        const hit = matchMember(uid, nm);
+        if (!hit) { if (trackedDay[uid]) unmatched.add(nm); continue; }
+        for (const day of Object.keys(trackedDay[uid] ?? {})) {
+          const tracked = trackedDay[uid][day] ?? 0;
+          if (tracked <= 0) continue;
+          const ov = overallDay[uid]?.[day] ?? 0;
+          actMap[`${hit.worker_id}|${day}`] = Math.round((ov / tracked) * 100);
+        }
+      }
+
+      // For each EXISTING row in the window, set activity_pct from the map. Update
+      // by PK id, so nothing else on the row (hours/approval/pay) is touched and no
+      // new row is ever created.
+      // Paginate — PostgREST caps a response at ~1000 rows; a wide window has more.
+      const existing: any[] = [];
+      for (let off = 0; ; off += 1000) {
+        const exRes = await fetch(`${SB_URL}/rest/v1/time_entries?company_id=eq.${companyId}&work_date=gte.${start}&work_date=lte.${stop}&select=id,worker_id,work_date,activity_pct&order=id&limit=1000&offset=${off}`, { headers: tokHdr });
+        if (!exRes.ok) return json({ error: `read rows failed (${exRes.status}): ${await exRes.text()}` }, 500);
+        const batch = await exRes.json();
+        if (!Array.isArray(batch) || batch.length === 0) break;
+        existing.push(...batch);
+        if (batch.length < 1000) break;
+      }
+      const updates: any[] = [];
+      for (const row of existing) {
+        if (!row.worker_id) continue;
+        const v = actMap[`${row.worker_id}|${row.work_date}`];
+        if (v == null) continue;
+        if (!overwrite && row.activity_pct != null) continue;   // only fill gaps unless overwrite
+        if (row.activity_pct === v) continue;                   // no-op
+        updates.push({ id: row.id, activity_pct: v });
+      }
+
+      let updated = 0;
+      if (updates.length) {
+        // Bulk UPDATE-by-id via a service-role RPC: sets ONLY activity_pct, never
+        // inserts, never touches hours/approval/pay. (A PostgREST upsert can't do
+        // this — its INSERT branch would violate NOT NULL on the omitted columns.)
+        const up = await fetch(`${SB_URL}/rest/v1/rpc/set_time_entry_activity`, {
+          method: "POST",
+          headers: { ...tokHdr, "Content-Type": "application/json" },
+          body: JSON.stringify({ p: updates }),
+        });
+        if (!up.ok) return json({ error: `update failed (${up.status}): ${await up.text()}` }, 500);
+        updated = Number(await up.json()) || updates.length;
+      }
+
+      return json({
+        ok: true, action: "activity_backfill", window: { start, stop }, company_id: companyId,
+        members_seen: userIds.length, rows_in_window: existing.length, rows_updated: updated,
+        overwrite, unmatched: [...unmatched],
+      });
+    }
+
     const { org_id, start, stop } = body;
     if (!org_id || !start || !stop) return json({ error: "need org_id, start, stop" }, 400);
 
