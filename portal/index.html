@@ -119,7 +119,22 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 06:53 PHT · 722f411";
+const BUILD = "2026-06-06 07:00 PHT · 7471393";
+// Self-update: on load, compare the running build to the deployed version.txt
+// (fetched no-store). If a newer build is live, reload to it via a cache-busting
+// URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
+(async function(){
+  try{
+    // never interrupt an OAuth callback — its code/token lives in the URL.
+    if(/access_token=|[?&](code|error)=/.test(location.hash + "&" + location.search)) return;
+    const res = await fetch("version.txt?_=" + Date.now(), { cache:"no-store" });
+    if(!res.ok) return;
+    const latest = (await res.text()).trim();
+    if(!latest || latest === BUILD) return;                 // already current
+    if(!/[?&]_v=/.test(location.search))                    // auto-reload once (loop-safe)
+      location.replace(location.pathname + "?_v=" + encodeURIComponent(latest));
+  }catch(_e){ /* offline / blocked — ignore */ }
+})();
 
 // ── Unsaved-changes guard ──────────────────────────────────────────────────
 // Surfaces with in-progress edits register via useUnsavedGuard({dirty,label,

@@ -24,5 +24,10 @@ for (const f of ['app/index.html', 'portal/index.html']) {
   const next = src.replace(/const BUILD = "[^"]*";/, `const BUILD = "${build}";`);
   if (next === src) { console.error(`WARN: BUILD marker not found in ${f}`); continue; }
   writeFileSync(url, next);
+  // Tiny sibling file the running app fetches (no-store) to detect a new deploy
+  // and self-reload — so a normal refresh always lands on the latest build, no
+  // hard refresh needed. Must equal the BUILD constant above.
+  const dir = f.replace(/\/index\.html$/, '');
+  writeFileSync(new URL('../' + dir + '/version.txt', import.meta.url), build + '\n');
   console.log(`stamped ${f}: ${build}`);
 }
