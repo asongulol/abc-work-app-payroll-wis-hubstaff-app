@@ -531,7 +531,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 04:09 PHT · 46fc32d";
+const BUILD = "2026-06-06 04:17 PHT · 3caec7f";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -1031,7 +1031,10 @@ function DraftNotice({show, onFresh}){
 const _guards = new Map();                 // id -> {dirty,label,save,discard}
 function _setGuard(id, rec){ if(rec && rec.dirty) _guards.set(id, rec); else _guards.delete(id); }
 function _dirtyGuards(){ return [..._guards.values()]; }
-function unsavedDirty(){ return _guards.size>0; }
+// Only a surface with a real Save action blocks navigation. A dirty surface with
+// nothing savable (e.g. an in-progress signature) just lets you leave — no prompt.
+function _savableDirty(){ return [..._guards.values()].filter(g=>g.save); }
+function unsavedDirty(){ return _savableDirty().length>0; }
 function useUnsavedGuard(rec){
   const id = React.useId();
   React.useEffect(()=>{ _setGuard(id, rec); });            // refresh each render (live closures + dirty)
@@ -1041,8 +1044,8 @@ let _ucOpen = null;       // setter installed by the mounted <UnsavedChangesModa
 let _ucResolve = null;    // resolver for the in-flight prompt
 // Returns Promise<boolean>: true = caller may proceed (saved/discarded/nothing dirty).
 function confirmUnsaved(){
-  const gs=_dirtyGuards();
-  if(!gs.length) return Promise.resolve(true);
+  const gs=_savableDirty();
+  if(!gs.length) return Promise.resolve(true);   // nothing savable → just let them go
   if(typeof _ucOpen!=="function") return Promise.resolve(window.confirm("You have unsaved changes. Leave and lose them?"));
   return new Promise(resolve=>{
     if(_ucResolve){ const prev=_ucResolve; _ucResolve=null; prev(false); }   // settle any stale prompt
@@ -1051,7 +1054,7 @@ function confirmUnsaved(){
 }
 // Decision handler invoked by the modal buttons. Returns whether nav should proceed.
 async function _ucDecide(decision){
-  const gs=_dirtyGuards(); const resolve=_ucResolve; _ucResolve=null;
+  const gs=_savableDirty(); const resolve=_ucResolve; _ucResolve=null;
   let proceed=false;
   try{
     if(decision==="save"){ for(const g of gs){ if(g.save){ const ok=await g.save(); if(ok===false) throw new Error("save_incomplete"); } } proceed=true; }
@@ -9552,7 +9555,7 @@ function CountersignModal({ defaultName, onCancel, onSubmit }){
 // directly (is_admin() RLS); the contractor signature stays in onboarding_signatures.
 function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigChange }){
   const [insts,setInsts]=useState(null); const [tpls,setTpls]=useState({}); const [waddr,setWaddr]=useState(""); const [whire,setWhire]=useState("");
-  const [admins,setAdmins]=useState([]); const [me,setMe]=useState(null);
+  const [admins,setAdmins]=useState([]); const [me,setMe]=useState(null); const [cfgAgr,setCfgAgr]=useState(null);
   const [edit,setEdit]=useState({}); const [busy,setBusy]=useState(""); const [msg,setMsg]=useState(""); const [cs,setCs]=useState(null);
   const [dateEdit,setDateEdit]=useState({}); const [dbusy,setDbusy]=useState("");
   const signedBy={}; (sigs||[]).filter(s=>s.status==="signed").forEach(s=>signedBy[s.agreement_kind]=s);
@@ -9563,10 +9566,20 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigC
       .then(({data})=>{ const m={}; (data||[]).forEach(r=>m[r.kind]=r.body); setTpls(m); });
     client.from("admin_users").select("user_id,email").then(({data})=>setAdmins(data||[]));
     client.from("workers").select("ph_address,hire_date").eq("id",worker_id).maybeSingle().then(({data})=>{ setWaddr((data&&data.ph_address)||""); setWhire((data&&data.hire_date)||""); });
+    // Which agreements are currently required (drives the list below) — removed
+    // agreements drop off unless the contractor already signed one (kept as record).
+    client.from("portal_settings").select("onboarding_config").eq("id",1).maybeSingle()
+      .then(({data})=>{ const a=data&&data.onboarding_config&&data.onboarding_config.agreements; setCfgAgr(Array.isArray(a)?a.map(x=>x.kind):null); });
     client.auth.getUser().then(({data})=>setMe(data&&data.user||null));
   }
   useEffect(load,[worker_id]);
   if(insts===null) return <p className="sub">Loading agreements…</p>;
+  // Only show agreements that are currently required (per onboarding config), plus
+  // any the contractor already signed (kept as a record). A removed-and-unsigned
+  // agreement (e.g. a dropped Non-Compete) no longer shows as "Awaiting contractor".
+  const cfgKinds = cfgAgr || ONB_AGR_KINDS;
+  const shownKinds = ONB_AGR_KINDS.filter(k => cfgKinds.includes(k) || signedBy[k])
+    .concat(cfgKinds.filter(k=>!ONB_AGR_KINDS.includes(k)));
   const today=new Date().toISOString().slice(0,10);
   // Auto-populate every template from the initial setup: rate/position/start-date
   // and the countersigner fall back to the IC Agreement prefill (what was entered
@@ -9645,7 +9658,7 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigC
   return (
     <div style={{marginTop:6}}>
       {msg && <div className="banner" style={{background:"#fee2e2",borderColor:"#fca5a5"}}>{msg}</div>}
-      {ONB_AGR_KINDS.map(k=>{
+      {shownKinds.map(k=>{
         const r=insts[k]||{}; const sig=signedBy[k]; const e=edit[k]; const prepared=!!r.prepared_at;
         return (
           <div key={k} style={{borderTop:"1px solid #e5e7eb",padding:"8px 0"}}>

@@ -119,7 +119,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 04:09 PHT · 46fc32d";
+const BUILD = "2026-06-06 04:17 PHT · 3caec7f";
 
 // ── Unsaved-changes guard ──────────────────────────────────────────────────
 // Surfaces with in-progress edits register via useUnsavedGuard({dirty,label,
@@ -131,7 +131,10 @@ const BUILD = "2026-06-06 04:09 PHT · 46fc32d";
 const _guards = new Map();
 function _setGuard(id, rec){ if(rec && rec.dirty) _guards.set(id, rec); else _guards.delete(id); }
 function _dirtyGuards(){ return [..._guards.values()]; }
-function unsavedDirty(){ return _guards.size>0; }
+// Only a surface with a real Save action blocks navigation. A dirty surface with
+// nothing savable (e.g. an in-progress signature) just lets you leave — no prompt.
+function _savableDirty(){ return [..._guards.values()].filter(g=>g.save); }
+function unsavedDirty(){ return _savableDirty().length>0; }
 function useUnsavedGuard(rec){
   const id = React.useId();
   useEffect(()=>{ _setGuard(id, rec); });
@@ -139,13 +142,13 @@ function useUnsavedGuard(rec){
 }
 let _ucOpen=null, _ucResolve=null;
 function confirmUnsaved(){
-  const gs=_dirtyGuards();
-  if(!gs.length) return Promise.resolve(true);
+  const gs=_savableDirty();
+  if(!gs.length) return Promise.resolve(true);   // nothing savable → just let them go
   if(typeof _ucOpen!=="function") return Promise.resolve(window.confirm("You have unsaved changes. Leave and lose them?"));
   return new Promise(resolve=>{ if(_ucResolve){ const p=_ucResolve; _ucResolve=null; p(false); } _ucResolve=resolve; _ucOpen(gs.map(g=>g.label).filter(Boolean)); });
 }
 async function _ucDecide(decision){
-  const gs=_dirtyGuards(); const resolve=_ucResolve; _ucResolve=null;
+  const gs=_savableDirty(); const resolve=_ucResolve; _ucResolve=null;
   let proceed=false;
   try{
     if(decision==="save"){ for(const g of gs){ if(g.save){ const ok=await g.save(); if(ok===false) throw new Error("save_incomplete"); } } proceed=true; }
