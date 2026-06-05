@@ -505,6 +505,15 @@
     #paylist-print{display:block !important;border:none;box-shadow:none;margin:0}
     #paylist-print *{visibility:visible}
   }
+  /* ---- Floating pop-up notifications (toasts) — visible regardless of scroll ---- */
+  .toaster{position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:9999; display:flex; flex-direction:column; gap:8px; width:max-content; max-width:min(620px,94vw); pointer-events:none;}
+  .toast{pointer-events:auto; display:flex; align-items:flex-start; gap:10px; padding:11px 14px; border-radius:12px; box-shadow:0 10px 30px rgba(15,23,42,.22); font-size:14px; border:1px solid; animation:toastIn .18s ease;}
+  .toast .x{background:none; border:0; color:inherit; opacity:.55; cursor:pointer; font-size:18px; line-height:1; padding:0 0 0 2px;}
+  .toast.info{background:#eff6ff; border-color:#bfdbfe; color:#1e3a8a;}
+  .toast.success{background:#ecfdf5; border-color:#a7f3d0; color:#065f46;}
+  .toast.warn{background:#fffbeb; border-color:#fde68a; color:#92400e;}
+  .toast.error{background:#fef2f2; border-color:#fecaca; color:#b91c1c;}
+  @keyframes toastIn{from{opacity:0; transform:translateY(-6px);} to{opacity:1; transform:none;}}
   /* Respect users who prefer reduced motion — kill transitions/animations. */
   @media (prefers-reduced-motion: reduce){
     *,*::before,*::after{transition-duration:.001ms !important;animation-duration:.001ms !important;
@@ -522,7 +531,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 02:02 PHT · 8c9c8a2";
+const BUILD = "2026-06-06 02:18 PHT · e0c221d";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -604,6 +613,58 @@ function Skeleton({rows=4, style}){
     <div className="skel" aria-hidden="true" style={style}>
       {Array.from({length:rows}).map((_,i)=>
         <div key={i} className="skel-bar" style={{width:(68+((i*29)%30))+"%"}}/>)}
+    </div>
+  );
+}
+
+// ---- Floating pop-up notifications -----------------------------------------
+// Warnings/messages appear here, anchored to the VIEWPORT, so they're visible
+// no matter how far a long page is scrolled. Two flavours:
+//   • notify(content, {type, ms, persistent, actions}) — transient toast (auto-
+//     dismisses after ~5s unless persistent); use for one-off feedback/errors.
+//   • <Alert show={cond} type="warn">…</Alert> — persistent warning that floats
+//     while `cond` holds (returns null inline). Can carry an action button.
+// Mounted once via <Toaster/> at the app root.
+const _toasts=[]; let _toastSub=null; let _toastId=0;
+function _emitToasts(){ if(_toastSub) _toastSub(_toasts.slice()); }
+function notify(content, opts){
+  opts=opts||{}; const id=++_toastId;
+  _toasts.push({id, content, type:opts.type||"info", actions:opts.actions||null});
+  _emitToasts();
+  if(!opts.persistent) setTimeout(()=>dismissToast(id), opts.ms||5000);
+  return id;
+}
+function dismissToast(id){ const i=_toasts.findIndex(t=>t.id===id); if(i>=0){ _toasts.splice(i,1); _emitToasts(); } }
+const _alerts=new Map(); let _alertSub=null; let _currentTab=null;
+function _emitAlerts(){ if(_alertSub) _alertSub(new Map(_alerts)); }
+function setToastTab(t){ _currentTab=t; _emitAlerts(); }   // App sets this on tab change
+// Persistent warning. Pass `tab` to scope it to one tab (all tabs stay mounted,
+// so a tab-less Alert floats everywhere). Omit `tab` for genuinely app-wide ones.
+function Alert({show, type, children, actions, tab}){
+  const id=React.useId();
+  useEffect(()=>{
+    if(show) _alerts.set(id,{type:type||"warn", content:children, actions:actions||null, tab:tab||null}); else _alerts.delete(id);
+    _emitAlerts();
+    return ()=>{ _alerts.delete(id); _emitAlerts(); };
+  });
+  return null;
+}
+function Toaster(){
+  const [toasts,setToasts]=useState([]); const [alerts,setAlerts]=useState(new Map());
+  useEffect(()=>{ _toastSub=setToasts; _alertSub=setAlerts; setToasts(_toasts.slice()); setAlerts(new Map(_alerts));
+    return ()=>{ _toastSub=null; _alertSub=null; }; },[]);
+  const items=[ ...[...alerts.entries()].filter(([id,a])=>!a.tab||a.tab===_currentTab).map(([id,a])=>({key:"a"+id, dismiss:null, ...a})),
+                ...toasts.map(t=>({key:"t"+t.id, type:t.type, content:t.content, actions:t.actions, dismiss:()=>dismissToast(t.id)})) ];
+  if(!items.length) return null;
+  return (
+    <div className="toaster" role="region" aria-label="Notifications">
+      {items.map(it=>(
+        <div key={it.key} className={"toast "+(it.type||"info")} role={(it.type==="error"||it.type==="warn")?"alert":"status"}>
+          <div style={{flex:1,minWidth:0}}>{it.content}</div>
+          {it.actions&&it.actions.map((a,i)=><button key={i} className="btn sm" onClick={()=>{ a.onClick&&a.onClick(); it.dismiss&&it.dismiss(); }}>{a.label}</button>)}
+          {it.dismiss && <button className="x" aria-label="Dismiss" onClick={it.dismiss}>×</button>}
+        </div>
+      ))}
     </div>
   );
 }
@@ -6121,8 +6182,7 @@ function Documents({client,companyId,consolidated}){
         <h2>Documents</h2>
         <p className="sub">Track each contractor's IC agreement, W-8BEN, and IDs.
           Set an expiry to get a reminder here when it's within 30 days (or overdue).</p>
-        {expiringSoon.length>0 &&
-          <div className="banner">{expiringSoon.length} document(s) expiring soon or overdue — see highlighted rows.</div>}
+        <Alert show={expiringSoon.length>0} type="warn" tab="documents">{expiringSoon.length} document(s) expiring soon or overdue — see the highlighted rows in Documents.</Alert>
         <div className="row" style={{alignItems:"flex-end"}}>
           <div className="field"><label>Contractor</label>
             <select value={form.worker_id} onChange={e=>setForm({...form,worker_id:e.target.value})}>
@@ -9837,8 +9897,8 @@ function OnboardingAdmin({ client, companyId, consolidated }){
       {showWizard && <AddContractorWizard client={client} companyId={companyId} companyName={coName} onClose={()=>{setShowWizard(false); refresh();}} onCreated={refresh} />}
       {showTpl && <AgreementTemplatesModal client={client} onClose={()=>setShowTpl(false)}/>}
       {showCfg && <OnboardingConfigModal client={client} onClose={()=>setShowCfg(false)}/>}
-      {needReview>0 && <div className="banner" style={{background:"#fef3c7",borderColor:"#fcd34d"}}>{needReview} contractor{needReview>1?"s have":" has"} documents waiting for review.{orphanReview>0?` (${orphanReview} uploaded outside onboarding — not listed below.)`:""}</div>}
-      {needFollowup>0 && <div className="banner" style={{background:"#eef2ff",borderColor:"#c7d2fe"}}>📌 {needFollowup} contractor{needFollowup>1?"s have":" has"} deferred document{needFollowup>1?"s":""} to follow up on.</div>}
+      <Alert show={needReview>0} type="warn" tab="onboarding">{needReview} contractor{needReview>1?"s have":" has"} documents waiting for review.{orphanReview>0?` (${orphanReview} uploaded outside onboarding — not listed below.)`:""}</Alert>
+      <Alert show={needFollowup>0} type="info" tab="onboarding">📌 {needFollowup} contractor{needFollowup>1?"s have":" has"} deferred document{needFollowup>1?"s":""} to follow up on.</Alert>
       <FilterBox q={q} setQ={setQ} placeholder="Filter by name or email…" />
       {loading? <Skeleton rows={4}/> :
        rows.length===0? <div className="empty">{q?"No matches for your filter.":"No onboarding in progress."}{(!q && !showDone && all.length>0)?" (Completed are hidden — tick “Show completed”.)":""}</div> :
@@ -10160,7 +10220,7 @@ function App() {
       return ["overview","contractors","onboarding","documents","time","payroll","process","batches","reports","imports","audit"].includes(t)?t:"overview";
     }catch{ return "overview"; }
   });
-  useEffect(()=>{ try{ localStorage.setItem("eis_tab",tab); }catch{ /* ignore */ } },[tab]);
+  useEffect(()=>{ setToastTab(tab); try{ localStorage.setItem("eis_tab",tab); }catch{ /* ignore */ } },[tab]);
   const [sidebarCollapsed,setSidebarCollapsed]=useState(()=>{ try{ return localStorage.getItem("eis_sidebar")==="1"; }catch{ return false; } });
   useEffect(()=>{ try{ localStorage.setItem("eis_sidebar",sidebarCollapsed?"1":"0"); }catch{ /* ignore */ } },[sidebarCollapsed]);
   const [moreOpen,setMoreOpen]=useState(false);   // mobile "More" sheet
@@ -10288,8 +10348,7 @@ function App() {
         </nav>
         <main className="wrap" id="main">
         <DstNudge/>
-        {!companyId && !consolidated &&
-          <div className="banner">Pick a company in the switcher (top right) to begin.</div>}
+        <Alert show={!companyId && !consolidated} type="info">Pick a company in the switcher (top right) to begin.</Alert>
         {/* Overview (Phase 5): conditional render so its queries fire only when
             viewed; wrapped in its own ErrorBoundary for per-tab isolation. */}
         {tab==="overview" && <ErrorBoundary><Overview {...{client:sb.client,companyId,consolidated,goTab:go}} /></ErrorBoundary>}
@@ -10354,7 +10413,7 @@ class ErrorBoundary extends React.Component{
   }
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<ErrorBoundary><App /></ErrorBoundary>);
+ReactDOM.createRoot(document.getElementById("root")).render(<><ErrorBoundary><App /></ErrorBoundary><Toaster /></>);
 </script>
 </body>
 </html>
