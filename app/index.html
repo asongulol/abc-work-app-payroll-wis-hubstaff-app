@@ -522,7 +522,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 11:28 PHT · 23d23f4";
+const BUILD = "2026-06-06 00:04 PHT · 1dc3735";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -9578,44 +9578,153 @@ function AgreementTemplatesModal({ client, onClose }){
     </div>
   );
 }
-// Editor for portal_settings.onboarding_config — the enabled gate + the
-// agreements/documents/profile_tabs config (raw JSON for power edits).
+// Editor for portal_settings.onboarding_config — friendly form (enabled gate +
+// Documents + Agreements lists) with a raw-JSON escape hatch. The form edits the
+// common 90%; ANY other keys present (e.g. profile_tabs) are preserved verbatim.
+// Agreement WORDING lives in agreement_templates (the "Agreement templates"
+// editor) keyed by `kind` — this list only controls which appear and their order.
+const ONB_DEFAULT_DOCS=[{kind:"resume",title:"Resume / CV",required:true},{kind:"diploma",title:"Diploma or Transcript of Records",required:true},{kind:"nbi_clearance",title:"NBI Clearance",required:true,freshness_months:6},{kind:"gov_id",title:"Government-issued ID or Passport",required:true,sides:["front","back"]}];
+function ocSlug(s){ return String(s||"").toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"").slice(0,40)||"item"; }
+function ocUniq(items){ const seen={}; return items.map(o=>{ let k=o.kind||"item"; if(seen[k]){ let n=2; while(seen[k+"_"+n])n++; k=k+"_"+n; } seen[k]=1; return {...o,kind:k}; }); }
 function OnboardingConfigModal({ client, onClose }){
-  const [cfg,setCfg]=useState(null); const [text,setText]=useState(""); const [enabled,setEnabled]=useState(false);
-  const mref=useModalA11y(onClose,{escClose:false, dep:cfg!==null}); // re-establish trap once config loads
+  const [cfg,setCfg]=useState(null);
+  const [enabled,setEnabled]=useState(false);
+  const [docs,setDocs]=useState([]);
+  const [agrs,setAgrs]=useState([]);
+  const [mode,setMode]=useState("form");        // "form" | "json"
+  const [text,setText]=useState("");
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
+  const mref=useModalA11y(onClose,{escClose:false, dep:cfg!==null}); // re-establish trap once config loads
+  function hydrate(c){
+    setCfg(c); setEnabled(!!c.onboarding_enabled);
+    setDocs(Array.isArray(c.documents)&&c.documents.length ? c.documents.map(d=>({...d})) : ONB_DEFAULT_DOCS.map(d=>({...d})));
+    setAgrs(Array.isArray(c.agreements) ? c.agreements.slice().sort((a,b)=>(a.order||0)-(b.order||0)).map(a=>({...a})) : []);
+    setText(JSON.stringify(c,null,2));
+  }
   function load(){ client.from("portal_settings").select("onboarding_config").eq("id",1).maybeSingle()
-    .then(({data})=>{ const c=(data&&data.onboarding_config)||{}; setCfg(c); setEnabled(!!c.onboarding_enabled); setText(JSON.stringify(c,null,2)); }); }
+    .then(({data})=>hydrate((data&&data.onboarding_config)||{})); }
   useEffect(load,[]);
   if(cfg===null) return <div className="modal-bg" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}><Skeleton rows={4}/></div></div>;
+
+  // Build the object to save from the form, PRESERVING any keys not in the form.
+  function buildFromForm(){
+    const cleanDocs=ocUniq(docs.filter(d=>(d.title||"").trim()).map(d=>{
+      const o={...d}; o.kind=d.kind||ocSlug(d.title); o.title=d.title.trim(); o.required=d.required!==false;
+      if(Array.isArray(d.sides)&&d.sides.length) o.sides=["front","back"]; else delete o.sides;
+      const fm=Number(d.freshness_months); if(Number.isFinite(fm)&&fm>0) o.freshness_months=fm; else delete o.freshness_months;
+      return o;
+    }));
+    const cleanAgrs=ocUniq(agrs.filter(a=>(a.title||"").trim()).map((a,i)=>{
+      const o={...a}; o.kind=a.kind||ocSlug(a.title); o.title=a.title.trim(); o.required=a.required!==false; o.order=i+1;
+      return o;
+    }));
+    return {...cfg, onboarding_enabled:enabled, documents:cleanDocs, agreements:cleanAgrs};
+  }
+  const preview = buildFromForm();
+
   async function save(){
-    let parsed; try{ parsed=JSON.parse(text); }catch(ex){ setMsg("Invalid JSON: "+ex.message); return; }
-    if(typeof parsed!=="object"||Array.isArray(parsed)){ setMsg("Config must be a JSON object."); return; }
-    parsed.onboarding_enabled=enabled;   // the toggle is authoritative for the gate
+    let toSave;
+    if(mode==="json"){
+      let parsed; try{ parsed=JSON.parse(text); }catch(ex){ setMsg("Invalid JSON: "+ex.message); return; }
+      if(typeof parsed!=="object"||Array.isArray(parsed)){ setMsg("Config must be a JSON object."); return; }
+      parsed.onboarding_enabled=enabled; toSave=parsed;
+    } else { toSave=buildFromForm(); }
     setBusy(true); setMsg("");
-    const { error } = await client.from("portal_settings").update({onboarding_config:parsed}).eq("id",1);
+    const { error } = await client.from("portal_settings").update({onboarding_config:toSave}).eq("id",1);
     setBusy(false);
     if(error){ setMsg("Save failed: "+error.message); return; }
-    setMsg("Saved."); logEvent(client,{action:"onboarding_config_saved",entity:"portal onboarding",detail:{onboarding_enabled:enabled}});
-    setText(JSON.stringify(parsed,null,2));
+    hydrate(toSave); setMsg("Saved ✓");
+    logEvent(client,{action:"onboarding_config_saved",entity:"portal onboarding",detail:{onboarding_enabled:enabled,docs:(toSave.documents||[]).length,agreements:(toSave.agreements||[]).length}});
   }
+
+  const upd=(set,i,patch)=>set(arr=>arr.map((x,j)=>j===i?{...x,...patch}:x));
+  const move=(set,i,dir)=>set(arr=>{ const a=arr.slice(); const j=i+dir; if(j<0||j>=a.length)return a; const t=a[i]; a[i]=a[j]; a[j]=t; return a; });
+  const remove=(set,i)=>set(arr=>arr.filter((_,j)=>j!==i));
+  const rowStyle={border:"1px solid #e5e7eb",borderRadius:8,padding:"10px 12px",marginBottom:8};
+  const linkBtn={background:"none",border:0,color:"var(--navy,#1F3A68)",cursor:"pointer",padding:0,font:"inherit",textDecoration:"underline"};
+  const chk=(checked,onChange,lbl)=>(<label style={{display:"inline-flex",gap:6,alignItems:"center",fontSize:13,marginRight:14}}><input type="checkbox" checked={checked} onChange={onChange}/>{lbl}</label>);
+
   return (
     <div className="modal-bg" onClick={onClose}>
-      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="oc-title" onClick={e=>e.stopPropagation()} style={{maxWidth:760}}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="oc-title" onClick={e=>e.stopPropagation()} style={{maxWidth:760,maxHeight:"86vh",overflowY:"auto"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <h2 id="oc-title" style={{margin:0}}>Onboarding config</h2>
+          <h2 id="oc-title" style={{margin:0}}>Onboarding setup</h2>
           <button className="btn ghost sm" onClick={onClose}>Close</button>
         </div>
-        <label style={{display:"flex",gap:8,alignItems:"center",margin:"8px 0",fontSize:14}}>
+
+        <label style={{display:"flex",gap:8,alignItems:"center",margin:"10px 0",fontSize:14}}>
           <input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/>
-          <b>Onboarding enabled</b> <span className="muted" style={{fontSize:12}}>— when on, non-grandfathered contractors are routed into onboarding at login.</span>
+          <b>Onboarding enabled</b> <span className="muted" style={{fontSize:12}}>— when on, new (non-grandfathered) contractors must complete onboarding at login.</span>
         </label>
-        <p className="sub" style={{marginBottom:4}}>Advanced — the agreements / documents / profile_tabs config (JSON):</p>
-        <textarea value={text} onChange={e=>setText(e.target.value)} spellCheck={false}
-          style={{width:"100%",minHeight:300,fontFamily:"monospace",fontSize:12,padding:10}}/>
-        {msg && <div className="muted" style={{fontSize:13,marginTop:4}}>{msg}</div>}
+
+        {mode==="json" ? (
+          <>
+            <p className="sub" style={{marginBottom:4}}>Raw JSON (power edit) · <button style={linkBtn} onClick={()=>{ let p; try{p=JSON.parse(text);}catch(ex){setMsg("Fix the JSON first: "+ex.message);return;} hydrate(p); setMode("form"); setMsg(""); }}>← back to the form</button></p>
+            <textarea value={text} onChange={e=>setText(e.target.value)} spellCheck={false} style={{width:"100%",minHeight:300,fontFamily:"monospace",fontSize:12,padding:10}}/>
+          </>
+        ) : (
+          <>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"6px 0 0"}}>
+              <h3 style={{margin:0,fontSize:15}}>📄 Documents to collect</h3>
+              <span className="muted" style={{fontSize:12}}>{docs.length} item{docs.length===1?"":"s"}</span>
+            </div>
+            <p className="sub" style={{marginTop:2}}>What new contractors upload. Required ones must be approved before onboarding completes.</p>
+            {docs.map((d,i)=>(
+              <div key={i} style={rowStyle}>
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <input value={d.title||""} placeholder="Document name (e.g. NBI Clearance)" onChange={e=>upd(setDocs,i,{title:e.target.value})} style={{flex:1}}/>
+                  <button className="btn ghost sm" title="Move up" disabled={i===0} onClick={()=>move(setDocs,i,-1)}>↑</button>
+                  <button className="btn ghost sm" title="Move down" disabled={i===docs.length-1} onClick={()=>move(setDocs,i,1)}>↓</button>
+                  <button className="btn ghost sm" title="Remove" onClick={()=>remove(setDocs,i)}>✕</button>
+                </div>
+                <div style={{marginTop:8,display:"flex",flexWrap:"wrap",alignItems:"center",gap:"4px 0"}}>
+                  {chk(d.required!==false,e=>upd(setDocs,i,{required:e.target.checked}),"Required")}
+                  {chk(Array.isArray(d.sides)&&d.sides.length>0,e=>upd(setDocs,i,{sides:e.target.checked?["front","back"]:undefined}),"Front & back")}
+                  <label style={{display:"inline-flex",gap:6,alignItems:"center",fontSize:13}}>Expires after
+                    <input type="number" min="0" value={d.freshness_months||""} placeholder="—" onChange={e=>upd(setDocs,i,{freshness_months:e.target.value?Number(e.target.value):undefined})} style={{width:60}}/> months</label>
+                  <span className="muted" style={{fontSize:11,marginLeft:"auto"}}>id: {d.kind||ocSlug(d.title)}</span>
+                </div>
+              </div>
+            ))}
+            <div style={{display:"flex",gap:8,marginBottom:16}}>
+              <button className="btn ghost sm" onClick={()=>setDocs(a=>[...a,{title:"",required:true}])}>+ Add document</button>
+              <button className="btn ghost sm" onClick={()=>setDocs(ONB_DEFAULT_DOCS.map(d=>({...d})))}>Reset to defaults</button>
+            </div>
+
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"6px 0 0"}}>
+              <h3 style={{margin:0,fontSize:15}}>✍️ Agreements to sign</h3>
+              <span className="muted" style={{fontSize:12}}>{agrs.length} item{agrs.length===1?"":"s"}</span>
+            </div>
+            <p className="sub" style={{marginTop:2}}>Order = sign order. Edit the wording under <b>📄 Agreement templates</b> (matched by id).</p>
+            {agrs.map((a,i)=>(
+              <div key={i} style={rowStyle}>
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <input value={a.title||""} placeholder="Agreement name (e.g. IC Agreement)" onChange={e=>upd(setAgrs,i,{title:e.target.value})} style={{flex:1}}/>
+                  <button className="btn ghost sm" title="Move up" disabled={i===0} onClick={()=>move(setAgrs,i,-1)}>↑</button>
+                  <button className="btn ghost sm" title="Move down" disabled={i===agrs.length-1} onClick={()=>move(setAgrs,i,1)}>↓</button>
+                  <button className="btn ghost sm" title="Remove" onClick={()=>remove(setAgrs,i)}>✕</button>
+                </div>
+                <div style={{marginTop:8,display:"flex",alignItems:"center"}}>
+                  {chk(a.required!==false,e=>upd(setAgrs,i,{required:e.target.checked}),"Required to sign")}
+                  <span className="muted" style={{fontSize:11,marginLeft:"auto"}}>id: {a.kind||ocSlug(a.title)}</span>
+                </div>
+              </div>
+            ))}
+            <div style={{display:"flex",gap:8,marginBottom:8}}>
+              <button className="btn ghost sm" onClick={()=>setAgrs(a=>[...a,{title:"",required:true}])}>+ Add agreement</button>
+            </div>
+
+            <details style={{marginTop:10}}>
+              <summary className="muted" style={{fontSize:13,cursor:"pointer"}}>Advanced — preview / edit raw JSON</summary>
+              <p className="sub" style={{margin:"6px 0 4px"}}><button style={linkBtn} onClick={()=>{ setText(JSON.stringify(buildFromForm(),null,2)); setMode("json"); }}>Switch to raw JSON editing →</button> — preserves other settings (e.g. profile_tabs).</p>
+              <pre style={{maxHeight:170,overflow:"auto",background:"#f3f4f6",borderRadius:8,padding:10,fontSize:11}}>{JSON.stringify(preview,null,2)}</pre>
+            </details>
+          </>
+        )}
+
+        {msg && <div className="muted" style={{fontSize:13,marginTop:6}}>{msg}</div>}
         <div style={{display:"flex",gap:8,marginTop:8}}>
-          <button className="btn" disabled={busy} onClick={save}>{busy?"Saving…":"Save config"}</button>
+          <button className="btn" disabled={busy} onClick={save}>{busy?"Saving…":"Save"}</button>
         </div>
       </div>
     </div>
