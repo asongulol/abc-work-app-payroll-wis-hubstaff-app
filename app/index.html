@@ -531,7 +531,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 05:05 PHT · 4380d65";
+const BUILD = "2026-06-06 05:23 PHT · 68da18e";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -909,6 +909,106 @@ function SignInScreen({ client, onBack }) {
         <Banner msg={err} tone="error" style={{marginTop:10}} />
         <button className="btn ghost sm" style={{marginTop:10}} onClick={onBack}>
           Use a different Supabase project</button>
+      </div>
+    </div>
+  );
+}
+
+// Shown to a signed-in Google account that ISN'T an admin (instead of a blank,
+// RLS-empty app). Tells them exactly what an owner needs to add.
+function NotAuthorizedScreen({ email, onSignOut }) {
+  return (
+    <div className="connect">
+      <div className="card" style={{maxWidth:480}}>
+        <img src="logo.png" alt="" onError={e=>{e.currentTarget.style.display="none";}}
+          style={{maxWidth:200,width:"70%",margin:"4px auto 16px",display:"block"}}/>
+        <h2>Access pending</h2>
+        <p className="sub">You're signed in as <b>{email}</b>, but this account isn't an admin of the HR &amp; Payroll app yet.</p>
+        <p className="sub">Ask an owner to add <b>{email}</b> under <b>Admins</b>, then sign in again.</p>
+        <button className="btn ghost" style={{width:"100%",marginTop:10}} onClick={onSignOut}>Sign out</button>
+      </div>
+    </div>
+  );
+}
+
+// Shown when the access check itself failed (network/5xx) — fail CLOSED with a
+// retry, never grant access on an error.
+function AccessErrorScreen({ onRetry, onSignOut }) {
+  return (
+    <div className="connect">
+      <div className="card" style={{maxWidth:440}}>
+        <h2>Couldn't verify access</h2>
+        <p className="sub">We couldn't confirm your admin access just now (a temporary connection issue). Please retry.</p>
+        <button className="btn" style={{width:"100%"}} onClick={onRetry}>Retry</button>
+        <button className="btn ghost" style={{width:"100%",marginTop:8}} onClick={onSignOut}>Sign out</button>
+      </div>
+    </div>
+  );
+}
+
+// OWNER-ONLY admin allowlist manager. Lists admins (read via RLS); all writes go
+// through the owner-gated admin-manage edge function. New admins must sign in
+// with Google once first (they'll see "Access pending"), then an owner adds them.
+function AdminsModal({ client, meId, onClose }) {
+  const mref=useModalA11y(onClose,{escClose:true});
+  const [rows,setRows]=useState(null);
+  const [email,setEmail]=useState(""); const [role,setRole]=useState("admin");
+  const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [note,setNote]=useState("");
+  function load(){ client.from("admin_users").select("user_id,email,role,added_at").order("added_at")
+    .then(({data,error})=>{ if(error){ setMsg("Couldn't load the admin list: "+error.message); setRows([]); } else setRows(data||[]); }); }
+  useEffect(load,[]);
+  async function call(action, extra){
+    setBusy(true); setMsg(""); setNote("");
+    try{
+      const { data, error } = await client.functions.invoke("admin-manage",{ body:{ action, ...extra } });
+      if(error) throw new Error(await fnErrorMessage(error));
+      if(data?.error) throw new Error(data.error);
+      return data;
+    }catch(ex){ setMsg(ex.message||String(ex)); return null; }
+    finally{ setBusy(false); }
+  }
+  async function add(){
+    const e=email.trim().toLowerCase();
+    if(!e){ setMsg("Enter an email."); return; }
+    const d=await call("add_admin",{ email:e, role });
+    if(!d) return;
+    setNote(`${e} added as ${d.role}.`);
+    setEmail(""); setRole("admin"); load();
+  }
+  async function changeRole(user_id, newRole){ if(await call("set_role",{ user_id, role:newRole })) load(); }
+  async function remove(user_id, em){ if(!window.confirm(`Remove admin access for ${em}? They'll keep their Google account but lose access to this app.`)) return; if(await call("remove_admin",{ user_id })) load(); }
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="adm-title" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <h2 id="adm-title" style={{margin:0}}>Admins</h2>
+          <button className="btn ghost sm" onClick={onClose}>Close</button>
+        </div>
+        <p className="sub">Owners can add or remove admins. New admins sign in with Google on their work email (allowed domains: <b>abckidsny.com</b>, <b>abbilabs.com</b>). <b>Owners</b> manage this list; <b>admins</b> have full app access but can't.</p>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",margin:"8px 0"}}>
+          <input style={{flex:1,minWidth:200,padding:"6px 8px"}} type="email" placeholder="name@abckidsny.com" value={email}
+                 onChange={e=>setEmail(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter"&&!busy) add(); }} />
+          <select value={role} onChange={e=>setRole(e.target.value)}><option value="admin">Admin</option><option value="owner">Owner</option></select>
+          <button className="btn sm" disabled={busy} onClick={add}>{busy?"…":"Add"}</button>
+        </div>
+        {note && <div className="banner" style={{background:"#ecfdf5",borderColor:"#a7f3d0",color:"#065f46"}}>{note}</div>}
+        {msg && <div className="banner" style={{background:"#fee2e2",borderColor:"#fca5a5"}}>{msg}</div>}
+        {rows===null ? <Skeleton rows={3}/> :
+          <div style={{marginTop:8}}>
+            {rows.map(a=>(
+              <div key={a.user_id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,borderTop:"1px solid #e5e7eb",padding:"8px 0",flexWrap:"wrap"}}>
+                <div><b>{a.email}</b> <span className="pill" style={{marginLeft:6}}>{a.role}</span>{a.user_id===meId && <span className="muted" style={{fontSize:11,marginLeft:6}}>(you)</span>}</div>
+                {a.user_id===meId
+                  ? <span className="muted" style={{fontSize:11}}>another owner manages your access</span>
+                  : <div style={{display:"flex",gap:6}}>
+                      {a.role==="admin"
+                        ? <button className="btn ghost sm" disabled={busy} onClick={()=>changeRole(a.user_id,"owner")}>Make owner</button>
+                        : <button className="btn ghost sm" disabled={busy} onClick={()=>changeRole(a.user_id,"admin")}>Make admin</button>}
+                      <button className="btn ghost sm" disabled={busy} onClick={()=>remove(a.user_id,a.email)}>Remove</button>
+                    </div>}
+              </div>
+            ))}
+          </div>}
       </div>
     </div>
   );
@@ -10619,9 +10719,25 @@ function App() {
     return ()=>window.removeEventListener("beforeunload",h);
   }, []);
 
+  // Who is signed in: gate the app to admins; owner-only controls to owners.
+  const [myAdminRole,setMyAdminRole]=useState(undefined);  // undefined=loading | null=not an admin | 'error' | 'owner'|'admin'
+  const [showAdmins,setShowAdmins]=useState(false);
+  const [roleNonce,setRoleNonce]=useState(0);              // bump to retry the access check
+  useEffect(()=>{
+    if(!sb.client || !sb.session){ setMyAdminRole(undefined); return; }
+    let live=true; setMyAdminRole(undefined);
+    sb.client.from("admin_users").select("role").eq("user_id",sb.session.user.id).maybeSingle()
+      .then(({data,error})=>{ if(!live) return; setMyAdminRole(error ? "error" : (data?data.role:null)); })
+      .catch(()=>{ if(live) setMyAdminRole("error"); });   // fail CLOSED → retry screen, never grant access on an error
+    return ()=>{ live=false; };
+  },[sb.client, sb.session?.user?.id, roleNonce]);   // re-run on real user change / explicit retry — NOT on every token refresh
+
   if (!sb.client) return <ConnectScreen onConnect={sb.connect} />;
   if (!sb.authReady) return <div className="connect"><div className="card"><p className="sub">Loading…</p></div></div>;
   if (!sb.session) return <SignInScreen client={sb.client} onBack={sb.disconnect} />;
+  if (myAdminRole===undefined) return <div className="connect"><div className="card"><p className="sub">Checking access…</p></div></div>;
+  if (myAdminRole==="error") return <AccessErrorScreen onRetry={()=>setRoleNonce(n=>n+1)} onSignOut={sb.signOut} />;
+  if (myAdminRole===null) return <NotAuthorizedScreen email={sb.session?.user?.email||""} onSignOut={sb.signOut} />;
 
   // Tabs grouped by workflow stage so the bar reads as the real process order.
   const tabGroups = [
@@ -10636,10 +10752,12 @@ function App() {
   // Mobile bottom bar: 4 most-used + a "More" button (opens the full grouped sheet).
   const bottomPrimary=[["overview","Home"],["time","Time"],["payroll","Calc"],["process","Pay"]];
   const inPrimary=bottomPrimary.some(([id])=>id===tab);
+  const isOwner = myAdminRole==="owner";
   return (
     <div>
       <a href="#main" className="skip-link">Skip to content</a>
       <DangerConfirm/>
+      {isOwner && showAdmins && <AdminsModal client={sb.client} meId={sb.session.user.id} onClose={()=>setShowAdmins(false)}/>}
       <header className="topbar">
         <h1 className="brand">
           <img src="mark-light.png" alt="" onError={e=>{e.currentTarget.style.display="none";}}
@@ -10648,6 +10766,7 @@ function App() {
         <div className="topbar-actions">
           <div className="company-switcher"><CompanySwitcher {...{client:sb.client,companyId,setCompanyId,consolidated,setConsolidated}} /></div>
           {sb.session?.user?.email && <span className="sub" style={{fontSize:12,whiteSpace:"nowrap"}} title="Signed in">{sb.session.user.email}</span>}
+          {isOwner && <button className="btn ghost sm" onClick={()=>setShowAdmins(true)}>Admins</button>}
           <button className="btn ghost sm" onClick={async()=>{ if(unsavedDirty() && !(await confirmUnsaved())) return; sb.signOut(); }}>Sign out</button>
         </div>
       </header>
