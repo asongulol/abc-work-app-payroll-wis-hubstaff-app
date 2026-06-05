@@ -522,7 +522,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 00:04 PHT · 1dc3735";
+const BUILD = "2026-06-06 00:38 PHT · a6022f2";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -1437,6 +1437,7 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
   const [f,setF]=useState({ first_name:"", middle_name:"", last_name:"", email:"",
     ph_address:"", permanent_address:"", date_of_birth:"",
     contract:"FT", role:"", rate:"", contract_date:today, hire_date:today,
+    ic_addendum_type:"", ic_addendum_text:"", extra_docs:[],
     health_allowance_eligible:true, thirteenth_month_eligible:true, invite:true });
   const set=(k,v)=>setF(x=>({...x,[k]:v}));
   const [busy,setBusy]=useState(false); const [err,setErr]=useState(""); const [errs,setErrs]=useState({});
@@ -1493,7 +1494,23 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
         if(error||(data&&data.error)) throw new Error((data&&data.error)||await fnErrorMessage(error));
         invited={email:data.email,password:data.password};
       }
-      logEvent(client,{company_id:companyId,action:"add_contractor",entity:`${f.first_name} ${f.last_name}`,detail:{from:"wizard",contract:f.contract,invited:!!f.invite,rate:parseFloat(f.rate)||null}});
+      // Per-hire prep (best-effort — the contractor is already created/invited):
+      // prefill the IC Agreement (rate/position/start + addendum) and record any
+      // extra requested documents on their onboarding. Admin can edit later in the hire file.
+      try{
+        const {data:u}=await client.auth.getUser(); const myId=(u&&u.user&&u.user.id)||null;
+        await client.from("onboarding_agreements").upsert({
+          worker_id:w.id, agreement_kind:"ic_agreement",
+          f_rate:f.rate?String(f.rate).trim():null, f_position:f.role.trim()||null, f_start_date:f.hire_date||null,
+          addendum_type:f.ic_addendum_type||null, addendum_text:(f.ic_addendum_text||"").trim()||null,
+          prepared_by:myId, prepared_at:new Date().toISOString(), updated_at:new Date().toISOString()
+        },{onConflict:"worker_id,agreement_kind"});
+        const xdocs=ocUniq((f.extra_docs||[]).filter(t=>(t||"").trim()).map(t=>({kind:ocSlug(t),title:t.trim(),required:true})));
+        if(f.invite && xdocs.length){
+          await client.from("onboarding_progress").upsert({worker_id:w.id, extra_documents:xdocs, updated_at:new Date().toISOString()},{onConflict:"worker_id"});
+        }
+      }catch(_e){ /* non-fatal */ }
+      logEvent(client,{company_id:companyId,action:"add_contractor",entity:`${f.first_name} ${f.last_name}`,detail:{from:"wizard",contract:f.contract,invited:!!f.invite,rate:parseFloat(f.rate)||null,addendum:f.ic_addendum_type||null,extra_docs:(f.extra_docs||[]).filter(t=>(t||"").trim()).length}});
       setResult(invited||{ok:true}); onCreated&&onCreated();
     }catch(ex){
       // Roll back the just-created worker so a late failure (e.g. invite on an
@@ -1556,6 +1573,24 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
           <label style={{fontSize:13,display:"flex",gap:6,alignItems:"center"}}><input type="checkbox" checked={f.health_allowance_eligible} onChange={e=>set("health_allowance_eligible",e.target.checked)}/> Health allowance</label>
           <label style={{fontSize:13,display:"flex",gap:6,alignItems:"center"}}><input type="checkbox" checked={f.thirteenth_month_eligible} onChange={e=>set("thirteenth_month_eligible",e.target.checked)}/> 13th month</label>
         </div>
+        <div style={{marginTop:12,paddingTop:10,borderTop:"1px solid #eef0f3"}}>
+          <label className="muted" style={{fontSize:12}}>IC Agreement addendum <span style={{fontWeight:400}}>(optional — appended to the IC Agreement they sign)</span></label>
+          <select style={inp} value={f.ic_addendum_type} onChange={e=>set("ic_addendum_type",e.target.value)}>
+            <option value="">No addendum</option><option value="scope_of_work">Scope of Work</option><option value="other">Other</option>
+          </select>
+          {f.ic_addendum_type && <textarea style={{...inp,minHeight:74,fontFamily:"inherit"}} value={f.ic_addendum_text} onChange={e=>set("ic_addendum_text",e.target.value)}
+            placeholder={f.ic_addendum_type==="scope_of_work"?"Describe this hire's scope of work…":"Custom addendum text…"}/>}
+        </div>
+        <div style={{marginTop:10}}>
+          <label className="muted" style={{fontSize:12}}>Additional documents to request <span style={{fontWeight:400}}>(beyond the standard set, e.g. Professional license)</span></label>
+          {(f.extra_docs||[]).map((t,i)=>(
+            <div key={i} style={{display:"flex",gap:6,margin:"4px 0"}}>
+              <input style={{...inp,margin:0}} value={t} placeholder="Document name" onChange={e=>set("extra_docs",(f.extra_docs||[]).map((x,j)=>j===i?e.target.value:x))}/>
+              <button className="btn ghost sm" onClick={()=>set("extra_docs",(f.extra_docs||[]).filter((_,j)=>j!==i))}>✕</button>
+            </div>
+          ))}
+          <button className="btn ghost sm" style={{marginTop:4}} onClick={()=>set("extra_docs",[...(f.extra_docs||[]),""])}>+ Add document</button>
+        </div>
       </div>}
       {step===3 && <div>
         <label style={{fontSize:14,display:"flex",gap:8,alignItems:"flex-start",margin:"6px 0"}}>
@@ -1570,6 +1605,8 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
           <div className="row"><span className="muted">Company / contract</span><span>{companyName} · {f.contract}{f.role?` · ${f.role}`:""}</span></div>
           <div className="row"><span className="muted">Rate</span><span>{parseFloat(f.rate)>0?`₱${f.rate}/period`:"not set"}</span></div>
           <div className="row"><span className="muted">Hire date</span><span>{f.hire_date||"—"}</span></div>
+          {f.ic_addendum_type && <div className="row"><span className="muted">IC addendum</span><span>{f.ic_addendum_type==="scope_of_work"?"Scope of Work":"Other"}</span></div>}
+          {(f.extra_docs||[]).filter(t=>(t||"").trim()).length>0 && <div className="row"><span className="muted">Extra documents</span><span>{(f.extra_docs||[]).filter(t=>(t||"").trim()).length}</span></div>}
         </div>
       </div>}
       {err && <div className="err" style={{marginTop:8}}>{err}</div>}
@@ -9181,12 +9218,21 @@ function onbStatus(p, pending){
 function Badge({s}){ return <span style={{padding:"2px 8px",borderRadius:999,fontSize:11,fontWeight:600,color:s.color,background:s.bg,whiteSpace:"nowrap"}}>{s.txt}</span>; }
 
 const ONB_AGR_KINDS = ["ic_agreement","non_compete","confidentiality_nda","baa"];
+// Build a formatted addendum block (per-hire) for an agreement, or "" if none.
+function agAddendum(type,text){
+  const t=String(text||"").trim(); if(!t) return "";
+  return (type==="scope_of_work"?"ADDENDUM — SCOPE OF WORK":"ADDENDUM")+"\n"+t;
+}
 // Fill {{merge}} fields in an agreement body. Mirrors portal mergeAgreement().
 function mergeAgreement(body, v){
   const s={ contractor_name:(v&&v.contractor_name)||"", rate:(v&&v.rate)||"________",
     start_date:(v&&v.start_date)||"________", position:(v&&v.position)||"________",
-    countersigner_name:(v&&v.countersigner_name)||"________", today:(v&&v.today)||"" };
-  return String(body||"").replace(/\{\{\s*(\w+)\s*\}\}/g,(m,k)=> (k in s? s[k]: m));
+    contractor_address:(v&&v.contractor_address)||"________",
+    countersigner_name:(v&&v.countersigner_name)||"________", today:(v&&v.today)||"",
+    addendum:(v&&v.addendum)||"" };
+  let out = String(body||"").replace(/\{\{\s*(\w+)\s*\}\}/g,(m,k)=> (k in s? s[k]: m));
+  if(s.addendum && !/\{\{\s*addendum\s*\}\}/.test(String(body||""))) out += "\n\n"+s.addendum;
+  return out;
 }
 function escapeHtml(x){ return String(x==null?"":x).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
@@ -9250,7 +9296,7 @@ function CountersignModal({ defaultName, onCancel, onSubmit }){
 // admin countersignature, and printable output. Writes onboarding_agreements
 // directly (is_admin() RLS); the contractor signature stays in onboarding_signatures.
 function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
-  const [insts,setInsts]=useState(null); const [tpls,setTpls]=useState({});
+  const [insts,setInsts]=useState(null); const [tpls,setTpls]=useState({}); const [waddr,setWaddr]=useState("");
   const [admins,setAdmins]=useState([]); const [me,setMe]=useState(null);
   const [edit,setEdit]=useState({}); const [busy,setBusy]=useState(""); const [msg,setMsg]=useState(""); const [cs,setCs]=useState(null);
   const signedBy={}; (sigs||[]).filter(s=>s.status==="signed").forEach(s=>signedBy[s.agreement_kind]=s);
@@ -9260,18 +9306,20 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
     client.from("agreement_templates").select("kind,body")
       .then(({data})=>{ const m={}; (data||[]).forEach(r=>m[r.kind]=r.body); setTpls(m); });
     client.from("admin_users").select("user_id,email").then(({data})=>setAdmins(data||[]));
+    client.from("workers").select("ph_address").eq("id",worker_id).maybeSingle().then(({data})=>setWaddr((data&&data.ph_address)||""));
     client.auth.getUser().then(({data})=>setMe(data&&data.user||null));
   }
   useEffect(load,[worker_id]);
   if(insts===null) return <p className="sub">Loading agreements…</p>;
   const today=new Date().toISOString().slice(0,10);
-  const startEdit=(k)=>{ const r=insts[k]||{}; setEdit(e=>({...e,[k]:{f_position:r.f_position||"",f_rate:r.f_rate||"",f_start_date:r.f_start_date||"",countersigner_user_id:r.countersigner_user_id||"",countersigner_name:r.countersigner_name||""}})); };
+  const startEdit=(k)=>{ const r=insts[k]||{}; setEdit(e=>({...e,[k]:{f_position:r.f_position||"",f_rate:r.f_rate||"",f_start_date:r.f_start_date||"",countersigner_user_id:r.countersigner_user_id||"",countersigner_name:r.countersigner_name||"",addendum_type:r.addendum_type||"",addendum_text:r.addendum_text||""}})); };
   const setF=(k,f,v)=>setEdit(e=>({...e,[k]:{...e[k],[f]:v}}));
   async function savePrep(k){
     const f=edit[k]; setBusy(k); setMsg("");
     const adminRow=admins.find(a=>a.user_id===f.countersigner_user_id);
     const row={ worker_id, agreement_kind:k,
       f_position:f.f_position||null, f_rate:f.f_rate||null, f_start_date:f.f_start_date||null,
+      addendum_type:(k==="ic_agreement"&&f.addendum_type)||null, addendum_text:(k==="ic_agreement"&&(f.addendum_text||"").trim())||null,
       countersigner_user_id:f.countersigner_user_id||null,
       countersigner_name:(f.countersigner_name||(adminRow&&adminRow.email))||null,
       prepared_by:me&&me.id, prepared_at:new Date().toISOString(), updated_at:new Date().toISOString() };
@@ -9296,7 +9344,8 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
   function printDoc(k){
     const r=insts[k]||{}; const sig=signedBy[k];
     const merged=mergeAgreement(tpls[k]||"",{ contractor_name:workerName, rate:r.f_rate, start_date:r.f_start_date,
-      position:r.f_position, countersigner_name:r.countersigner_name, today });
+      position:r.f_position, countersigner_name:r.countersigner_name, contractor_address:waddr,
+      addendum:agAddendum(r.addendum_type,r.addendum_text), today });
     const mark=(method,data,name)=> (method==="drawn"&&data)
       ? `<img src="${data}" alt="signature" style="height:46px;max-width:240px;object-fit:contain;display:block"/>`
       : `<span style="font-family:cursive;font-size:18px">${escapeHtml(name||"")}</span>`;
@@ -9329,7 +9378,7 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
               </div>
             </div>
             <div className="muted" style={{fontSize:12,margin:"2px 0"}}>
-              {prepared? `${r.f_position||"—"} · ${r.f_rate||"—"} · start ${r.f_start_date||"—"} · countersigner ${r.countersigner_name||"unassigned"}` : <i>Not prepared yet</i>}
+              {prepared? `${r.f_position||"—"} · ${r.f_rate||"—"} · start ${r.f_start_date||"—"} · countersigner ${r.countersigner_name||"unassigned"}${(k==="ic_agreement"&&r.addendum_text)?(" · +"+(r.addendum_type==="scope_of_work"?"Scope of Work":"addendum")):""}` : <i>Not prepared yet</i>}
             </div>
             {e ? (
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,margin:"6px 0"}}>
@@ -9346,6 +9395,11 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
                   </select></label>
                 <label className="muted" style={{fontSize:12,gridColumn:"1 / span 2"}}>Countersigner name (shown on the document)
                   <input value={e.countersigner_name} onChange={ev=>setF(k,"countersigner_name",ev.target.value)} placeholder="Full name for the signature line"/></label>
+                {k==="ic_agreement" && <label className="muted" style={{fontSize:12,gridColumn:"1 / span 2"}}>IC addendum (appended to the agreement)
+                  <select value={e.addendum_type} onChange={ev=>setF(k,"addendum_type",ev.target.value)}>
+                    <option value="">No addendum</option><option value="scope_of_work">Scope of Work</option><option value="other">Other</option>
+                  </select>
+                  {e.addendum_type && <textarea value={e.addendum_text} onChange={ev=>setF(k,"addendum_text",ev.target.value)} style={{width:"100%",minHeight:64,marginTop:4,fontFamily:"inherit"}} placeholder={e.addendum_type==="scope_of_work"?"Describe the scope of work…":"Custom addendum text…"}/>}</label>}
                 <div style={{gridColumn:"1 / span 2",display:"flex",gap:6}}>
                   <button className="btn sm" disabled={busy===k} onClick={()=>savePrep(k)}>{busy===k?"Saving…":"Save"}</button>
                   <button className="btn ghost sm" onClick={()=>setEdit(x=>{const n={...x};delete n[k];return n;})}>Cancel</button>
@@ -9755,7 +9809,7 @@ function OnboardingAdmin({ client }){
   return (
     <div className="card">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
-        <div><h2>Onboarding</h2><p className="sub">New-contractor onboarding — agreements signed, profile completed, documents reviewed.</p></div>
+        <div><h2>Hiring &amp; Onboarding</h2><p className="sub">Hire a contractor (in the Contractors tab) and track onboarding — agreements signed, profile completed, documents reviewed.</p></div>
         <div style={{display:"flex",gap:10,alignItems:"center"}}>
           <label className="sub" style={{display:"flex",gap:4,alignItems:"center"}}><input type="checkbox" checked={showDone} onChange={e=>setShowDone(e.target.checked)}/> Show completed</label>
           <button className="btn ghost sm" onClick={()=>setShowTpl(true)}>📄 Agreement templates</button>
@@ -10168,7 +10222,7 @@ function App() {
   // Tabs grouped by workflow stage so the bar reads as the real process order.
   const tabGroups = [
     ["Home",    [["overview","Overview"]]],
-    ["Setup",   [["contractors","Contractors"],["onboarding","Onboarding"],["documents","Documents"]]],
+    ["Setup",   [["contractors","Contractors"],["onboarding","Hiring & Onboarding"],["documents","Documents"]]],
     ["Run payroll", [["time","Time & Approval"],["payroll","Calculate"],["process","Process and Pay"]]],
     ["Review",  [["batches","Review & Recon Batches"],["reports","Reports"],["imports","Imports"],["audit","Audit Log"]]],
   ];
