@@ -98,12 +98,6 @@
   .field .req{color:var(--bad);font-weight:700}
   .field .opt,label .opt{color:var(--subtle);font-weight:400;text-transform:none;letter-spacing:0}
   .field-err{color:var(--bad);font-size:11px;margin-top:4px;font-weight:600}
-  .tabs{display:flex;gap:4px;padding:0 20px;background:var(--card);border-bottom:1px solid var(--border)}
-  .tab{padding:12px 16px;border:none;background:none;cursor:pointer;color:var(--muted);
-       border-bottom:2.5px solid transparent;font-weight:600;
-       transition:color var(--dur) var(--ease),border-color var(--dur) var(--ease)}
-  .tab:hover{color:var(--text)}
-  .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
   /* ===== Phase 7: sidebar nav (desktop) + mobile bottom-bar + More-sheet ==== */
   :root{ --topbar-h:65px; --side-w:212px; --side-w-collapsed:60px; }
   .shell{display:flex;align-items:flex-start}
@@ -275,9 +269,6 @@
   h3{margin:0 0 4px;font-size:15px}
   /* tab groups */
   .tabgroup{display:flex;align-items:center}
-  .tabgroup-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);
-    padding:0 8px;align-self:center;white-space:nowrap}
-  .tab-sep{width:1px;align-self:stretch;background:var(--border);margin:6px 4px}
   .row{display:flex;gap:18px;flex-wrap:wrap}
   .field{margin-bottom:12px;min-width:200px;flex:1}
   .field label{display:block;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin-bottom:4px}
@@ -339,19 +330,9 @@
     .brand{flex:1 1 100%;margin-right:0}
     .topbar-actions{width:100%;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
     .topbar-actions > *{flex:1 1 auto;min-width:140px}
-    /* Sub-tab rows: scroll sideways instead of wrapping/overflowing on phones. */
-    .tabs{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;
-          scrollbar-width:none;padding:0 12px;position:sticky;
-          top:calc(0px + env(safe-area-inset-top,0px));z-index:20}
-    .tabs::-webkit-scrollbar{display:none}
-    .tab{flex:0 0 auto;white-space:nowrap;padding:11px 13px;min-height:44px}
     /* Brand title: scale down + truncate gracefully so it never pushes the
        sign-out / company switcher off-screen on narrow phones. */
     .brand{font-size:15px;overflow:hidden;text-overflow:ellipsis}
-    /* Workflow group labels ("Setup", "Run payroll", "Review") and the
-       vertical separators eat horizontal room in the swipe row — drop them
-       on phones so the tabs themselves stay reachable one-handed. */
-    .tabgroup-label,.tab-sep{display:none}
     .company-switcher{display:block;width:100%}
     /* Modals must sit above the elevated sticky header (z:30) and the fixed
        bottom-nav (z:40) across tablet/phone widths — not only on the <=640px
@@ -529,7 +510,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 10:22 PHT · fff070e";
+const BUILD = "2026-06-05 10:52 PHT · 3adb6a9";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -951,6 +932,7 @@ function parseBool(v){
   return undefined;   // unrecognized -> leave field unset (don't overwrite)
 }
 function BulkImport({ client, companyId, consolidated, onClose, onDone }){
+  const mref=useModalA11y(onClose,{escClose:false}); // data-entry: no Escape-close
   const [text,setText]=useState("");
   const [stage,setStage]=useState("input");   // input | preview | done
   const [parseErr,setParseErr]=useState("");
@@ -1239,9 +1221,9 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
 
   return (
     <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:980}}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="bi-title" onClick={e=>e.stopPropagation()} style={{maxWidth:980}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
-          <div><h2 style={{margin:0}}>Bulk import contractors</h2>
+          <div><h2 id="bi-title" style={{margin:0}}>Bulk import contractors</h2>
             <p className="sub" style={{margin:"4px 0 0"}}>Paste from a spreadsheet or upload a CSV. Existing contractors are
               matched <b>by Wise recipient id/UUID first</b>, then Hubstaff id, then name — and <b>updated in place</b>. Single company.</p></div>
           <button className="btn ghost sm" onClick={onClose}>Close</button>
@@ -1334,6 +1316,7 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
 // Writes portal_settings.editable_fields (read by the portal + enforced by the
 // portal-self edge function). Payout destination is deliberately NOT offered.
 function PortalSettingsModal({ client, onClose }){
+  const mref=useModalA11y(onClose,{escClose:false});
   const CANDIDATES=[
     {k:"first_name",label:"First name"},{k:"middle_name",label:"Middle name"},{k:"last_name",label:"Last name"},
     {k:"mobile",label:"Mobile"},{k:"ph_address",label:"PH address"},{k:"date_of_birth",label:"Date of birth"},
@@ -1356,9 +1339,9 @@ function PortalSettingsModal({ client, onClose }){
   }
   return (
     <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="ps-title" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
-          <div><h2 style={{margin:0}}>Portal — editable fields</h2>
+          <div><h2 id="ps-title" style={{margin:0}}>Portal — editable fields</h2>
             <p className="sub" style={{margin:"4px 0 0"}}>Tick the profile fields contractors may edit themselves in the portal. Payout destination (Wise recipient ID/UUID) is always admin-only.</p></div>
           <button className="btn ghost sm" onClick={onClose}>Close</button>
         </div>
@@ -1381,6 +1364,7 @@ function PortalSettingsModal({ client, onClose }){
 
 // Admin: post announcements shown on every contractor's portal welcome page.
 function AnnouncementsModal({ client, onClose }){
+  const mref=useModalA11y(onClose,{escClose:false});
   const [rows,setRows]=useState(null); const [title,setTitle]=useState(""); const [body,setBody]=useState("");
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
   function load(){ client.from("announcements").select("id,title,body,active,published_at").order("published_at",{ascending:false}).then(({data})=>setRows(data||[])); }
@@ -1397,9 +1381,9 @@ function AnnouncementsModal({ client, onClose }){
   async function del(a){ if(!window.confirm("Delete this announcement?"))return; await client.from("announcements").delete().eq("id",a.id); load(); }
   return (
     <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="an-title" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
-          <div><h2 style={{margin:0}}>Announcements</h2>
+          <div><h2 id="an-title" style={{margin:0}}>Announcements</h2>
             <p className="sub" style={{margin:"4px 0 0"}}>Shown to every contractor on their portal welcome page ("From New York").</p></div>
           <button className="btn ghost sm" onClick={onClose}>Close</button>
         </div>
@@ -9021,6 +9005,7 @@ function escapeHtml(x){ return String(x==null?"":x).replace(/[&<>"']/g,c=>({"&":
 // Countersignature capture — typed name or drawn (canvas). Returns
 // { method:"typed"|"drawn", data, name } to onSubmit.
 function CountersignModal({ defaultName, onCancel, onSubmit }){
+  const mref=useModalA11y(onCancel,{escClose:false}); // typed name + drawn signature: no Escape-close
   const [mode,setMode]=useState("type"); const [name,setName]=useState(defaultName||"");
   const [drawn,setDrawn]=useState(false); const [err,setErr]=useState(""); const canvasRef=React.useRef(null);
   useEffect(()=>{
@@ -9046,10 +9031,10 @@ function CountersignModal({ defaultName, onCancel, onSubmit }){
     else onSubmit({ method:"typed", data:name.trim(), name:name.trim() });
   }
   return (
-    <div className="modal-bg" onClick={onCancel}>
-      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+    <div className="modal-bg" onClick={e=>{e.stopPropagation();onCancel();}}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="cs-title" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <h2 style={{margin:0}}>Countersign</h2>
+          <h2 id="cs-title" style={{margin:0}}>Countersign</h2>
           <button className="btn ghost sm" onClick={onCancel}>Close</button>
         </div>
         <p className="sub">Sign on behalf of ABC Kids NY.</p>
@@ -9199,6 +9184,7 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
 //  the Wise panel, and onboarding review all share one edge-error extractor.)
 
 function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
+  const mref=useModalA11y(onClose,{escClose:true}); // read-only viewer: Escape-safe (stack handles nested ReasonPicker/Countersign)
   const { data:wRows } = useQuery(client, c=>c.from("workers")
     .select("first_name,middle_name,last_name,email,work_email,mobile,ph_address,permanent_address,address_landmark,postal_code,date_of_birth,emergency_name,emergency_relationship,emergency_mobile,marital_status,education_level,course,year_graduated,school,gcash,paymaya,paypal,wise_tag,profile_extras")
     .eq("id",worker_id).limit(1), [client,worker_id]);
@@ -9257,9 +9243,9 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
   const FIELDS=[["Mobile","mobile"],["Current address","ph_address"],["Permanent address","permanent_address"],["Postal","postal_code"],["Date of birth","date_of_birth"],["Emergency contact","emergency_name"],["Relationship","emergency_relationship"],["Emergency mobile","emergency_mobile"],["Marital","marital_status"],["Highest Degree Attained","education_level"],["Degree and Major","course"],["Year grad.","year_graduated"],["School","school"],["GCash","gcash"],["PayMaya","paymaya"],["PayPal","paypal"],["Wise Tag","wise_tag"]];
   return (
     <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:720}}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="od-title" onClick={e=>e.stopPropagation()} style={{maxWidth:720}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}}>
-          <h2 style={{margin:0}}>{[w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ")||w.email||"Contractor"}</h2>
+          <h2 id="od-title" style={{margin:0}}>{[w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ")||w.email||"Contractor"}</h2>
           <button className="btn ghost sm" onClick={onClose}>Close</button>
         </div>
         <p className="sub" style={{marginTop:2}}>{w.email}{w.work_email?` · ${w.work_email}`:""}</p>
@@ -9332,6 +9318,7 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
 // Reason picker for "needs replacement" — preset reasons + optional custom text,
 // replacing the old window.prompt. Returns the chosen reason string to onSubmit.
 function ReasonPicker({ doc, onCancel, onSubmit }){
+  const mref=useModalA11y(onCancel,{escClose:false}); // has a free-text reason: no Escape-close
   const PRESETS=["Blurry / unreadable","Expired","Wrong document","Incomplete / missing pages","Name doesn't match profile","Photo of a screen / glare"];
   const [pick,setPick]=useState(PRESETS[0]); const [custom,setCustom]=useState(""); const [err,setErr]=useState("");
   function submit(){
@@ -9340,10 +9327,10 @@ function ReasonPicker({ doc, onCancel, onSubmit }){
     onSubmit(reason);
   }
   return (
-    <div className="modal-bg" onClick={onCancel}>
-      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:460}}>
+    <div className="modal-bg" onClick={e=>{e.stopPropagation();onCancel();}}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="rp-title" onClick={e=>e.stopPropagation()} style={{maxWidth:460}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <h2 style={{margin:0}}>Needs replacement</h2>
+          <h2 id="rp-title" style={{margin:0}}>Needs replacement</h2>
           <button className="btn ghost sm" onClick={onCancel}>Close</button>
         </div>
         <p className="sub">{ONB_DOC_LABEL[doc.kind]||doc.kind}{doc.side?` (${doc.side})`:""} — the contractor will see this reason.</p>
@@ -9372,6 +9359,7 @@ function AgreementTemplatesModal({ client, onClose }){
   function load(){ client.from("agreement_templates").select("kind,title,version,body").then(({data})=>{
     const list=(data||[]); setRows(list); const cur=list.find(r=>r.kind===sel)||list[0]; if(cur){ setSel(cur.kind); setBody(cur.body||""); } }); }
   useEffect(load,[]);
+  const mref=useModalA11y(onClose,{escClose:false, dep:rows!==null}); // re-establish trap once templates load
   if(rows===null) return <div className="modal-bg" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}><Skeleton rows={4}/></div></div>;
   const pick=(k)=>{ const r=rows.find(x=>x.kind===k); setSel(k); setBody((r&&r.body)||""); setMsg(""); };
   async function save(){
@@ -9384,9 +9372,9 @@ function AgreementTemplatesModal({ client, onClose }){
   }
   return (
     <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:820}}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="at-title" onClick={e=>e.stopPropagation()} style={{maxWidth:820}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <h2 style={{margin:0}}>Agreement templates</h2>
+          <h2 id="at-title" style={{margin:0}}>Agreement templates</h2>
           <button className="btn ghost sm" onClick={onClose}>Close</button>
         </div>
         <p className="sub">Paste the standard agreement text. Use <code>{"{{contractor_name}}"}</code>, <code>{"{{position}}"}</code>, <code>{"{{rate}}"}</code>, <code>{"{{start_date}}"}</code>, <code>{"{{countersigner_name}}"}</code>, <code>{"{{today}}"}</code> where the preparer's values should be filled in per contractor.</p>
@@ -9406,6 +9394,7 @@ function AgreementTemplatesModal({ client, onClose }){
 // agreements/documents/profile_tabs config (raw JSON for power edits).
 function OnboardingConfigModal({ client, onClose }){
   const [cfg,setCfg]=useState(null); const [text,setText]=useState(""); const [enabled,setEnabled]=useState(false);
+  const mref=useModalA11y(onClose,{escClose:false, dep:cfg!==null}); // re-establish trap once config loads
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
   function load(){ client.from("portal_settings").select("onboarding_config").eq("id",1).maybeSingle()
     .then(({data})=>{ const c=(data&&data.onboarding_config)||{}; setCfg(c); setEnabled(!!c.onboarding_enabled); setText(JSON.stringify(c,null,2)); }); }
@@ -9424,9 +9413,9 @@ function OnboardingConfigModal({ client, onClose }){
   }
   return (
     <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:760}}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="oc-title" onClick={e=>e.stopPropagation()} style={{maxWidth:760}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <h2 style={{margin:0}}>Onboarding config</h2>
+          <h2 id="oc-title" style={{margin:0}}>Onboarding config</h2>
           <button className="btn ghost sm" onClick={onClose}>Close</button>
         </div>
         <label style={{display:"flex",gap:8,alignItems:"center",margin:"8px 0",fontSize:14}}>
@@ -9569,6 +9558,7 @@ function useModalA11y(onClose, opts){
   const ref = React.useRef(null);
   const closeRef = React.useRef(onClose); closeRef.current = onClose;
   const escClose = !!(opts && opts.escClose);
+  const dep = opts && opts.dep;   // optional: re-establish the trap when this changes (e.g. content loaded after a skeleton, or a wizard branch switch)
   useEffect(()=>{
     const node = ref.current; if(!node) return;   // tolerates modals that early-return null
     const token = {};
@@ -9595,7 +9585,7 @@ function useModalA11y(onClose, opts){
     return ()=>{ document.removeEventListener("keydown", onKey, true);
       _modalStack = _modalStack.filter(t=>t!==token);
       try{ prevFocus && prevFocus.focus && prevFocus.focus(); }catch(_){} };
-  },[escClose]);
+  },[escClose, dep]);
   return ref;
 }
 
@@ -9624,7 +9614,7 @@ function Overview({ client, companyId, consolidated, goTab }){
       failed: S(c.from("payments").select("id",{count:"exact",head:true}).eq("status","failed")),
       links: S(c.from("worker_companies").select("worker_id,company_id,status,workers(id,first_name,middle_name,last_name,status,payout_method)")),
       rates: S(c.from("rates").select("worker_id,company_id,effective_start,effective_end")),
-      pendDocs: S(c.from("documents").select("id",{count:"exact",head:true}).eq("review_status","pending")),
+      pendDocs: S(c.from("documents").select("id",{count:"exact",head:true}).in("kind",ONB_DOC_KINDS).eq("review_status","pending")),
       onb: scoped
         ? c.from("onboarding_progress").select("worker_id, worker_companies!inner(company_id)",{count:"exact",head:true}).is("completed_at",null).eq("worker_companies.company_id",companyId)
         : c.from("onboarding_progress").select("worker_id",{count:"exact",head:true}).is("completed_at",null),
@@ -9635,6 +9625,26 @@ function Overview({ client, companyId, consolidated, goTab }){
     keys.forEach((k,i)=>{ R[k]= res[i].status==="fulfilled" ? res[i].value : {error:String((res[i].reason&&res[i].reason.message)||res[i].reason)}; });
     return { data:R, error:null };
   }, [client, companyId, consolidated]);
+  const [dq,setDq]=useState(null); // lazy data-quality check: null | {loading} | {error} | {result}
+  async function runDq(){
+    setDq({loading:true});
+    try{
+      const sc=q=>(!consolidated&&companyId)?q.eq("company_id",companyId):q;
+      const {data:pps,error:e1}=await sc(client.from("pay_periods")
+        .select("period_start,period_end,payments(worker_id,worked_hours,workers(first_name,middle_name,last_name))")
+        .order("period_start",{ascending:false}).limit(1));
+      if(e1) throw e1;
+      const p=(pps||[])[0];
+      if(!p){ setDq({result:{mismatches:[],period:null}}); return; }
+      let tq=client.from("time_entries").select("worker_id,tracked_seconds").gte("work_date",p.period_start).lte("work_date",p.period_end);
+      if(!consolidated&&companyId) tq=tq.eq("company_id",companyId);
+      const {data:te,error:e2}=await tq; if(e2) throw e2;
+      const hrs={}; (te||[]).forEach(r=>{ hrs[r.worker_id]=(hrs[r.worker_id]||0)+(r.tracked_seconds||0)/3600; });
+      const mism=(p.payments||[]).map(pay=>({ name:fullName(pay.workers||{}), paid:Number(pay.worked_hours||0), tracked:+(hrs[pay.worker_id]||0).toFixed(1) }))
+        .filter(m=> Math.abs(m.tracked-m.paid)>0.5);
+      setDq({result:{mismatches:mism, period:p.period_start+" → "+p.period_end}});
+    }catch(e){ setDq({error:String((e&&e.message)||e)}); }
+  }
 
   if(noScope) return <div className="card"><div className="empty">Pick a company in the switcher (top right) to see your overview.</div></div>;
   if(loading && !data) return <div className="ov-grid">{Array.from({length:6}).map((_,i)=><div key={i} className="ov-tile" aria-hidden="true" style={{cursor:"default"}}><Skeleton rows={3}/></div>)}</div>;
@@ -9720,9 +9730,22 @@ function Overview({ client, companyId, consolidated, goTab }){
           drill:"batches"})}
       </div>
       <div className="card" style={{marginTop:12}}>
-        <b>Data-quality</b>
-        <div className="sub" style={{margin:"4px 0 10px"}}>Period date-ranges with approved time but no calculated pay appear at the bottom of Calculate; per-contractor time-vs-pay is in Reports.</div>
-        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+          <div><b>Data-quality</b>
+            <div className="sub" style={{margin:"4px 0 0"}}>Checks the latest period for contractors whose paid hours differ from tracked time.</div></div>
+          <button className="btn ghost sm" disabled={dq&&dq.loading} onClick={runDq}>{dq&&dq.loading?"Checking…":"Run check"}</button>
+        </div>
+        {dq&&dq.error && <div className="field-err" style={{marginTop:8}}>Check failed: {dq.error}</div>}
+        {dq&&dq.result && (dq.result.mismatches.length
+          ? <div style={{marginTop:10}}>
+              <div className="pill warn" style={{marginBottom:6}}>{dq.result.mismatches.length} time/pay mismatch(es) · {dq.result.period}</div>
+              {dq.result.mismatches.slice(0,8).map((m,i)=>(
+                <div key={i} className="row" style={{fontSize:12.5,gap:8}}><span className="k">{m.name}</span>
+                  <span>paid <b>{m.paid}h</b> · tracked {m.tracked}h</span></div>))}
+              <div className="sub" style={{marginTop:6}}>Review these in Calculate / Reports.</div>
+            </div>
+          : <div className="sub" style={{marginTop:8,color:"var(--good)"}}>✓ No time/pay mismatches in {dq.result.period||"the latest period"}.</div>)}
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
           <button className="btn ghost sm" onClick={()=>goTab("payroll")}>Open Calculate</button>
           <button className="btn ghost sm" onClick={()=>goTab("reports")}>Open Reports</button>
         </div>
