@@ -50,15 +50,20 @@ async function reEvalStage3(SB: string, svc: any, worker_id: string, cfg: any, n
     : [{ kind: "resume" }, { kind: "diploma" }, { kind: "nbi_clearance" }, { kind: "gov_id", sides: ["front", "back"] }]
   ).filter((d: any) => d.required !== false);          // honor optional docs
 
-  const apRes = await fetch(`${SB}/rest/v1/documents?worker_id=eq.${worker_id}&review_status=eq.approved&select=id,kind,side,storage_path`, { headers: svc });
+  // "cleared" = approved OR waived OR deferred. waive/defer clear the whole-kind
+  // requirement (contractor isn't blocked); approved still needs each side.
+  const apRes = await fetch(`${SB}/rest/v1/documents?worker_id=eq.${worker_id}&review_status=in.(approved,waived,deferred)&select=id,kind,side,storage_path,review_status`, { headers: svc });
   const apRows = (await apRes.json()) || [];
   const evidence: Record<string, Set<string>> = {};    // non-sided kinds: distinct storage_path/id
   const sidesSeen: Record<string, Set<string>> = {};   // sided kinds: distinct approved `side`
+  const cleared: Record<string, boolean> = {};         // waived/deferred -> kind satisfied outright
   for (const r of apRows) {
+    if (r.review_status === "waived" || r.review_status === "deferred") { cleared[r.kind] = true; continue; }
     (evidence[r.kind] ||= new Set()).add(r.storage_path || r.id);
     if (r.side) (sidesSeen[r.kind] ||= new Set()).add(r.side);
   }
   const stage3_complete = reqDocs.every((d: any) => {
+    if (cleared[d.kind]) return true;
     if (Array.isArray(d.sides) && d.sides.length) {
       const have = sidesSeen[d.kind] || new Set<string>();
       return d.sides.every((s: string) => have.has(s));   // every configured side approved
@@ -107,7 +112,7 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const action = body.action;
     const document_id = body.document_id;
-    if (action !== "approve" && action !== "needs_replacement") return json({ error: "unknown action" }, 400);
+    if (!["approve", "needs_replacement", "waive", "defer"].includes(action)) return json({ error: "unknown action" }, 400);
     if (!document_id) return json({ error: "document_id required" }, 400);
 
     // load the document under review
@@ -139,6 +144,25 @@ Deno.serve(async (req) => {
       // recompute so a rejected doc flips stage3_complete back to false for HR
       const re = await reEvalStage3(SB, svc, worker_id, cfg, now);
       return json({ ok: true, review_status: "needs_replacement", stage3_complete: re.stage3_complete });
+    }
+
+    // ---- waive (drop the requirement) / defer (collect later) ----
+    // Both clear the requirement so the contractor isn't blocked. "deferred" rows
+    // surface in the Hiring & Onboarding tab as follow-ups; "waived" are done.
+    if (action === "waive" || action === "defer") {
+      const status = action === "waive" ? "waived" : "deferred";
+      const reason = String(body.reason || "").trim() || null;
+      const upd = await fetch(`${SB}/rest/v1/documents?id=eq.${document_id}`, {
+        method: "PATCH", headers: { ...svc, Prefer: "return=minimal" },
+        body: JSON.stringify({ review_status: status, review_reason: reason, reviewed_by: caller.id, reviewed_at: now.toISOString() }),
+      });
+      if (!upd.ok) return json({ error: `update failed: ${await upd.text()}` }, 500);
+      await fetch(`${SB}/rest/v1/audit_log`, {
+        method: "POST", headers: { ...svc, Prefer: "return=minimal" },
+        body: JSON.stringify({ action: `document.${status}`, actor: caller.email ?? null, entity: `${doc.kind} · ${worker_id}`, detail: { document_id, kind: doc.kind, reason } }),
+      });
+      const re = await reEvalStage3(SB, svc, worker_id, cfg, now);
+      return json({ ok: true, review_status: status, stage3_complete: re.stage3_complete, onboarding_complete: re.onboarding_complete });
     }
 
     // ---- approve ----
