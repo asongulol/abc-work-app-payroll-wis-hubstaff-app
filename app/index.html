@@ -104,6 +104,42 @@
        transition:color var(--dur) var(--ease),border-color var(--dur) var(--ease)}
   .tab:hover{color:var(--text)}
   .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+  /* ===== Phase 7: sidebar nav (desktop) + mobile bottom-bar + More-sheet ==== */
+  :root{ --topbar-h:65px; --side-w:212px; --side-w-collapsed:60px; }
+  .shell{display:flex;align-items:flex-start}
+  .shell > .wrap{flex:1 1 auto;min-width:0}
+  .sidebar{flex:0 0 var(--side-w);width:var(--side-w);position:sticky;top:var(--topbar-h);
+           max-height:calc(100vh - var(--topbar-h));overflow-y:auto;background:var(--card);
+           border-right:1px solid var(--border);padding:8px 8px 24px}
+  .sidebar.collapsed{flex-basis:var(--side-w-collapsed);width:var(--side-w-collapsed)}
+  .side-group{margin-top:8px}
+  .side-group-label{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--subtle);
+                    font-weight:700;padding:8px 10px 4px}
+  .sidebar.collapsed .side-group-label{height:10px;padding:0;overflow:hidden;color:transparent}
+  .side-item{display:flex;align-items:center;gap:11px;width:100%;text-align:left;padding:9px 10px;
+             border:none;background:none;border-radius:var(--radius-sm);color:var(--muted);font:inherit;
+             font-weight:600;font-size:13.5px;cursor:pointer;
+             transition:background var(--dur) var(--ease),color var(--dur) var(--ease)}
+  .side-item:hover{background:var(--navy-50);color:var(--text)}
+  .side-item.active{background:var(--navy);color:#fff}
+  .side-ico{flex:none;width:20px;text-align:center;font-size:16px;line-height:1}
+  .side-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sidebar.collapsed .side-item{justify-content:center;padding:9px 0}
+  .sidebar.collapsed .side-label{display:none}
+  .side-collapse{display:flex;align-items:center;gap:11px;width:100%;margin-top:12px;padding:9px 10px;
+                 border:none;background:none;border-top:1px solid var(--border);border-radius:0;
+                 color:var(--subtle);font:inherit;font-weight:600;font-size:12px;cursor:pointer}
+  .side-collapse:hover{color:var(--text)}
+  .sidebar.collapsed .side-collapse{justify-content:center}
+  /* mobile: drop the sidebar; the bottom bar + More-sheet take over */
+  @media (max-width:768px){ .shell{display:block} .sidebar{display:none} .more-sheet-bg{display:block} }
+  .more-sheet-bg{position:fixed;inset:0;background:rgba(15,28,51,.42);z-index:60;display:none}
+  .more-sheet{position:fixed;left:0;right:0;bottom:0;max-height:82vh;overflow-y:auto;background:var(--card);
+              border-radius:16px 16px 0 0;padding:12px 12px calc(18px + env(safe-area-inset-bottom,0px));
+              box-shadow:var(--shadow-lg);animation:sheetup .2s var(--ease)}
+  @keyframes sheetup{from{transform:translateY(100%)}to{transform:translateY(0)}}
+  @media (prefers-reduced-motion: reduce){.more-sheet{animation:none}}
+  .more-sheet-head{display:flex;justify-content:space-between;align-items:center;padding:2px 4px 8px}
   .wrap{max-width:1180px;margin:24px auto;padding:0 20px}
   .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
         padding:20px;margin-bottom:16px;box-shadow:var(--shadow-sm)}
@@ -493,7 +529,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 09:44 PHT · 885fc46";
+const BUILD = "2026-06-05 10:22 PHT · fff070e";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -9695,6 +9731,33 @@ function Overview({ client, companyId, consolidated, goTab }){
   );
 }
 
+// Mobile "More" sheet (Phase 7): full grouped nav as a slide-up dialog. Its own
+// component so it MOUNTS when opened -> useModalA11y gives it focus-trap, initial
+// focus, focus-restore and Escape-to-close like every other dialog.
+function MoreSheet({ tabGroups, tab, navIcon, go, onClose }){
+  const sref=useModalA11y(onClose,{escClose:true});
+  return (
+    <div className="more-sheet-bg" onClick={onClose}>
+      <div className="more-sheet" ref={sref} onClick={e=>e.stopPropagation()} role="dialog" aria-modal="true" aria-label="All sections">
+        <div className="more-sheet-head"><b>All sections</b>
+          <button className="x" aria-label="Close" onClick={onClose}><span aria-hidden="true">×</span></button></div>
+        {tabGroups.map(([label,items])=>(
+          <div className="side-group" key={label}>
+            <div className="side-group-label">{label}</div>
+            {items.map(([id,lbl])=>(
+              <button key={id} className={"side-item"+(tab===id?" active":"")}
+                aria-current={tab===id?"page":undefined} onClick={()=>{ go(id); onClose(); }}>
+                <span className="side-ico" aria-hidden="true">{navIcon[id]}</span>
+                <span className="side-label">{lbl}</span>
+              </button>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const sb = useSupabase();
   // Restore the last tab on refresh (validated against known ids) so reloading
@@ -9705,6 +9768,16 @@ function App() {
     }catch{ return "overview"; }
   });
   useEffect(()=>{ try{ localStorage.setItem("eis_tab",tab); }catch{ /* ignore */ } },[tab]);
+  const [sidebarCollapsed,setSidebarCollapsed]=useState(()=>{ try{ return localStorage.getItem("eis_sidebar")==="1"; }catch{ return false; } });
+  useEffect(()=>{ try{ localStorage.setItem("eis_sidebar",sidebarCollapsed?"1":"0"); }catch{ /* ignore */ } },[sidebarCollapsed]);
+  const [moreOpen,setMoreOpen]=useState(false);   // mobile "More" sheet
+  // Pin the sticky sidebar exactly below the topbar by measuring its REAL height
+  // (varies with brand size / wrapping) rather than a hardcoded guess.
+  useEffect(()=>{
+    const set=()=>{ const tb=document.querySelector(".topbar"); if(tb) document.documentElement.style.setProperty("--topbar-h", tb.offsetHeight+"px"); };
+    set(); window.addEventListener("resize",set);
+    return ()=>window.removeEventListener("resize",set);
+  },[sb.session]);
   const [companyId, setCompanyId] = useState(localStorage.getItem("sel_company")||"");
   const [consolidated, setConsolidated] = useState(false);
   useEffect(()=>{ if(companyId) localStorage.setItem("sel_company",companyId); },[companyId]);
@@ -9780,14 +9853,11 @@ function App() {
     ["Review",  [["batches","Review & Recon Batches"],["reports","Reports"],["imports","Imports"],["audit","Audit Log"]]],
   ];
   function go(id){ setTab(id); const w=document.querySelector(".wrap"); if(w) w.scrollIntoView({block:"start"}); window.scrollTo(0,0); }
-  // Flattened tab list for the mobile bottom nav (same ids/handler as the top
-  // tabs). Short labels + an emoji glyph keep each item compact one-handed.
-  const bottomNav = [
-    ["overview","Home","🏠"],["contractors","People","👥"],["documents","Docs","📄"],
-    ["time","Time","⏱"],["payroll","Calc","🧮"],["process","Pay","💸"],
-    ["batches","Batches","📦"],["reports","Reports","📊"],
-    ["imports","Imports","🗂"],["audit","Audit","📝"],
-  ];
+  // One icon per destination, used by the sidebar, the mobile bottom bar and the More-sheet.
+  const NAV_ICON={overview:"🏠",contractors:"👥",onboarding:"🧭",documents:"📄",time:"⏱",payroll:"🧮",process:"💸",batches:"📦",reports:"📊",imports:"🗂",audit:"📝"};
+  // Mobile bottom bar: 4 most-used + a "More" button (opens the full grouped sheet).
+  const bottomPrimary=[["overview","Home"],["time","Time"],["payroll","Calc"],["process","Pay"]];
+  const inPrimary=bottomPrimary.some(([id])=>id===tab);
   return (
     <div>
       <a href="#main" className="skip-link">Skip to content</a>
@@ -9803,18 +9873,27 @@ function App() {
           <button className="btn ghost sm" onClick={sb.signOut}>Sign out</button>
         </div>
       </header>
-      <nav className="tabs" aria-label="Sections">
-        {tabGroups.map(([label,items],gi)=>(
-          <React.Fragment key={label}>
-            {gi>0 && <div className="tab-sep"></div>}
-            <span className="tabgroup-label">{label}</span>
-            {items.map(([id,lbl])=>(
-              <button key={id} className={"tab"+(tab===id?" active":"")} aria-current={tab===id?"page":undefined} onClick={()=>go(id)}>{lbl}</button>
-            ))}
-          </React.Fragment>
-        ))}
-      </nav>
-      <main className="wrap" id="main">
+      <div className="shell">
+        <nav className={"sidebar no-print"+(sidebarCollapsed?" collapsed":"")} aria-label="Sections">
+          {tabGroups.map(([label,items])=>(
+            <div className="side-group" key={label}>
+              <div className="side-group-label">{label}</div>
+              {items.map(([id,lbl])=>(
+                <button key={id} className={"side-item"+(tab===id?" active":"")}
+                  aria-current={tab===id?"page":undefined} title={sidebarCollapsed?lbl:undefined} onClick={()=>go(id)}>
+                  <span className="side-ico" aria-hidden="true">{NAV_ICON[id]}</span>
+                  <span className="side-label">{lbl}</span>
+                </button>
+              ))}
+            </div>
+          ))}
+          <button className="side-collapse" onClick={()=>setSidebarCollapsed(c=>!c)}
+            aria-label={sidebarCollapsed?"Expand sidebar":"Collapse sidebar"} title={sidebarCollapsed?"Expand":"Collapse"}>
+            <span className="side-ico" aria-hidden="true">{sidebarCollapsed?"»":"«"}</span>
+            <span className="side-label">Collapse</span>
+          </button>
+        </nav>
+        <main className="wrap" id="main">
         <DstNudge/>
         {!companyId && !consolidated &&
           <div className="banner">Pick a company in the switcher (top right) to begin.</div>}
@@ -9836,17 +9915,22 @@ function App() {
         <div style={{display:tab==="onboarding"?"block":"none"}}><OnboardingAdmin {...{client:sb.client}} /></div>
         <div className="no-print" style={{textAlign:"center",color:"var(--muted)",fontSize:11,padding:"18px 0 32px",letterSpacing:".02em"}}>Build {BUILD}</div>
       </main>
-      {/* Mobile-only bottom tab bar (<=768px); hidden on desktop via CSS. */}
+      </div>{/* /shell */}
+      {/* Mobile-only bottom bar (<=768px): 4 most-used + More (opens the full sheet). */}
       <nav className="bottom-nav no-print" aria-label="Primary">
-        {bottomNav.map(([id,lbl,ico])=>(
+        {bottomPrimary.map(([id,lbl])=>(
           <button key={id} className={"bnav"+(tab===id?" active":"")}
-            aria-current={tab===id?"page":undefined} aria-label={lbl}
-            onClick={()=>go(id)}>
-            <span className="bnav-ico" aria-hidden="true">{ico}</span>
+            aria-current={tab===id?"page":undefined} aria-label={lbl} onClick={()=>go(id)}>
+            <span className="bnav-ico" aria-hidden="true">{NAV_ICON[id]}</span>
             <span>{lbl}</span>
           </button>
         ))}
+        <button className={"bnav"+(!inPrimary?" active":"")} aria-haspopup="dialog" aria-expanded={moreOpen}
+          aria-label="More sections" onClick={()=>setMoreOpen(true)}>
+          <span className="bnav-ico" aria-hidden="true">☰</span><span>More</span>
+        </button>
       </nav>
+      {moreOpen && <MoreSheet {...{tabGroups, tab, navIcon:NAV_ICON, go, onClose:()=>setMoreOpen(false)}} />}
     </div>
   );
 }
