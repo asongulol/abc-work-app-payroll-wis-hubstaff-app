@@ -531,7 +531,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 02:35 PHT · 27f920e";
+const BUILD = "2026-06-06 02:42 PHT · f9ee5a5";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -1530,6 +1530,7 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
     ph_address:"", permanent_address:"", date_of_birth:"",
     contract:"FT", role:"", rate:"", contract_date:today, hire_date:today,
     ic_addendum_type:"", ic_addendum_text:"", extra_docs:[],
+    countersigner_user_id:"", countersigner_name:"",
     health_allowance_eligible:true, thirteenth_month_eligible:true, invite:true };
   // Per-company draft so a half-finished hire survives a refresh/close/navigation.
   // Nothing touches the DB until "Create contractor"; the draft lives in
@@ -1542,6 +1543,11 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
   const set=(k,v)=>setF(x=>({...x,[k]:v}));
   const [busy,setBusy]=useState(false); const [err,setErr]=useState(""); const [errs,setErrs]=useState({});
   const [result,setResult]=useState(null);
+  const [admins,setAdmins]=useState([]);
+  useEffect(()=>{
+    client.from("admin_users").select("user_id,email").then(({data})=>setAdmins(data||[]));
+    client.auth.getUser().then(({data})=>{ const u=data&&data.user; if(u) setF(x=>x.countersigner_user_id?x:{...x,countersigner_user_id:u.id,countersigner_name:u.email||""}); });
+  },[]);  // eslint-disable-line
   const doneRef=React.useRef(false);
   useEffect(()=>{
     if(doneRef.current) return;
@@ -1610,12 +1616,19 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
       // extra requested documents on their onboarding. Admin can edit later in the hire file.
       try{
         const {data:u}=await client.auth.getUser(); const myId=(u&&u.user&&u.user.id)||null;
+        const csId=f.countersigner_user_id||null, csName=(f.countersigner_name||"").trim()||null;
         await client.from("onboarding_agreements").upsert({
           worker_id:w.id, agreement_kind:"ic_agreement",
           f_rate:f.rate?String(f.rate).trim():null, f_position:f.role.trim()||null, f_start_date:f.hire_date||null,
           addendum_type:f.ic_addendum_type||null, addendum_text:(f.ic_addendum_text||"").trim()||null,
+          countersigner_user_id:csId, countersigner_name:csName,
           prepared_by:myId, prepared_at:new Date().toISOString(), updated_at:new Date().toISOString()
         },{onConflict:"worker_id,agreement_kind"});
+        // same countersigner on the other agreements so none show a blank signatory line
+        if(csId||csName){ for(const k of ONB_AGR_KINDS){ if(k==="ic_agreement") continue;
+          await client.from("onboarding_agreements").upsert({ worker_id:w.id, agreement_kind:k,
+            countersigner_user_id:csId, countersigner_name:csName,
+            prepared_by:myId, prepared_at:new Date().toISOString(), updated_at:new Date().toISOString() },{onConflict:"worker_id,agreement_kind"}); } }
         const xdocs=ocUniq((f.extra_docs||[]).filter(t=>(t||"").trim()).map(t=>({kind:ocSlug(t),title:t.trim(),required:true})));
         if(f.invite && xdocs.length){
           await client.from("onboarding_progress").upsert({worker_id:w.id, extra_documents:xdocs, updated_at:new Date().toISOString()},{onConflict:"worker_id"});
@@ -1685,6 +1698,16 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
         <div style={{display:"flex",gap:16,marginTop:6}}>
           <label style={{fontSize:13,display:"flex",gap:6,alignItems:"center"}}><input type="checkbox" checked={f.health_allowance_eligible} onChange={e=>set("health_allowance_eligible",e.target.checked)}/> Health allowance</label>
           <label style={{fontSize:13,display:"flex",gap:6,alignItems:"center"}}><input type="checkbox" checked={f.thirteenth_month_eligible} onChange={e=>set("thirteenth_month_eligible",e.target.checked)}/> 13th month</label>
+        </div>
+        <div style={{marginTop:12,paddingTop:10,borderTop:"1px solid #eef0f3"}}>
+          <label className="muted" style={{fontSize:12}}>Company countersigner <span style={{fontWeight:400}}>(signs for ABC Kids NY — their name appears on the agreement the contractor signs)</span></label>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            <select style={inp} value={f.countersigner_user_id} onChange={e=>{ const a=admins.find(x=>x.user_id===e.target.value); set("countersigner_user_id",e.target.value); set("countersigner_name",a?a.email:""); }}>
+              <option value="">— select admin —</option>
+              {admins.map(a=><option key={a.user_id} value={a.user_id}>{a.email}</option>)}
+            </select>
+            <input style={inp} value={f.countersigner_name} onChange={e=>set("countersigner_name",e.target.value)} placeholder="Name shown on the agreement"/>
+          </div>
         </div>
         <div style={{marginTop:12,paddingTop:10,borderTop:"1px solid #eef0f3"}}>
           <label className="muted" style={{fontSize:12}}>IC Agreement addendum <span style={{fontWeight:400}}>(optional — appended to the IC Agreement they sign)</span></label>
