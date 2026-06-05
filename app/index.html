@@ -522,7 +522,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 00:38 PHT · a6022f2";
+const BUILD = "2026-06-06 00:50 PHT · 3aea51a";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -9784,8 +9784,10 @@ function OnboardingConfigModal({ client, onClose }){
     </div>
   );
 }
-function OnboardingAdmin({ client }){
-  const [showDone,setShowDone]=useState(false); const [sel,setSel]=useState(null); const [showTpl,setShowTpl]=useState(false); const [showCfg,setShowCfg]=useState(false);
+function OnboardingAdmin({ client, companyId, consolidated }){
+  const [showDone,setShowDone]=useState(false); const [sel,setSel]=useState(null); const [showTpl,setShowTpl]=useState(false); const [showCfg,setShowCfg]=useState(false); const [showWizard,setShowWizard]=useState(false);
+  const [coName,setCoName]=useState("");
+  useEffect(()=>{ if(companyId) client.from("companies").select("name").eq("id",companyId).maybeSingle().then(({data})=>setCoName((data&&data.name)||"")); else setCoName(""); },[client,companyId]);
   const { data:progs, loading, reload } = useQuery(client, c=>c.from("onboarding_progress")
     .select("worker_id,current_stage,stage1_complete,stage2_complete,stage3_complete,name_mismatch_flag,stalled,started_at,completed_at,updated_at,workers(first_name,middle_name,last_name,email)")
     .order("updated_at",{ascending:false}), [client]);
@@ -9809,14 +9811,16 @@ function OnboardingAdmin({ client }){
   return (
     <div className="card">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
-        <div><h2>Hiring &amp; Onboarding</h2><p className="sub">Hire a contractor (in the Contractors tab) and track onboarding — agreements signed, profile completed, documents reviewed.</p></div>
-        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+        <div><h2>Hiring &amp; Onboarding</h2><p className="sub">Hire a new contractor and track onboarding — agreements signed, profile completed, documents reviewed.</p></div>
+        <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+          <button className="btn" disabled={consolidated} title={consolidated?"Pick a single company first to hire":""} onClick={()=>setShowWizard(true)}>+ Hire new contractor</button>
           <label className="sub" style={{display:"flex",gap:4,alignItems:"center"}}><input type="checkbox" checked={showDone} onChange={e=>setShowDone(e.target.checked)}/> Show completed</label>
           <button className="btn ghost sm" onClick={()=>setShowTpl(true)}>📄 Agreement templates</button>
           <button className="btn ghost sm" onClick={()=>setShowCfg(true)}>⚙ Onboarding config</button>
           <button className="btn ghost sm" onClick={refresh}>Refresh</button>
         </div>
       </div>
+      {showWizard && <AddContractorWizard client={client} companyId={companyId} companyName={coName} onClose={()=>{setShowWizard(false); refresh();}} onCreated={refresh} />}
       {showTpl && <AgreementTemplatesModal client={client} onClose={()=>setShowTpl(false)}/>}
       {showCfg && <OnboardingConfigModal client={client} onClose={()=>setShowCfg(false)}/>}
       {needReview>0 && <div className="banner" style={{background:"#fef3c7",borderColor:"#fcd34d"}}>{needReview} contractor{needReview>1?"s have":" has"} documents waiting for review.{orphanReview>0?` (${orphanReview} uploaded outside onboarding — not listed below.)`:""}</div>}
@@ -10286,7 +10290,7 @@ function App() {
         <div style={{display:tab==="batches"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="batches",confirmBillingDirty,openContractor,reconcileOnly:true}} /></div>
         <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId,consolidated}} /></div>
-        <div style={{display:tab==="onboarding"?"block":"none"}}><OnboardingAdmin {...{client:sb.client}} /></div>
+        <div style={{display:tab==="onboarding"?"block":"none"}}><OnboardingAdmin {...{client:sb.client,companyId,consolidated}} /></div>
         <div className="no-print" style={{textAlign:"center",color:"var(--muted)",fontSize:11,padding:"18px 0 32px",letterSpacing:".02em"}}>Build {BUILD}</div>
       </main>
       </div>{/* /shell */}
