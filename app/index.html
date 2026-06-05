@@ -531,7 +531,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 06:25 PHT · afc8e1d";
+const BUILD = "2026-06-06 06:41 PHT · 19450e0";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -9063,18 +9063,14 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
               )}
             </div>
           )}
-        </div>}
-
-        {/* Reconcile view: show the batch being reconciled (read-only) so you
-            can see what's there and what changed (transfer linked, marked
-            sent, amount overridden to Wise's value). */}
-        {reconcileOnly && !(rows && rows.length>0) && (
-          <div className="card"><div className="empty">
-            {rows===null ? "Loading this batch…" : "This batch has no pay statements (it may have been deleted). Pick another batch."}
-          </div></div>
-        )}
-        {reconcileOnly && rows && rows.length>0 && (
-                <div className="card">
+          {/* Batch being reconciled — merged into this same card (was separate). */}
+          <div style={{borderTop:"1px solid var(--border)",marginTop:14,paddingTop:14}}>
+            {!(rows && rows.length>0) ? (
+              <div className="empty">
+                {rows===null ? "Loading this batch…" : "This batch has no pay statements (it may have been deleted). Pick another batch."}
+              </div>
+            ) : (
+              <>
                   <h3 style={{margin:"0 0 4px"}}>Batch being reconciled · {pers?.period_start} → {pers?.period_end}</h3>
                   <p className="sub">{rows.length} contractor(s) · total {money(total,"PHP")} · {rows.filter(r=>r.status==="sent"||r.status==="reconciled").length} sent.
                     The <b>Change</b> column reflects what reconcile has applied (transfer linked, sent, or amount overridden to Wise's value).</p>
@@ -9108,8 +9104,10 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
                   <p className="muted" style={{fontSize:11,marginTop:6}}>
                     If nothing changed after reconciling, Wise had no matching transfers for this batch's
                     recipients/dates — check the messages above, or that the batch was actually funded in Wise.</p>
-                </div>
-        )}
+              </>
+            )}
+          </div>
+        </div>}
 
         {/* Printable pay list + mark-paid, with channel tabs (Wise | BPI | All).
             Per CLAUDE.md guidance, grouping by transfer channel makes the list
