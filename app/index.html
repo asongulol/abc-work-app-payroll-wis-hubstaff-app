@@ -491,7 +491,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 07:34 PHT · 1c2c815";
+const BUILD = "2026-06-05 09:26 PHT · c32ee09";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -2179,7 +2179,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal" onClick={e=>e.stopPropagation()}>
-        <button className="x" onClick={onClose}>×</button>
+        <button className="x" aria-label="Close" onClick={onClose}><span aria-hidden="true">×</span></button>
         <h2>{fullName(f)}</h2>
         <p className="sub">{r.companies?.name} · {w.status}</p>
         <div style={{display:"flex",alignItems:"center",gap:14,margin:"6px 0 2px"}}>
@@ -4831,19 +4831,16 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
         }).join(", ");
         return `   • ${r.name}: ${items}`;
       }).join("\n") + (miscRows.length>6?`\n   …and ${miscRows.length-6} more with Misc entries`:"");
-      const ok = window.confirm(
-        "⚠️  RECALCULATING WILL RESET ALL OVERRIDES AND ADJUSTMENTS\n\n"+
-        `This period has ${adjusted.length} contractor(s) with manual overrides or adjustments `+
-        `(gross overrides, Health Allowance, 13th-month, Lunch, bonus, or Misc items):\n`+
-        `   ${names}\n\n`+
-        (miscRows.length
-          ? `Misc entries that will be WIPED (${miscRows.length} contractor(s)):\n${miscDetail}\n\n`
-          : "")+
-        "Recalculating rebuilds every amount from tracked hours only and will OVERWRITE those "+
-        "values (allowances reset to 0, overrides and Misc items discarded). This is what happened "+
-        "to imported historical amounts.\n\n"+
-        "An \"Undo recalculation\" button will appear so you can restore the current values.\n\n"+
-        "Recalculate and overwrite anyway?");
+      const ok = await confirmDanger({
+        title:"Recalculate from tracked hours?",
+        message:`This period has ${adjusted.length} contractor(s) with manual overrides or adjustments `+
+          `(gross overrides, Health Allowance, 13th-month, Lunch, bonus, or Misc items):\n   ${names}`+
+          (miscRows.length ? `\n\nMisc entries that will be WIPED (${miscRows.length} contractor(s)):\n${miscDetail}` : ""),
+        consequence:"Recalculating rebuilds every amount from tracked hours only and OVERWRITES those values "+
+          "(allowances reset to 0, overrides and Misc items discarded). An \"Undo recalculation\" button will "+
+          "appear so you can restore the current values.",
+        confirmWord:"RECALCULATE", confirmLabel:"Recalculate & overwrite",
+      });
       if(!ok){ setMsg("Recalculation cancelled — existing overrides and adjustments were kept."); return; }
       // snapshot the current saved amounts so the user can roll back
       const snapshot = prevRows.map(r=>({...r}));
@@ -5367,7 +5364,12 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
         `${b.contractors} contractor(s) · ${b.hours}h.\nRemoves the approved time entries`+
         (b.state==="draft"?" and the draft pay statements":"")+` for this period. `+
         `Not reversible here (re-import/re-add the time to restore).`;
-    if(!window.confirm(confirmMsg)) return;
+    if(!(await confirmDanger({
+      title: b.noTime ? "Discard this draft?" : "Delete this approved-time batch?",
+      message: confirmMsg,
+      confirmWord: b.noTime ? "" : "DELETE",
+      confirmLabel: b.noTime ? "Discard draft" : "Delete batch",
+    }))) return;
     setBusy(true); setMsg("");
     try{
       const {data:ppRow}=await client.from("pay_periods").select("id,state")
@@ -5871,7 +5873,7 @@ function MiscModal({ row, onClose, onSave }){
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
-        <button className="x" onClick={onClose}>×</button>
+        <button className="x" aria-label="Close" onClick={onClose}><span aria-hidden="true">×</span></button>
         <h2 style={{marginBottom:0}}>Misc · {row.name}</h2>
         <p className="sub" style={{marginTop:2,fontSize:12}}>
           Rate ₱{rate.toLocaleString()} · effective hourly ₱{hourlyRate.toLocaleString(undefined,{minimumFractionDigits:2})} (rate×24÷2080)
@@ -7248,10 +7250,12 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
     const {data:pays}=await client.from("payments")
       .select("status,paid_at,wise_locked_at").eq("pay_period_id",p.id);
     const started=(pays||[]).filter(r=> r.paid_at || r.wise_locked_at || (r.status && r.status!=="draft"));
-    if(started.length && !window.confirm(
-      `⚠ ${started.length} payment(s) in this period are already sent / paid / locked in Wise.\n\n`+
-      `Unlocking returns it to Calculate for editing. Recalculating there REBUILDS amounts from hours and can drift from what was actually paid — sent Wise transfers are NOT reversed.\n\n`+
-      `Unlock anyway?`)) return;
+    if(started.length && !(await confirmDanger({
+      title:"Unlock a period with sent/paid payments?",
+      message:`${started.length} payment(s) in this period are already sent / paid / locked in Wise.`,
+      consequence:"Unlocking returns it to Calculate for editing. Recalculating there REBUILDS amounts from hours and can drift from what was actually paid — sent Wise transfers are NOT reversed.",
+      confirmWord:"UNLOCK", confirmLabel:"Unlock for editing",
+    }))) return;
     const reason=window.prompt(
       "Unlock this pay period for editing?\n\n"+
       `Period: ${p.period_start} → ${p.period_end}\n\n`+
@@ -7463,7 +7467,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
   }
   // bulk reverse: paid rows WITHOUT a Wise transfer (those need individual handling),
   // with a confirmation since un-paying a whole period is a larger action.
-  function markAllUnpaid(){
+  async function markAllUnpaid(){
     const ids=(rows||[]).filter(r=>r.status==="sent" && !r.transfer_id).map(r=>r.worker_id);
     const skipped=(rows||[]).filter(r=>r.status==="sent" && r.transfer_id).length;
     if(!ids.length){
@@ -7471,11 +7475,12 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
       return;
     }
     const note=skipped?` (${skipped} with a Wise transfer will be skipped — handle individually)`:"";
-    if(!window.confirm(`Revert ${ids.length} contractor(s) in this period to unpaid?${note}\n\n`+
-      `This changes status only — it does NOT move money or cancel any Wise transfer.\n\n`+
-      `⚠️  NOTE: If you re-open and RECALCULATE this period afterward, all manual overrides and `+
-      `adjustments (Health Allowance, PDD Lunch, 13th, bonus, gross overrides) will be reset to `+
-      `hours-based values. Do not recalculate if you want to keep imported/adjusted amounts.`))return;
+    if(!(await confirmDanger({
+      title:`Revert ${ids.length} contractor(s) to unpaid?`,
+      message:`Revert ${ids.length} contractor(s) in this period to unpaid?${note}\n\nThis changes status only — it does NOT move money or cancel any Wise transfer.`,
+      consequence:"If you re-open and RECALCULATE this period afterward, all manual overrides and adjustments (Health Allowance, PDD Lunch, 13th, bonus, gross overrides) will be reset to hours-based values. Do not recalculate if you want to keep imported/adjusted amounts.",
+      confirmWord:"UNPAID", confirmLabel:"Revert to unpaid",
+    }))) return;
     markUnpaid(ids);
   }
   // API check: read Wise transfer status and auto-mark paid where sent/completed
@@ -7747,10 +7752,12 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
         if(recName){
           const same=nameKey(recName)===nameKey(workerName||"") || looseKey(recName)===looseKey(workerName||"");
           if(!same){
-            if(!window.confirm(
-              `⚠ Recipient name mismatch.\n\nWise recipient #${targetAccount} is held by "${recName}", `+
-              `but you're linking it to "${workerName}".\n\nThese don't look like the same person. `+
-              `Linking the wrong recipient would pay/attribute to the wrong contractor.\n\nLink anyway?`)){
+            if(!(await confirmDanger({
+              title:"Recipient name mismatch",
+              message:`Wise recipient #${targetAccount} is held by "${recName}", but you're linking it to "${workerName}". These don't look like the same person.`,
+              consequence:"Linking the wrong recipient would pay/attribute money to the wrong contractor.",
+              confirmWord:workerName, confirmLabel:"Link anyway",
+            }))){
               setLinkBusy(null); return;
             }
           }
@@ -7760,10 +7767,12 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
 
       // Ambiguous candidate (the transfer's amount fits more than one unmatched
       // contractor in the window) — require a second explicit confirmation.
-      if(ambiguous && !window.confirm(
-        `This transfer's amount matches more than one unpaid contractor in the window, `+
-        `so it's AMBIGUOUS. Confirm you've verified (via the transfer date and the `+
-        `recipient${probeNote}) that #${targetAccount} belongs to ${workerName} before linking.\n\nLink?`)){
+      if(ambiguous && !(await confirmDanger({
+        title:"Ambiguous match — verify the contractor",
+        message:`This transfer's amount matches more than one unpaid contractor in the window. Confirm you've verified (via the transfer date and the recipient${probeNote}) that #${targetAccount} belongs to ${workerName} before linking.`,
+        consequence:"Linking the wrong recipient would attribute money to the wrong contractor.",
+        confirmWord:workerName, confirmLabel:"Link",
+      }))){
         setLinkBusy(null); return;
       }
 
@@ -8748,7 +8757,7 @@ function WiseApiDialog({ rows, total, period, onClose }){
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
-        <button className="x" onClick={onClose}>×</button>
+        <button className="x" aria-label="Close" onClick={onClose}><span aria-hidden="true">×</span></button>
         <h2 style={{marginBottom:2}}>Pay via Wise API</h2>
         <p className="sub" style={{marginTop:0}}>
           {period?.period_start} → {period?.period_end} · Step {step} of 3
@@ -9453,6 +9462,59 @@ function OnboardingAdmin({ client }){
 }
 
 // ============================ APP SHELL ======================================
+// ===== Phase 4 (behavioral): risk-proportional confirm dialog =============
+// Replaces window.confirm() on high-risk/irreversible actions with a styled
+// modal. For irreversible ones the user must TYPE a confirm word (LOCK / DELETE
+// / the entity name). Promise-based + imperative so handlers just do
+// `if(!(await confirmDanger({...}))) return;` — no prop threading. Falls back to
+// window.confirm if the host isn't mounted yet (safety).
+let _dangerOpen = null;     // setter installed by the mounted <DangerConfirm/>
+let _dangerResolve = null;  // resolver for the in-flight confirm promise
+function confirmDanger(opts){
+  return new Promise(resolve=>{
+    if(typeof _dangerOpen === "function"){
+      if(_dangerResolve){ const prev=_dangerResolve; _dangerResolve=null; prev(false); } // settle any stale confirm
+      _dangerResolve = resolve; _dangerOpen(opts||{});
+    }
+    else { resolve(window.confirm((opts&&(opts.message||opts.title))||"Are you sure?")); }
+  });
+}
+function DangerConfirm(){
+  const [opts,setOpts]=useState(null);
+  const [typed,setTyped]=useState("");
+  useEffect(()=>{ _dangerOpen=(o)=>{ setOpts(o); setTyped(""); };
+    return ()=>{ _dangerOpen=null; if(_dangerResolve){ const r=_dangerResolve; _dangerResolve=null; r(false); } }; },[]);
+  const done=useCallback((val)=>{ setOpts(null); setTyped(""); const r=_dangerResolve; _dangerResolve=null; if(r) r(val); },[]);
+  useEffect(()=>{
+    if(!opts) return;
+    const onKey=(e)=>{ if(e.key==="Escape") done(false); };
+    window.addEventListener("keydown",onKey); return ()=>window.removeEventListener("keydown",onKey);
+  },[opts,done]);
+  if(!opts) return null;
+  const needWord = !!opts.confirmWord;
+  const ready = !needWord || typed.trim().toLowerCase()===String(opts.confirmWord).trim().toLowerCase();
+  return (
+    <div className="modal-bg" onClick={()=>done(false)}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:460}}
+           role="dialog" aria-modal="true" aria-labelledby="danger-title">
+        <h2 id="danger-title" style={{marginTop:0}}>{opts.title||"Please confirm"}</h2>
+        {opts.message && <p className="sub" style={{marginBottom:opts.consequence?10:14,whiteSpace:"pre-wrap"}}>{opts.message}</p>}
+        {opts.consequence && <div className="banner warn" style={{marginBottom:14,whiteSpace:"pre-wrap"}}>{opts.consequence}</div>}
+        {needWord && <div className="field" style={{marginBottom:4}}>
+          <label>Type <b>{opts.confirmWord}</b> to confirm</label>
+          <input autoFocus value={typed} onChange={e=>setTyped(e.target.value)}
+                 onKeyDown={e=>{ if(e.key==="Enter"&&ready) done(true); }}
+                 aria-label={"Type "+opts.confirmWord+" to confirm"} />
+        </div>}
+        <div className="actions">
+          <button className="btn ghost" autoFocus={!needWord} onClick={()=>done(false)}>Cancel</button>
+          <button className="btn danger" disabled={!ready} onClick={()=>done(true)}>{opts.confirmLabel||"Confirm"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ===== Phase 5: attention-first Overview dashboard ========================
 // New additive "Home" tab. Surfaces what needs action (current cycle, money to
 // send, approvals, blocked contractors, docs/onboarding, payout issues) instead
@@ -9681,6 +9743,7 @@ function App() {
   return (
     <div>
       <a href="#main" className="skip-link">Skip to content</a>
+      <DangerConfirm/>
       <header className="topbar">
         <div className="brand">
           <img src="mark-light.png" alt="" onError={e=>{e.currentTarget.style.display="none";}}
