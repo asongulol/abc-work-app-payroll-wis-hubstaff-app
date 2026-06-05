@@ -76,7 +76,7 @@
           border-top:3px solid var(--gold);border-bottom:1px solid var(--navy-700);color:#fff;
           position:sticky;top:0;z-index:10;box-shadow:var(--shadow);
           padding-top:calc(13px + env(safe-area-inset-top,0px))}
-  .brand{font-weight:800;font-size:16px;margin-right:8px;color:#fff;letter-spacing:-.01em}
+  .brand{font-weight:800;font-size:16px;margin:0 8px 0 0;color:#fff;letter-spacing:-.01em}
   .brand small{color:var(--gold);font-weight:500;font-size:12px;display:block;letter-spacing:0}
   /* keep topbar controls legible on the dark navy bar */
   .topbar .muted,.topbar .sub{color:#c5cfe0}
@@ -126,6 +126,8 @@
   .btn.ghost:hover{background:var(--navy-50);border-color:var(--accent)}
   .btn.danger{background:var(--bad);color:#fff}
   .btn.danger:hover{background:#991b1b}
+  .btn.danger-outline{background:#fff;color:var(--bad);border:1px solid var(--bad)}
+  .btn.danger-outline:hover{background:var(--bad-soft)}
   .btn.sm{padding:6px 11px;font-size:12px}
   .pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11px;font-weight:600}
   .pill.ft{background:var(--accent-soft);color:var(--accent)}
@@ -491,7 +493,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-05 09:26 PHT · c32ee09";
+const BUILD = "2026-06-05 09:44 PHT · 885fc46";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -1791,6 +1793,7 @@ function Field({label,children}){return(
 );}
 
 function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
+  const mref=useModalA11y(onClose,{escClose:false}); // data-entry form: no Escape-close (don't lose edits)
   // Tiny helper so every billing save point reports a uniform record.
   const reportBilling = (field)=>{
     if(typeof onBillingChange==="function"){
@@ -2178,9 +2181,9 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   const [ptab,setPtab]=useState("profile");
   return (
     <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={e=>e.stopPropagation()}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="pm-title" onClick={e=>e.stopPropagation()}>
         <button className="x" aria-label="Close" onClick={onClose}><span aria-hidden="true">×</span></button>
-        <h2>{fullName(f)}</h2>
+        <h2 id="pm-title">{fullName(f)}</h2>
         <p className="sub">{r.companies?.name} · {w.status}</p>
         <div style={{display:"flex",alignItems:"center",gap:14,margin:"6px 0 2px"}}>
           <Avatar src={photo} name={fullName(f)} size={64}/>
@@ -5804,6 +5807,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
 // hands the assembled payload back to the parent which patches the row and
 // triggers debounced saveDraft via the standard recalcNet pipeline.
 function MiscModal({ row, onClose, onSave }){
+  const mref=useModalA11y(onClose,{escClose:false}); // money-adjustment form: no Escape-close
   const rate = Number(row.rate)||0;
   // Effective hourly rate per the spec: (semi-monthly rate × 24 periods/yr) ÷ 2080 hrs/yr
   const hourlyRate = rate>0 ? +((rate*24)/2080).toFixed(4) : 0;
@@ -5872,9 +5876,9 @@ function MiscModal({ row, onClose, onSave }){
   const sectionStyle = {borderTop:"1px solid var(--border)",paddingTop:10,marginTop:10};
   return (
     <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="misc-title" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
         <button className="x" aria-label="Close" onClick={onClose}><span aria-hidden="true">×</span></button>
-        <h2 style={{marginBottom:0}}>Misc · {row.name}</h2>
+        <h2 id="misc-title" style={{marginBottom:0}}>Misc · {row.name}</h2>
         <p className="sub" style={{marginTop:2,fontSize:12}}>
           Rate ₱{rate.toLocaleString()} · effective hourly ₱{hourlyRate.toLocaleString(undefined,{minimumFractionDigits:2})} (rate×24÷2080)
         </p>
@@ -6903,6 +6907,7 @@ function UtilizationReport({client,companyId,consolidated}){
 // not a per-payout action). Read-only against Wise; writes the matched
 // recipient id onto the worker. Extracted from WisePayouts.
 function PullRecipients({client,companyId,consolidated,onClose}){
+  const mref=useModalA11y(onClose,{escClose:true}); // read-only viewer: Escape-safe (hook before the consolidated early-return)
   const [recSync,setRecSync]=useState(null);
   const [recBusy,setRecBusy]=useState(false);
   const [msg,setMsg]=useState("");
@@ -6968,10 +6973,10 @@ function PullRecipients({client,companyId,consolidated,onClose}){
   if(consolidated) return null;
   return (
     <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:880}}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="pull-title" onClick={e=>e.stopPropagation()} style={{maxWidth:880}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
         <div>
-          <h2 style={{margin:0}}>Pull recipient IDs from Wise</h2>
+          <h2 id="pull-title" style={{margin:0}}>Pull recipient IDs from Wise</h2>
           <p className="sub" style={{margin:"4px 0 0"}}>Read-only. Lists your saved Wise recipients and matches each to a
             contractor (by stored Wise ID first, then name), then stores the numeric <b>recipient ID</b> on the
             matched contractor. Doesn't pull bank details or the batch-CSV UUID. No money moves.</p>
@@ -8751,14 +8756,15 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
 // fund path lives on the api-payouts branch, untested) — the final step
 // explains that and points to Download Wise File / the API draft instead.
 function WiseApiDialog({ rows, total, period, onClose }){
+  const mref=useModalA11y(onClose,{escClose:true}); // read-only review: Escape-safe
   const [step,setStep]=useState(1);
   const missing=rows.filter(r=>!r.recipient_id && !r.recipient_uuid);
   const ready=rows.filter(r=>r.recipient_id || r.recipient_uuid);
   return (
     <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="wapi-title" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
         <button className="x" aria-label="Close" onClick={onClose}><span aria-hidden="true">×</span></button>
-        <h2 style={{marginBottom:2}}>Pay via Wise API</h2>
+        <h2 id="wapi-title" style={{marginBottom:2}}>Pay via Wise API</h2>
         <p className="sub" style={{marginTop:0}}>
           {period?.period_start} → {period?.period_end} · Step {step} of 3
         </p>
@@ -9515,6 +9521,48 @@ function DangerConfirm(){
   );
 }
 
+// ===== Phase 6: shared modal accessibility ================================
+// useModalA11y(onClose, {escClose}) — attach the returned ref to a modal's inner
+// .modal div (also give it role="dialog" aria-modal="true" + aria-labelledby on
+// the heading). On open: focuses the first control and TRAPS Tab inside the
+// dialog; on close: restores focus to the trigger. Escape-to-close is OPT-IN
+// (escClose) so data-entry forms don't lose unsaved input on a stray Escape.
+// Algorithm verified headlessly by tools/modal-a11y-check.mjs.
+let _modalStack = [];   // tokens for currently-open modals; only the TOP one handles keys
+function useModalA11y(onClose, opts){
+  const ref = React.useRef(null);
+  const closeRef = React.useRef(onClose); closeRef.current = onClose;
+  const escClose = !!(opts && opts.escClose);
+  useEffect(()=>{
+    const node = ref.current; if(!node) return;   // tolerates modals that early-return null
+    const token = {};
+    _modalStack.push(token);
+    const isTop = ()=> _modalStack[_modalStack.length-1]===token;  // nested modals: only innermost acts
+    const prevFocus = document.activeElement;
+    const SEL='a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+    const focusables = ()=>Array.from(node.querySelectorAll(SEL)).filter(el=>el.offsetWidth>0||el.offsetHeight>0||el===document.activeElement);
+    const f=focusables();
+    if(f[0]){ try{ f[0].focus(); }catch(_){} }
+    else { try{ node.setAttribute("tabindex","-1"); node.focus(); }catch(_){} }
+    const onKey=(e)=>{
+      if(!isTop()) return;   // a more-recently-opened modal owns the keyboard
+      if(e.key==="Escape"){ if(escClose){ e.preventDefault(); e.stopPropagation(); closeRef.current && closeRef.current(); } return; }
+      if(e.key==="Tab"){
+        const els=focusables(); if(!els.length){ e.preventDefault(); return; }
+        const first=els[0], last=els[els.length-1], active=document.activeElement;
+        if(!node.contains(active)){ e.preventDefault(); first.focus(); return; }
+        if(e.shiftKey && active===first){ e.preventDefault(); last.focus(); }
+        else if(!e.shiftKey && active===last){ e.preventDefault(); first.focus(); }
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return ()=>{ document.removeEventListener("keydown", onKey, true);
+      _modalStack = _modalStack.filter(t=>t!==token);
+      try{ prevFocus && prevFocus.focus && prevFocus.focus(); }catch(_){} };
+  },[escClose]);
+  return ref;
+}
+
 // ===== Phase 5: attention-first Overview dashboard ========================
 // New additive "Home" tab. Surfaces what needs action (current cycle, money to
 // send, approvals, blocked contractors, docs/onboarding, payout issues) instead
@@ -9745,10 +9793,10 @@ function App() {
       <a href="#main" className="skip-link">Skip to content</a>
       <DangerConfirm/>
       <header className="topbar">
-        <div className="brand">
+        <h1 className="brand">
           <img src="mark-light.png" alt="" onError={e=>{e.currentTarget.style.display="none";}}
             style={{height:38,marginRight:12,verticalAlign:"middle"}}/>
-          HR &amp; Payroll<small>PH independent contractors</small></div>
+          HR &amp; Payroll<small>PH independent contractors</small></h1>
         <div className="topbar-actions">
           <div className="company-switcher"><CompanySwitcher {...{client:sb.client,companyId,setCompanyId,consolidated,setConsolidated}} /></div>
           {sb.session?.user?.email && <span className="sub" style={{fontSize:12,whiteSpace:"nowrap"}} title="Signed in">{sb.session.user.email}</span>}
