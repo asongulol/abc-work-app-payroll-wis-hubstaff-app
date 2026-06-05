@@ -531,7 +531,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 02:30 PHT · aa7bf1d";
+const BUILD = "2026-06-06 02:35 PHT · 27f920e";
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
@@ -1004,9 +1004,27 @@ function parseBool(v){
   if(["n","no","false","0","not eligible","ineligible"].includes(s)) return false;
   return undefined;   // unrecognized -> leave field unset (don't overwrite)
 }
+// ---- Draft autosave for long multi-page activities (localStorage) ----------
+// Nothing here touches the DB; it just preserves in-progress input across a
+// refresh/close/navigation. Used by the hire wizard, bulk import, announcements.
+function draftLoad(key){ try{ const r=localStorage.getItem(key); if(!r) return null; const d=JSON.parse(r); return (d&&("v" in d))?d:null; }catch{ return null; } }
+function draftClear(key){ try{ localStorage.removeItem(key); }catch(_e){} }
+function useAutoDraft(key, value, hasContent, doneRef){
+  useEffect(()=>{
+    const id=setTimeout(()=>{ if(doneRef&&doneRef.current) return;
+      try{ if(hasContent) localStorage.setItem(key, JSON.stringify({v:value, at:Date.now()})); }catch(_e){} }, 500);
+    return ()=>clearTimeout(id);
+  });
+}
+function DraftNotice({show, onFresh}){
+  if(!show) return null;
+  return <div className="banner" style={{marginTop:8,marginBottom:4,background:"#eff6ff",borderColor:"#bfdbfe",color:"#1e40af",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}><span>↩ Resumed your saved draft.</span><button className="btn ghost sm" onClick={onFresh}>Start fresh</button></div>;
+}
 function BulkImport({ client, companyId, consolidated, onClose, onDone }){
   const mref=useModalA11y(onClose,{escClose:false}); // data-entry: no Escape-close
-  const [text,setText]=useState("");
+  const DKEY="eis_import_draft_"+(companyId||"none");
+  const _d0=draftLoad(DKEY);
+  const [text,setText]=useState((_d0&&typeof _d0.v==="string")?_d0.v:"");
   const [stage,setStage]=useState("input");   // input | preview | done
   const [parseErr,setParseErr]=useState("");
   const [preview,setPreview]=useState([]);     // [{row,action,errors[],notes[],name,existing,worker_payload,link,rate,recips}]
@@ -1014,6 +1032,11 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
   const [progress,setProgress]=useState("");
   const [result,setResult]=useState(null);     // {created,updated,skipped,errors[]}
   const [preferWise,setPreferWise]=useState(true);   // pull the contractor name from Wise for rows with a recipient id
+  const [draftRestored,setDraftRestored]=useState(!!(_d0&&typeof _d0.v==="string"&&_d0.v.trim()));
+  const doneRef=React.useRef(false);
+  useAutoDraft(DKEY, text, !!(text&&text.trim()), doneRef);   // auto-save the pasted roster
+  useEffect(()=>{ if(result){ doneRef.current=true; draftClear(DKEY); } },[result]);  // eslint-disable-line
+  function startFresh(){ draftClear(DKEY); setText(""); setDraftRestored(false); setParseErr(""); }
 
   // Delimiter-aware CSV/TSV parse (same state machine as parseCSV, parameterized).
   function parseDelimited(t,delim){
@@ -1307,6 +1330,7 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
             Pick a single company in the top-left switcher first — rate and company assignment are per-company.</div>}
 
         {stage==="input" && <>
+          <DraftNotice show={draftRestored} onFresh={startFresh}/>
           <div style={{marginTop:12}}>
             <textarea value={text} onChange={e=>setText(e.target.value)} spellCheck={false}
               placeholder={"Paste rows here (header row required). e.g.\nName\tWise recipient id\tWise UUID\tRate\tEmail\nManuella Gamboa\t79bf2801\t33e5...\t18000\tmanuella@x.com"}
@@ -1438,8 +1462,15 @@ function PortalSettingsModal({ client, onClose }){
 // Admin: post announcements shown on every contractor's portal welcome page.
 function AnnouncementsModal({ client, onClose }){
   const mref=useModalA11y(onClose,{escClose:false});
-  const [rows,setRows]=useState(null); const [title,setTitle]=useState(""); const [body,setBody]=useState("");
+  const AKEY="eis_announce_draft";
+  const _ad=draftLoad(AKEY);
+  const [rows,setRows]=useState(null);
+  const [title,setTitle]=useState((_ad&&_ad.v&&typeof _ad.v.title==="string")?_ad.v.title:"");
+  const [body,setBody]=useState((_ad&&_ad.v&&typeof _ad.v.body==="string")?_ad.v.body:"");
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
+  const [draftRestored,setDraftRestored]=useState(!!(_ad&&_ad.v&&(((_ad.v.title||"").trim())||((_ad.v.body||"").trim()))));
+  useAutoDraft(AKEY, {title,body}, !!(title.trim()||body.trim()), null);   // auto-save the draft announcement
+  function startFresh(){ draftClear(AKEY); setTitle(""); setBody(""); setDraftRestored(false); }
   function load(){ client.from("announcements").select("id,title,body,active,published_at").order("published_at",{ascending:false}).then(({data})=>setRows(data||[])); }
   useEffect(load,[]);
   async function post(){
@@ -1447,7 +1478,7 @@ function AnnouncementsModal({ client, onClose }){
     setBusy(true);setMsg("");
     const {error}=await client.from("announcements").insert({title:title.trim(),body:body.trim()||null,author:localStorage.getItem("sb_actor")||"admin"});
     if(error) setMsg("Error: "+error.message);
-    else { setTitle("");setBody(""); logEvent(client,{action:"edit_contractor",entity:"announcement",detail:{posted:title.trim()}}); load(); }
+    else { setTitle("");setBody(""); draftClear(AKEY); setDraftRestored(false); logEvent(client,{action:"edit_contractor",entity:"announcement",detail:{posted:title.trim()}}); load(); }
     setBusy(false);
   }
   async function toggle(a){ await client.from("announcements").update({active:!a.active}).eq("id",a.id); load(); }
@@ -1461,6 +1492,7 @@ function AnnouncementsModal({ client, onClose }){
           <button className="btn ghost sm" onClick={onClose}>Close</button>
         </div>
         <div style={{marginTop:12,borderBottom:"1px solid var(--border)",paddingBottom:12}}>
+          <DraftNotice show={draftRestored} onFresh={startFresh}/>
           <input style={{width:"100%",padding:8,border:"1px solid var(--border)",borderRadius:8,marginBottom:6}} placeholder="Title" value={title} onChange={e=>setTitle(e.target.value)}/>
           <textarea style={{width:"100%",height:70,padding:8,border:"1px solid var(--border)",borderRadius:8}} placeholder="Message (optional)" value={body} onChange={e=>setBody(e.target.value)}/>
           <div className="actions" style={{display:"flex",gap:8,alignItems:"center",marginTop:6}}>
