@@ -355,6 +355,21 @@
   @keyframes modalFade{from{opacity:0}to{opacity:1}}
   @keyframes modalRise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
   .x{float:right;border:none;background:none;font-size:20px;cursor:pointer;color:var(--muted)}
+  /* ===== Quick-find command palette (Cmd/Ctrl-K) ========================= */
+  .cmdk-bg{align-items:flex-start;padding-top:12vh}
+  .cmdk{overflow:hidden}
+  .cmdk-input{width:100%;border:none;border-bottom:1px solid var(--border);background:transparent;color:var(--text);
+    font:inherit;font-size:17px;padding:18px 20px;outline:none;border-radius:0}
+  .cmdk-list{max-height:46vh;overflow:auto;padding:6px}
+  .cmdk-empty{padding:18px 20px;color:var(--muted);font-size:14px}
+  .cmdk-item{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:none;border:none;
+    cursor:pointer;padding:9px 12px;border-radius:8px;font:inherit;color:var(--text)}
+  .cmdk-item.sel{background:var(--navy);color:#fff}
+  .cmdk-ico{flex:0 0 auto;width:20px;text-align:center;font-size:15px}
+  .cmdk-label{flex:1 1 auto;font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cmdk-type{flex:0 0 auto;font-size:11px;color:var(--muted)}
+  .cmdk-item.sel .cmdk-type{color:rgba(255,255,255,.82)}
+  .cmdk-foot{border-top:1px solid var(--border);padding:8px 16px;font-size:11px;color:var(--muted);text-align:right}
   .muted{color:var(--muted)}
   .stub{border:2px dashed var(--border);border-radius:var(--radius);padding:36px;text-align:center;color:var(--muted)}
   /* ===== Phase 0 responsive foundation (additive; no visual change) =====
@@ -1809,6 +1824,10 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
   const set=(k,v)=>setF(x=>({...x,[k]:v}));
   const [busy,setBusy]=useState(false); const [err,setErr]=useState(""); const [errs,setErrs]=useState({});
   const [result,setResult]=useState(null);
+  // a11y: focus-trap + focus-restore for whichever branch is mounted (form XOR
+  // success). escClose:false so a stray Escape never discards a half-typed hire;
+  // dep:!!result re-establishes the trap when the success screen replaces the form.
+  const mref=useModalA11y(onClose,{escClose:false, dep:!!result});
   const [admins,setAdmins]=useState([]);
   useEffect(()=>{
     client.from("admin_users").select("user_id,email").then(({data})=>setAdmins(data||[]));
@@ -1929,8 +1948,8 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
   );
   if(result){
     return (
-      <div className="modal-bg" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
-        <h2 style={{marginTop:0}}>✓ Contractor added</h2>
+      <div className="modal-bg" onClick={onClose}><div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="acw-done-title" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+        <h2 id="acw-done-title" style={{marginTop:0}}>✓ Contractor added</h2>
         {result.password ? <div>
           <p className="sub">Portal login created. Share these with {f.first_name} — they complete onboarding on first sign-in.</p>
           <div className="card" style={{background:"#f8fafc"}}>
@@ -1944,9 +1963,9 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
     );
   }
   return (
-    <div className="modal-bg" onClick={close}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+    <div className="modal-bg" onClick={close}><div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="acw-title" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <h2 style={{margin:0}}>Add contractor <span className="muted" style={{fontSize:13,fontWeight:400}}>· {companyName||"this company"}</span></h2>
+        <h2 id="acw-title" style={{margin:0}}>Add contractor <span className="muted" style={{fontSize:13,fontWeight:400}}>· {companyName||"this company"}</span></h2>
         <button className="btn ghost sm" onClick={close}>Cancel</button>
       </div>
       <div style={{display:"flex",gap:6,margin:"10px 0"}}>{[1,2,3].map(n=>(<div key={n} style={{flex:1,height:4,borderRadius:2,background:n<=step?"#1F3A68":"#e5e7eb"}}/>))}</div>
@@ -5354,7 +5373,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
 
   async function calculate(){
     if(!companyId){setMsg("Pick a single company first.");return;}
-    if(!gate("Calculate")) return;
+    if(!(await gate("Calculate"))) return;
     // GUARD: recalculating rebuilds every row purely from tracked hours. That DISCARDS any
     // manual gross overrides AND any adjustments/allowances (Health Allowance, PDD Lunch, 13th,
     // bonus) currently saved for this period — e.g. amounts brought in by an import. Warn loudly
@@ -5873,8 +5892,8 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
 
   // Calculate one batch: set the period dates and let the settle-effect run
   // calculate(). Scrolls the run card into view so the result is visible.
-  function calcBatch(b){
-    if(!gate("Calculate")) return;
+  async function calcBatch(b){
+    if(!(await gate("Calculate"))) return;
     setAutoDates(false); pendingCalc.current=true; applyStart(b.start); setCalcNonce(n=>n+1);
     setMsg(`Calculating ${b.start} → ${b.end}…`);
   }
@@ -5955,7 +5974,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
 
   async function lockAndSave(){
     if(!rows||!rows.length){setMsg("Calculate first.");return;}
-    if(!gate("Lock & save pay statements")) return;
+    if(!(await gate("Lock & save pay statements"))) return;
     // Don't let anyone silently drop out of payout: block lock if a contractor
     // has no rate (net==null) or no payout method set.
     const noRate=rows.filter(r=>r.net==null);
@@ -7702,7 +7721,7 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
   const total=selected.reduce((s,r)=>s+r.amount,0);
 
   async function createBatch(){
-    if(!gate("Create Wise batch (API draft)")) return;
+    if(!(await gate("Create Wise batch (API draft)"))) return;
     setArmed(false);setBusy(true);setMsg("");
     try{
       const {data,error}=await client.functions.invoke("wise-payouts",{
@@ -7973,7 +7992,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
   // reason in the audit log.
   async function unlockPeriod(p){
     if(!p) return;
-    if(!gate("Unlock period")) return;
+    if(!(await gate("Unlock period"))) return;
     if(p.state==="paid"){
       setMsg("This period is PAID — use “Mark all unpaid” below first, then unlock."); return; }
     const {data:pays}=await client.from("payments")
@@ -8124,7 +8143,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
     if(!workerIds.length)return;
     // Only gate the bulk path — single-row "Mark paid" is the lightweight
     // per-row affordance and prompting on each click would be obnoxious.
-    if(workerIds.length>1 && !gate(`Mark ${workerIds.length} contractor(s) paid`)) return;
+    if(workerIds.length>1 && !(await gate(`Mark ${workerIds.length} contractor(s) paid`))) return;
     setBusy(true);setMsg("");
     try{
       // snapshot prior status/paid_at per worker, and the period state, for Undo
@@ -8533,7 +8552,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
   // Wise data (per Oliver's call: "Wise info doesn't change so if Wise info
   // is already present then it should just use that data").
   async function reconcileWithWise(){
-    if(!gate("Reconcile with Wise")) return;
+    if(!(await gate("Reconcile with Wise"))) return;
     setBusy(true); setMsg(""); setMatchResult(null);
     try{
       const wiseAll=(rows||[]).filter(r=>r.method==="wise");
@@ -8677,8 +8696,8 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
   // stable recipient UUID (recipientId). Rows missing a UUID can't be uploaded,
   // so we surface them rather than emit a file Wise would reject.
   const wiseMissingUuid=wiseRows.filter(r=>!r.recipient_uuid);
-  function downloadWiseBatch(){
-    if(!gate("Download Wise batch CSV")) return;
+  async function downloadWiseBatch(){
+    if(!(await gate("Download Wise batch CSV"))) return;
     // Hard stop if there's nothing to write (every Wise row is missing a UUID).
     const includedCount=wiseRows.length-wiseMissingUuid.length;
     if(!includedCount){
@@ -8718,8 +8737,8 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
     });
   }
   // (2) Individual payment files — full per-contractor breakdown (all methods)
-  function downloadIndividual(){
-    if(!gate("Download individual payment files")) return;
+  async function downloadIndividual(){
+    if(!(await gate("Download individual payment files"))) return;
     guardedExport("individual", ()=>{
     const header=["Contractor","Method","Wise recipient id","Email","Amount PHP","Pay date","Period"];
     const body=(rows||[]).map(r=>[r.name,r.method,r.recipient_id,r.email,r.net.toFixed(2),pers?.pay_date||"",`${pers?.period_start}–${pers?.period_end}`]);
@@ -10847,6 +10866,92 @@ function MoreSheet({ tabGroups, tab, navIcon, go, onClose }){
   );
 }
 
+// ===== Global quick-find (Cmd/Ctrl-K) command palette =====================
+// Jump to any contractor, pay period, or section by typing — search once content
+// exceeds easy scanning (UX guidelines). Reuses the app's existing nav plumbing:
+// go(tab) / openContractor(workerId) / openPeriodForEdit({start,end}). Loads the
+// (small) worker + period lists once on open, company-scoped. ↑↓ move, ↵ open,
+// esc close (focus-trap/restore via useModalA11y).
+function CommandPalette({ client, companyId, consolidated, tabGroups, navIcon, go, openContractor, openPeriodForEdit, onClose }){
+  const pref=useModalA11y(onClose,{escClose:true});
+  const listRef=React.useRef(null);
+  const [q,setQ]=useState("");
+  const [sel,setSel]=useState(0);
+  const [lists,setLists]=useState(null);   // {workers:[{id,name,status}], periods:[{start,end,state}]} | {error}
+  useEffect(()=>{
+    let live=true;
+    (async()=>{
+      const scoped = !consolidated && !!companyId;
+      try{
+        const wq = scoped
+          ? client.from("worker_companies").select("worker_id,workers(id,first_name,middle_name,last_name,status)").eq("company_id",companyId)
+          : client.from("workers").select("id,first_name,middle_name,last_name,status");
+        let pq = client.from("pay_periods").select("period_start,period_end,state").order("period_start",{ascending:false}).limit(60);
+        if(scoped) pq=pq.eq("company_id",companyId);
+        const [{data:wd},{data:pd}]=await Promise.all([wq,pq]);
+        if(!live) return;
+        const seen=new Set(), workers=[];
+        (wd||[]).forEach(r=>{ const w=scoped?r.workers:r; if(!w||seen.has(w.id)) return; seen.add(w.id);
+          workers.push({id:w.id, name:fullName(w), status:w.status}); });
+        workers.sort((a,b)=>a.name.localeCompare(b.name));
+        setLists({workers, periods:(pd||[]).map(p=>({start:p.period_start,end:p.period_end,state:p.state}))});
+      }catch(e){ if(live) setLists({workers:[],periods:[],error:String((e&&e.message)||e)}); }
+    })();
+    return ()=>{ live=false; };
+  },[]);  // load once on open
+
+  const ql=q.trim().toLowerCase();
+  const match=s=> !ql || String(s||"").toLowerCase().includes(ql);
+  const items=[];
+  tabGroups.forEach(([grp,grpItems])=> grpItems.forEach(([id,lbl])=>{
+    if(match(lbl)||match(grp)) items.push({type:"section",id,label:lbl,sub:grp,icon:navIcon[id]||"›"});
+  }));
+  if(lists){
+    lists.workers.filter(w=>match(w.name)).slice(0,8).forEach(w=>items.push({type:"worker",id:w.id,label:w.name,sub:w.status,icon:"👤"}));
+    lists.periods.filter(p=>match(p.start+" "+p.end+" "+p.state)).slice(0,8).forEach(p=>items.push({type:"period",label:p.start+" → "+p.end,sub:p.state,start:p.start,end:p.end,icon:"📅"}));
+  }
+  const capped=items.slice(0,14);
+  const selIdx=Math.min(sel,Math.max(0,capped.length-1));
+  useEffect(()=>{ const el=listRef.current&&listRef.current.querySelector(".cmdk-item.sel"); if(el&&el.scrollIntoView) el.scrollIntoView({block:"nearest"}); },[selIdx]);
+
+  function activate(it){
+    if(!it) return;
+    onClose();
+    if(it.type==="section") go(it.id);
+    else if(it.type==="worker" && openContractor) openContractor(it.id);
+    else if(it.type==="period" && openPeriodForEdit) openPeriodForEdit({start:it.start,end:it.end});
+  }
+  function onKey(e){
+    if(e.key==="ArrowDown"){ e.preventDefault(); setSel(s=>Math.min(s+1,Math.max(0,capped.length-1))); }
+    else if(e.key==="ArrowUp"){ e.preventDefault(); setSel(s=>Math.max(s-1,0)); }
+    else if(e.key==="Enter"){ e.preventDefault(); activate(capped[selIdx]); }
+  }
+  const typeLabel=t=> t==="section"?"Section":t==="worker"?"Contractor":"Period";
+  return (
+    <div className="modal-bg cmdk-bg" onClick={onClose}>
+      <div className="modal cmdk" ref={pref} onClick={e=>e.stopPropagation()} role="dialog" aria-modal="true"
+           aria-label="Quick find" style={{maxWidth:560,padding:0}}>
+        <input className="cmdk-input" autoFocus value={q} onKeyDown={onKey}
+               onChange={e=>{ setQ(e.target.value); setSel(0); }}
+               placeholder="Search contractors, periods, sections…" aria-label="Quick find" />
+        <div className="cmdk-list" ref={listRef} role="listbox" aria-label="Results">
+          {capped.length===0 && <div className="cmdk-empty">{lists?(lists.error?("Couldn't load — "+lists.error):"No matches"):"Loading…"}</div>}
+          {capped.map((it,i)=>(
+            <button key={it.type+":"+(it.id||it.label)+":"+i} role="option" aria-selected={i===selIdx}
+                    className={"cmdk-item"+(i===selIdx?" sel":"")}
+                    onMouseEnter={()=>setSel(i)} onClick={()=>activate(it)}>
+              <span className="cmdk-ico" aria-hidden="true">{it.icon}</span>
+              <span className="cmdk-label">{it.label}</span>
+              <span className="cmdk-type">{typeLabel(it.type)}{it.sub?(" · "+it.sub):""}</span>
+            </button>
+          ))}
+        </div>
+        <div className="cmdk-foot">↑↓ navigate · ↵ open · esc close</div>
+      </div>
+    </div>
+  );
+}
+
 // Configuration tab — one home for the admin config + global maintenance tools.
 // Portal Fields / Agreement Templates / Onboarding Configuration open the same
 // modals used elsewhere; the Wise admin tools (Backfill all paid periods, Email
@@ -10890,6 +10995,12 @@ function App() {
   const [sidebarCollapsed,setSidebarCollapsed]=useState(()=>{ try{ return localStorage.getItem("eis_sidebar")==="1"; }catch{ return false; } });
   useEffect(()=>{ try{ localStorage.setItem("eis_sidebar",sidebarCollapsed?"1":"0"); }catch{ /* ignore */ } },[sidebarCollapsed]);
   const [moreOpen,setMoreOpen]=useState(false);   // mobile "More" sheet
+  // Global quick-find: Cmd-K (Mac) / Ctrl-K (Win) toggles the command palette.
+  const [paletteOpen,setPaletteOpen]=useState(false);
+  useEffect(()=>{
+    const h=(e)=>{ if((e.metaKey||e.ctrlKey)&&!e.altKey&&(e.key==="k"||e.key==="K")){ e.preventDefault(); setPaletteOpen(o=>!o); } };
+    window.addEventListener("keydown",h); return ()=>window.removeEventListener("keydown",h);
+  },[]);
   // Pin the sticky sidebar exactly below the topbar by measuring its REAL height
   // (varies with brand size / wrapping) rather than a hardcoded guess.
   useEffect(()=>{
@@ -10947,17 +11058,21 @@ function App() {
   }, []);
   const consumePendingPeriod = React.useCallback(()=>setPendingPeriod(null), []);
 
-  const confirmBillingDirty = React.useCallback((actionLabel) => {
+  // Async (returns Promise<boolean>) — uses the styled confirmDanger modal like
+  // the other money actions, NOT window.confirm. It's a review-and-proceed (no
+  // typed word), so confirmWord is omitted → plain Cancel / Proceed. Every
+  // caller awaits gate()/confirmBillingDirty(); an un-awaited call would render a
+  // truthy Promise and silently bypass the guard, so all 9 sites are awaited.
+  const confirmBillingDirty = React.useCallback(async (actionLabel) => {
     if (!billingDirty.length) return true;
     const lines = billingDirty.slice(0,12).map(e=>`• ${e.name} — ${e.field}`).join("\n");
     const more = billingDirty.length>12 ? `\n…and ${billingDirty.length-12} more` : "";
-    const ok = window.confirm(
-      `⚠ Billing info changed for ${billingDirty.length} contractor(s) in this session:\n\n`+
-      lines + more +
-      `\n\nProceed with "${actionLabel}"?\n\n`+
-      `Recommended: cancel, then Recalculate the affected pay period(s) so the new info `+
-      `is reflected before continuing.`
-    );
+    const ok = await confirmDanger({
+      title: `Billing info changed for ${billingDirty.length} contractor(s)`,
+      message: `Edited in this session:\n\n${lines}${more}`,
+      consequence: `Recommended: cancel, then Recalculate the affected pay period(s) so the new info is reflected before "${actionLabel}".`,
+      confirmLabel: `Proceed with ${actionLabel}`,
+    });
     if (ok) setBillingDirty([]);
     return ok;
   }, [billingDirty]);
@@ -11010,6 +11125,7 @@ function App() {
     <div>
       <a href="#main" className="skip-link">Skip to content</a>
       <DangerConfirm/>
+      {paletteOpen && <CommandPalette {...{client:sb.client,companyId,consolidated,tabGroups,navIcon:NAV_ICON,go,openContractor,openPeriodForEdit,onClose:()=>setPaletteOpen(false)}} />}
       {isOwner && showAdmins && <AdminsModal client={sb.client} meId={sb.session.user.id} onClose={()=>setShowAdmins(false)}/>}
       <header className="topbar">
         <h1 className="brand">
@@ -11017,6 +11133,7 @@ function App() {
             style={{height:38,marginRight:12,verticalAlign:"middle"}}/>
           HR &amp; Payroll<small>PH independent contractors</small></h1>
         <div className="topbar-actions">
+          <button className="btn ghost sm" onClick={()=>setPaletteOpen(true)} title="Quick find (⌘K / Ctrl-K)" aria-label="Quick find">🔎 Find</button>
           <div className="company-switcher"><CompanySwitcher {...{client:sb.client,companyId,setCompanyId,consolidated,setConsolidated}} /></div>
           {sb.session?.user?.email && <span className="sub" style={{fontSize:12,whiteSpace:"nowrap"}} title="Signed in">{sb.session.user.email}</span>}
           {isOwner && <button className="btn ghost sm" onClick={()=>setShowAdmins(true)}>Admins</button>}
