@@ -103,6 +103,40 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
     const body = await req.json().catch(() => ({}));
+
+    // --- caller authorization (read actions) ----------------------------------
+    // list_orgs / get_user / the default rollup proxy the org's Hubstaff data via
+    // the server-held token, so require an authenticated admin (or the cron
+    // secret). cron_ingest / activity_backfill keep their own x-cron-secret gate
+    // below and are exempt here. Runs BEFORE getAccessToken so an unauthorized
+    // caller never triggers a Hubstaff token read/refresh.
+    {
+      const SECRET_GATED = new Set(["cron_ingest", "activity_backfill"]);
+      if (!SECRET_GATED.has(body.action)) {
+        let authed = false;
+        const cronSecret = req.headers.get("x-cron-secret");
+        if (cronSecret) {
+          const sRes = await fetch(`${SB_URL}/rest/v1/app_secrets?key=eq.cron_secret&select=value`, { headers: tokHdr });
+          const secrets = await sRes.json().catch(() => []);
+          const expected = Array.isArray(secrets) && secrets[0]?.value;
+          if (!expected || cronSecret !== expected) return json({ error: "invalid cron secret" }, 401);
+          authed = true;
+        }
+        if (!authed) {
+          const bearer = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+          if (!bearer) return json({ error: "missing auth" }, 401);
+          const uRes = await fetch(`${SB_URL}/auth/v1/user`, { headers: { Authorization: `Bearer ${bearer}`, apikey: SB_KEY } });
+          if (!uRes.ok) return json({ error: "invalid session" }, 401);
+          const caller = await uRes.json().catch(() => null);
+          if (!caller?.id) return json({ error: "invalid session" }, 401);
+          const aRes = await fetch(`${SB_URL}/rest/v1/admin_users?user_id=eq.${caller.id}&select=user_id`, { headers: tokHdr });
+          const admins = await aRes.json().catch(() => []);
+          if (!Array.isArray(admins) || !admins.length) return json({ error: "not authorized — admins only" }, 403);
+        }
+      }
+    }
+    // --------------------------------------------------------------------------
+
     const token = await getAccessToken();   // reads stored token, persists rotated one
 
     // action: list organizations the token can see
