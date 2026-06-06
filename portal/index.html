@@ -113,6 +113,39 @@
   .docicon{width:40px; height:40px; border-radius:10px; background:var(--accent-soft); color:var(--accent); display:flex; align-items:center; justify-content:center; font-size:19px; flex:0 0 auto;}
   .ptabs button{transition:color .15s, border-color .15s;}
   @media (prefers-reduced-motion: reduce){ *{transition:none !important; animation:none !important;} }
+  /* ===== Desktop layout (>=900px): sidebar + dashboard ======================
+     ADDITIVE only — the mobile layout (default rules above) is unchanged. All
+     overrides are scoped to .portal-shell (the signed-in workspace), so the
+     Login and Onboarding screens stay centered-narrow on desktop too. The fixed
+     bottom tab bar (.tabs) is restyled into a left sidebar purely in CSS — fixed
+     positioning ignores DOM order, so no markup move is needed. ===== */
+  @media (min-width:900px){
+    .portal-shell{ padding-left:212px; }                 /* clear the fixed sidebar gutter */
+    /* bottom tab bar -> left sidebar */
+    .portal-shell .tabs{
+      top:0; bottom:0; left:0; right:auto; width:212px;
+      flex-direction:column; align-items:stretch; gap:4px;
+      border-top:0; border-right:1px solid var(--line);
+      padding:16px 10px; z-index:5;
+    }
+    .portal-shell .tabs button{
+      flex:0 0 auto; flex-direction:row; align-items:center; justify-content:flex-start;
+      gap:11px; padding:11px 13px; border-radius:10px; font-size:14px;
+    }
+    .portal-shell .tabs button:hover{ background:var(--bg); }
+    .portal-shell .tabs button.on{ background:var(--accent-soft); color:var(--accent); }
+    .portal-shell .tabs .ic{ display:inline; font-size:18px; line-height:1; }
+    /* header + content occupy the area right of the sidebar */
+    .portal-shell .wrap{ max-width:760px; padding:24px 28px 44px; }
+    /* Home -> 2-column masonry dashboard; header zone (clock, greeting, hero)
+       spans both columns, the rest flows into two columns, each card intact. */
+    .portal-shell .wrap.home{ max-width:1060px; column-count:2; column-gap:20px; }
+    .portal-shell .wrap.home > *{ break-inside:avoid; }
+    .portal-shell .wrap.home > .stickwrap{ break-after:avoid; }   /* keep a label with its card */
+    .portal-shell .wrap.home > div:nth-child(1),                  /* "· PHT" clock line */
+    .portal-shell .wrap.home > div:nth-child(2),                  /* avatar + greeting */
+    .portal-shell .wrap.home > .nyhero{ column-span:all; }
+  }
 </style>
 </head>
 <body>
@@ -1077,7 +1110,7 @@ function Home({ client, session, od }){
       if(error) console.error("mood check-in failed:", error.message); }   // surfaced in DevTools if RLS/insert ever fails
   }
   return (
-    <div className="wrap">
+    <div className="wrap home">
       <div style={{margin:"8px 2px 2px",fontSize:13,color:"var(--muted)"}}>{clock} · PHT</div>
       <div style={{display:"flex",gap:12,alignItems:"center",margin:"6px 2px 2px"}}>
         <div className="avatar">{initials}</div>
@@ -1154,7 +1187,7 @@ function Portal({ client, session }){
   const goTab=async(id)=>{ if(id===tab) return; if(unsavedDirty() && !(await confirmUnsaved())) return; setTab(id); };
   const signOut=async()=>{ if(unsavedDirty() && !(await confirmUnsaved())) return; client.auth.signOut(); };
   return (
-    <div>
+    <div className="portal-shell">
       <div className="top">
         <img src="mark-light.png" alt="" onError={e=>{e.currentTarget.style.display="none";}}
           style={{height:34,marginRight:12}}/>
