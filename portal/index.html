@@ -119,7 +119,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 07:59 PHT · f073d7a";
+const BUILD = "2026-06-06 08:06 PHT · 696ab47";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -864,51 +864,61 @@ function NyPanel(){
 function ActivityChart({ client }){
   const DAYS=18;
   const [days,setDays]=useState(null);
+  const scRef=React.useRef(null);
   useEffect(()=>{
     const today=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Manila"}).format(new Date());
-    const startMs=Date.parse(today+"T00:00:00Z")-(DAYS-1)*86400000;
-    const start=new Date(startMs).toISOString().slice(0,10);
+    const start=new Date(Date.parse(today+"T00:00:00Z")-89*86400000).toISOString().slice(0,10);   // scan ~90d to find the worked days
     client.from("time_entries").select("work_date,activity_pct,tracked_seconds")
       .gte("work_date",start).lte("work_date",today)
       .then(({data})=>{
-        const agg={};   // day -> tracked-weighted activity
+        const agg={};   // worked day (has tracked activity) -> tracked-weighted activity
         (data||[]).forEach(r=>{ if(r.activity_pct==null) return;
           const w=Math.max(Number(r.tracked_seconds)||0,1);
           const a=agg[r.work_date]||(agg[r.work_date]={s:0,w:0});
           a.s+=Number(r.activity_pct)*w; a.w+=w; });
-        const out=[];
-        for(let i=0;i<DAYS;i++){ const d=new Date(startMs+i*86400000).toISOString().slice(0,10);
-          out.push({ date:d, activity: agg[d]? Math.round(agg[d].s/agg[d].w) : null }); }
+        // Only days with logged time, most recent DAYS of them (skip days off).
+        const out=Object.keys(agg).sort()
+          .map(d=>({ date:d, activity:Math.round(agg[d].s/agg[d].w) }))
+          .slice(-DAYS);
         setDays(out);
       });
   },[]);  // eslint-disable-line
+  // Start the scroll at the most recent day (right edge).
+  React.useEffect(()=>{ if(days&&scRef.current) scRef.current.scrollLeft=scRef.current.scrollWidth; },[days]);
   if(days===null) return <div className="card"><div className="empty">Loading activity…</div></div>;
-  const fmtMD=iso=>{ try{ return new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric",timeZone:"UTC"}).format(new Date(iso+"T00:00:00Z")); }catch{ return iso.slice(5); } };
-  const vals=days.filter(d=>d.activity!=null).map(d=>d.activity);
-  const avg=vals.length?Math.round(vals.reduce((a,b)=>a+b,0)/vals.length):null;
-  const H=96;
+  const fmtMD=iso=>{ try{ return new Intl.DateTimeFormat("en-US",{month:"numeric",day:"numeric",timeZone:"UTC"}).format(new Date(iso+"T00:00:00Z")); }catch{ return iso.slice(5); } };
+  const present=days.filter(d=>d.activity!=null);
+  const avg=present.length?Math.round(present.reduce((a,d)=>a+d.activity,0)/present.length):null;
+  if(!present.length) return (
+    <div className="card"><p className="sub" style={{marginTop:0}}>Your Hubstaff activity % per day.</p>
+      <div className="empty">No logged activity yet.</div></div>);
+  // SVG geometry — fixed per-day width so the chart scrolls left/right.
+  const dayW=36, H=104, padTop=16, padBottom=22, W=days.length*dayW, svgH=H+padTop+padBottom;
+  const yOf=v=>padTop+H-(Math.max(0,Math.min(100,v))/100)*H, cx=i=>i*dayW+dayW/2, barW=dayW*0.56;
+  const col=v=>v>=60?"var(--good,#16a34a)":v>=35?"var(--accent,#1F3A68)":"var(--warn,#d97706)";
+  // Trend line = 3-point centered moving average over the days that have activity.
+  const nn=days.map((d,i)=>({i,v:d.activity})).filter(p=>p.v!=null);
+  const trend=nn.map((p,k)=>{ const lo=Math.max(0,k-1),hi=Math.min(nn.length-1,k+1); let s=0; for(let j=lo;j<=hi;j++) s+=nn[j].v; return `${cx(p.i)},${yOf(s/(hi-lo+1)).toFixed(1)}`; }).join(" ");
   return (
     <div className="card">
       <div className="row" style={{padding:0,alignItems:"baseline",gap:8}}>
-        <p className="sub" style={{marginTop:0,marginBottom:8,flex:1}}>Your Hubstaff activity % per day — active ÷ tracked time.</p>
+        <p className="sub" style={{marginTop:0,marginBottom:8,flex:1}}>Your activity % on each logged day (last {days.length}) — scroll for more · line = 3-day trend.</p>
         {avg!=null && <span style={{fontWeight:700,whiteSpace:"nowrap",color:"var(--accent,#1F3A68)"}}>avg {avg}%</span>}
       </div>
-      {!vals.length
-        ? <div className="empty">No tracked activity in the last {DAYS} days.</div>
-        : <>
-            <div style={{display:"flex",alignItems:"flex-end",gap:3,height:H}}>
-              {days.map((d,i)=>{
-                const v=d.activity;
-                const bh=v==null?2:Math.max(3,Math.round(v/100*H));
-                const col=v==null?"var(--line,#e5e7eb)":v>=60?"var(--good,#16a34a)":v>=35?"var(--accent,#1F3A68)":"var(--warn,#d97706)";
-                return <div key={i} title={fmtMD(d.date)+(v==null?" · no data":" · "+v+"%")}
-                  style={{flex:1,minWidth:0,height:bh,background:col,borderRadius:"4px 4px 0 0"}}/>;
-              })}
-            </div>
-            <div className="sub" style={{margin:"4px 0 0",display:"flex",justifyContent:"space-between",fontSize:11}}>
-              <span>{fmtMD(days[0].date)}</span><span>{fmtMD(days[days.length-1].date)}</span>
-            </div>
-          </>}
+      <div ref={scRef} style={{overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
+        <svg width={W} height={svgH} style={{display:"block"}} role="img" aria-label={`Daily activity, last ${DAYS} days`}>
+          {[25,50,75].map(g=><line key={g} x1="0" x2={W} y1={yOf(g)} y2={yOf(g)} stroke="var(--line,#eef2f7)"/>)}
+          {days.map((d,i)=>{ const v=d.activity;
+            if(v==null) return <rect key={i} x={cx(i)-barW/2} y={padTop+H-2} width={barW} height="2" fill="var(--line,#e5e7eb)" rx="1"/>;
+            const y=yOf(v);
+            return <g key={i}>
+              <rect x={cx(i)-barW/2} y={y} width={barW} height={padTop+H-y} fill={col(v)} rx="3" opacity="0.8"><title>{fmtMD(d.date)} · {v}%</title></rect>
+              <text x={cx(i)} y={y-4} textAnchor="middle" fontSize="9" fill="var(--muted,#94a3b8)">{v}</text>
+            </g>; })}
+          {nn.length>=2 && <polyline points={trend} fill="none" stroke="var(--accent,#1F3A68)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>}
+          {days.map((d,i)=><text key={"d"+i} x={cx(i)} y={svgH-6} textAnchor="middle" fontSize="9" fill="var(--muted,#94a3b8)">{fmtMD(d.date)}</text>)}
+        </svg>
+      </div>
     </div>
   );
 }
@@ -1025,7 +1035,7 @@ function Home({ client, session }){
             : "—"}</span>
         </div>
       </div>
-      <div className="stickwrap"><span className="sticker">📊 Activity · last 18 days</span></div>
+      <div className="stickwrap"><span className="sticker">📊 Activity</span></div>
       <ActivityChart client={client}/>
       <div className="stickwrap"><span className="sticker">📣 Word from the office</span></div>
       {anns===null?<div className="empty">Loading…</div>: !anns.length?<div className="empty">No announcements right now.</div>:
