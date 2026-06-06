@@ -10484,14 +10484,25 @@ function DangerConfirm(){
   const done=useCallback((val)=>{ setOpts(null); setTyped(""); const r=_dangerResolve; _dangerResolve=null; if(r) r(val); },[]);
   useEffect(()=>{
     if(!opts) return;
+    // Register as the topmost modal so any underlying useModalA11y dialog (e.g.
+    // the Companies modal that triggered this confirm) sees isTop()===false and
+    // stands down — otherwise its own Escape handler would close IT instead of
+    // this confirm, and its Tab-trap would pull focus behind this dialog.
+    const token={}; _modalStack.push(token);
     const onKey=(e)=>{ if(e.key==="Escape") done(false); };
-    window.addEventListener("keydown",onKey); return ()=>window.removeEventListener("keydown",onKey);
+    window.addEventListener("keydown",onKey);
+    return ()=>{ window.removeEventListener("keydown",onKey);
+      const i=_modalStack.indexOf(token); if(i>=0) _modalStack.splice(i,1); };
   },[opts,done]);
   if(!opts) return null;
   const needWord = !!opts.confirmWord;
   const ready = !needWord || typed.trim().toLowerCase()===String(opts.confirmWord).trim().toLowerCase();
+  // zIndex above any regular modal (.modal-bg is 20, or 50 on mobile) so a confirm
+  // triggered from INSIDE another modal — e.g. archiving a company, or
+  // confirmBillingDirty from the profile editor — appears on top, not behind it.
+  // Inline beats the media-query class without !important.
   return (
-    <div className="modal-bg" onClick={()=>done(false)}>
+    <div className="modal-bg" onClick={()=>done(false)} style={{zIndex:1000}}>
       <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:460}}
            role="dialog" aria-modal="true" aria-labelledby="danger-title">
         <h2 id="danger-title" style={{marginTop:0}}>{opts.title||"Please confirm"}</h2>
