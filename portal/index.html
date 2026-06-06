@@ -119,7 +119,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 08:21 PHT · 79a77ed";
+const BUILD = "2026-06-06 08:39 PHT · a01771a";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -1126,7 +1126,7 @@ function Portal({ client, session }){
         <button className={tab==="home"?"on":""} onClick={()=>goTab("home")}><span className="ic">🏠</span>Home</button>
         <button className={tab==="pay"?"on":""}  onClick={()=>goTab("pay")}><span className="ic">₱</span>Pay slips</button>
         <button className={tab==="time"?"on":""} onClick={()=>goTab("time")}><span className="ic">⏱</span>Time</button>
-        <button className={tab==="docs"?"on":""} onClick={()=>goTab("docs")}><span className="ic" style={{position:"relative"}}>📄{docCount>0 && <span aria-label={`${docCount} to upload`} style={{position:"absolute",top:-5,right:-9,background:"#dc2626",color:"#fff",borderRadius:999,fontSize:9,fontWeight:800,minWidth:14,height:14,lineHeight:"14px",textAlign:"center",padding:"0 2px",boxShadow:"0 0 0 2px var(--card,#fff)"}}>{docCount}</span>}</span>Docs</button>
+        <button className={tab==="docs"?"on":""} onClick={()=>goTab("docs")}><span className="ic"><span style={{position:"relative",display:"inline-block"}}>📄{docCount>0 && <span aria-label={`${docCount} to upload`} style={{position:"absolute",top:-6,right:-11,background:"#dc2626",color:"#fff",borderRadius:999,fontSize:10,fontWeight:800,minWidth:15,height:15,lineHeight:"15px",textAlign:"center",padding:"0 3px",boxShadow:"0 0 0 2px #fff"}}>{docCount}</span>}</span></span>Docs</button>
         <button className={tab==="me"?"on":""}   onClick={()=>goTab("me")}><span className="ic">👤</span>Profile</button>
       </div>
     </div>
