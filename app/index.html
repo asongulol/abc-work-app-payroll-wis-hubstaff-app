@@ -214,6 +214,51 @@
   .ov-tile-num{font-size:26px;font-weight:800;letter-spacing:-.02em;margin:6px 0 2px;line-height:1.05;color:var(--text)}
   .ov-tile-sub{font-size:12px;color:var(--muted)}
   @media(max-width:480px){.ov-grid{grid-template-columns:1fr}}
+  /* ===== Overview v2: SWR freshness, pay-cycle pipeline, net-pay sparkline === */
+  .ov-updated{font-size:11px;color:var(--muted);display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+  .ov-updated .dot{width:6px;height:6px;border-radius:50%;background:var(--good);flex:0 0 auto}
+  .ov-updated.refreshing .dot{background:var(--navy);animation:ovPulse 1s ease-in-out infinite}
+  @keyframes ovPulse{0%,100%{opacity:.25}50%{opacity:1}}
+  /* "THIS PAY CYCLE" hero */
+  .ov-cycle{margin-top:12px}
+  .ov-cycle-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+  .ov-cycle-net{text-align:right}
+  .ov-cycle-net .ov-tile-num{margin:2px 0 0}
+  /* pay-cycle pipeline: Time -> Calc -> Lock -> Sent -> Settled */
+  .ov-pipe{display:flex;align-items:flex-start;gap:0;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:2px 0}
+  .ov-pipe-step{position:relative;flex:1 1 0;min-width:60px;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center}
+  .ov-pipe-step::before{content:"";position:absolute;top:13px;left:-50%;width:100%;height:2px;background:var(--border-strong);z-index:0}
+  .ov-pipe-step:first-child::before{display:none}
+  .ov-pipe-step.done::before,.ov-pipe-step.active::before{background:var(--good)}
+  .ov-pipe-pip{position:relative;z-index:1;width:26px;height:26px;border-radius:50%;display:inline-flex;
+    align-items:center;justify-content:center;font-size:12px;font-weight:800;
+    background:var(--card);border:2px solid var(--border-strong);color:var(--muted)}
+  .ov-pipe-step.done .ov-pipe-pip{background:var(--good);border-color:var(--good);color:#fff}
+  .ov-pipe-step.active .ov-pipe-pip{border-color:var(--navy);color:var(--navy);box-shadow:0 0 0 3px rgba(15,28,51,.10)}
+  .ov-pipe-label{font-size:11px;font-weight:700;color:var(--text);line-height:1.15}
+  .ov-pipe-step.todo .ov-pipe-label{color:var(--muted);font-weight:600}
+  .ov-pipe-sub{font-size:10px;color:var(--muted);line-height:1.1}
+  /* net-pay sparkline (pure inline SVG — no chart lib, CSP-safe) */
+  .ov-spark-wrap{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  .ov-spark{flex:1 1 200px;min-width:160px;height:46px;display:block}
+  .ov-spark-poly{fill:none;stroke:var(--navy);stroke-width:2;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round}
+  .ov-spark-area{fill:var(--navy);opacity:.06;stroke:none}
+  .ov-spark-dot{fill:var(--navy)}
+  .ov-spark-meta{display:flex;flex-direction:column;gap:1px;min-width:120px}
+  .ov-delta{font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:4px}
+  .ov-delta.up{color:var(--good)} .ov-delta.down{color:var(--bad)} .ov-delta.flat{color:var(--muted)}
+  /* subtle staggered entrance */
+  @keyframes ovIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .ov-anim{animation:ovIn .3s var(--ease) both}
+  .ov-grid > .ov-tile{animation:ovIn .3s var(--ease) both}
+  .ov-grid > .ov-tile:nth-child(1){animation-delay:.03s}
+  .ov-grid > .ov-tile:nth-child(2){animation-delay:.06s}
+  .ov-grid > .ov-tile:nth-child(3){animation-delay:.09s}
+  .ov-grid > .ov-tile:nth-child(4){animation-delay:.12s}
+  .ov-grid > .ov-tile:nth-child(5){animation-delay:.15s}
+  .ov-grid > .ov-tile:nth-child(6){animation-delay:.18s}
+  /* the global reduced-motion rule zeroes durations but not delays — kill ours */
+  @media (prefers-reduced-motion: reduce){.ov-grid > .ov-tile,.ov-anim{animation:none !important}}
   /* horizontal scroll wrapper for wide tables */
   .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
   .table-scroll table{min-width:560px}
@@ -10469,6 +10514,42 @@ function useModalA11y(onClose, opts){
   return ref;
 }
 
+// Read a cached Overview payload for a scope key (stale-while-revalidate seed).
+function readOvCache(k){ try{ const r=sessionStorage.getItem(k); return r?JSON.parse(r):null; }catch{ return null; } }
+
+// Compact relative time for the "updated Xm ago" freshness stamp.
+function timeAgo(iso){
+  if(!iso) return "";
+  const t=new Date(iso).getTime(); if(isNaN(t)) return "";
+  const s=Math.max(0,(Date.now()-t)/1000);
+  if(s<45) return "just now";
+  const m=s/60; if(m<60){ return Math.max(1,Math.round(m))+" min ago"; }
+  const h=m/60; if(h<24){ const v=Math.round(h); return v+(v===1?" hr ago":" hrs ago"); }
+  const d=h/24; if(d<30){ const v=Math.round(d); return v+(v===1?" day ago":" days ago"); }
+  return new Date(iso).toISOString().slice(0,10);
+}
+
+// Tiny inline-SVG sparkline (no chart library → fast + CSP-safe). Stretches to
+// fill its flex cell; non-scaling stroke keeps the line crisp at any width.
+function Sparkline({values, width=240, height=44}){
+  const vals=(values||[]).map(v=>Number(v)||0);
+  if(vals.length<2) return null;
+  const min=Math.min(...vals), max=Math.max(...vals), span=(max-min)||1, n=vals.length;
+  const x=i=> (i/(n-1))*(width-4)+2;
+  const y=v=> (height-3) - ((v-min)/span)*(height-6);
+  const pts=vals.map((v,i)=>[x(i),y(v)]);
+  const line=pts.map(p=>p[0].toFixed(1)+","+p[1].toFixed(1)).join(" ");
+  const area="2,"+(height-2)+" "+line+" "+(width-2)+","+(height-2);
+  const last=pts[pts.length-1];
+  return (
+    <svg className="ov-spark" viewBox={"0 0 "+width+" "+height} preserveAspectRatio="none" role="img" aria-hidden="true">
+      <polygon className="ov-spark-area" points={area}/>
+      <polyline className="ov-spark-poly" points={line}/>
+      <circle className="ov-spark-dot" cx={last[0]} cy={last[1]} r="2.6"/>
+    </svg>
+  );
+}
+
 // ===== Phase 5: attention-first Overview dashboard ========================
 // New additive "Home" tab. Surfaces what needs action (current cycle, money to
 // send, approvals, blocked contractors, docs/onboarding, payout issues) instead
@@ -10484,11 +10565,12 @@ function Overview({ client, companyId, consolidated, goTab }){
     if(noScope) return { data:null, error:null };
     const S = q => scoped ? q.eq("company_id", companyId) : q;
     const tasks = {
-      // Bounded: fetch ONLY the latest period (order desc, limit 1) with its
-      // payments embedded — never the full payments history (which already
-      // exceeds PostgREST's 1000-row cap and would silently drop the newest
-      // period as the table grows). contractors = payments.length, net = Σ net_php.
-      period: S(c.from("pay_periods").select("period_start,period_end,pay_date,state,companies(name),payments(net_php)").order("period_start",{ascending:false}).limit(1)),
+      // ONE bounded query feeds three things: the current-period tile/hero, the
+      // pay-cycle pipeline ([0] + its payment statuses) and the net-pay sparkline
+      // (all 8 points). limit(8) keeps embedded payments well under PostgREST's
+      // 1000-row cap (~20 payments/period × 8 ≈ 164 rows); the old limit(1) was
+      // chosen because the FULL payments history already exceeds that cap.
+      periods8: S(c.from("pay_periods").select("period_start,period_end,pay_date,state,companies(name),payments(net_php,status)").order("period_start",{ascending:false}).limit(8)),
       pendingTime: S(c.from("time_entries").select("id",{count:"exact",head:true}).eq("approval","pending")),
       drafts: S(c.from("payments").select("net_php,status,pay_periods!inner(state)").in("status",["draft","queued"]).eq("pay_periods.state","locked")),
       failed: S(c.from("payments").select("id",{count:"exact",head:true}).eq("status","failed")),
@@ -10505,6 +10587,23 @@ function Overview({ client, companyId, consolidated, goTab }){
     keys.forEach((k,i)=>{ R[k]= res[i].status==="fulfilled" ? res[i].value : {error:String((res[i].reason&&res[i].reason.message)||res[i].reason)}; });
     return { data:R, error:null };
   }, [client, companyId, consolidated]);
+  // Stale-while-revalidate: paint the last-known tiles for THIS scope instantly
+  // from sessionStorage, then swap in fresh data when the queries resolve. Only a
+  // true cold load (no cache) shows skeletons; revisits never flash empty.
+  const cacheKey = "eis_ov_" + (consolidated ? "all" : (companyId || "none"));
+  const [cached, setCached] = useState(() => readOvCache(cacheKey));
+  const ovMounted = React.useRef(false);
+  useEffect(() => {            // re-seed the cache view when the scope key changes
+    if (!ovMounted.current) { ovMounted.current = true; return; }
+    setCached(readOvCache(cacheKey));
+  }, [cacheKey]);
+  useEffect(() => {            // mirror fresh data into the cache (with a timestamp)
+    if (data && !loading) {
+      const payload = { at: new Date().toISOString(), R: data };
+      try { sessionStorage.setItem(cacheKey, JSON.stringify(payload)); } catch { /* quota / private mode */ }
+      setCached(payload);
+    }
+  }, [data, loading, cacheKey]);
   const [dq,setDq]=useState(null); // lazy data-quality check: null | {loading} | {error} | {result}
   async function runDq(){
     setDq({loading:true});
@@ -10527,22 +10626,63 @@ function Overview({ client, companyId, consolidated, goTab }){
   }
 
   if(noScope) return <div className="card"><div className="empty">Pick a company in the switcher (top right) to see your overview.</div></div>;
-  if(loading && !data) return <div className="ov-grid">{Array.from({length:6}).map((_,i)=><div key={i} className="ov-tile" aria-hidden="true" style={{cursor:"default"}}><Skeleton rows={3}/></div>)}</div>;
+  if(loading && !data && !cached) return <div className="ov-grid">{Array.from({length:6}).map((_,i)=><div key={i} className="ov-tile" aria-hidden="true" style={{cursor:"default"}}><Skeleton rows={3}/></div>)}</div>;
 
-  const R = data || {};
+  const R = data || (cached && cached.R) || {};   // fresh first, else cached (SWR)
+  const updatedAt = cached && cached.at;          // freshness stamp from the cache
+  const refreshing = loading && !!(data || cached);
   const err = k => R[k] && R[k].error;
   const got = k => R[k] || {};
   const today = new Date().toISOString().slice(0,10);
 
-  // current period: the single latest pay_periods row + its embedded payments
+  // current period + the 8-point net-pay series both come from periods8 (latest
+  // first). [0] = current cycle for the tile/hero/pipeline; reversed = sparkline.
+  const periodsArr = err("periods8") ? [] : (((got("periods8").data))||[]);
+  const current = periodsArr[0] || null;
   let period=null;
-  if(!err("period")){
-    const pp=((got("period").data)||[])[0];
-    if(pp){
-      const pays=pp.payments||[];
-      period={start:pp.period_start,end:pp.period_end,state:pp.state,company:pp.companies&&pp.companies.name,
-              contractors:pays.length, net:pays.reduce((s,x)=>s+Number(x.net_php||0),0)};
+  if(current){
+    const pays=current.payments||[];
+    period={start:current.period_start,end:current.period_end,state:current.state,
+            company:current.companies&&current.companies.name,
+            contractors:pays.length, net:pays.reduce((s,x)=>s+Number(x.net_php||0),0)};
+  }
+  const series = periodsArr.slice().reverse().map(pp=>({
+    end: pp.period_end, net: (pp.payments||[]).reduce((s,x)=>s+Number(x.net_php||0),0)
+  }));
+
+  // Pay-cycle pipeline + pay-day countdown — single-company view only
+  // (consolidated mixes companies, so a per-period lifecycle/net is misleading).
+  // Stages map to the real enums: payment_status draft->queued->sent/reconciled,
+  // pay_period_state open->locked->paid. Time/Calc both gate on "payments exist"
+  // because the app requires approved time before a period can be calculated.
+  let pipe=null, payday=null, spark=null;
+  if(scoped && current){
+    const pays=current.payments||[];
+    const total=pays.length;
+    const settled=pays.filter(p=>p.status==="sent"||p.status==="reconciled").length;
+    const reconciled=pays.filter(p=>p.status==="reconciled").length;
+    const stt=current.state;
+    const calc=total>0, locked=(stt==="locked"||stt==="paid");
+    const allSent=total>0&&settled===total, done5=(stt==="paid")||(total>0&&reconciled===total);
+    const flags=[calc,calc,locked,allSent,done5];
+    const defs=[
+      {label:"Time",    sub:calc?"approved":"in progress"},
+      {label:"Calc",    sub:calc?(total+" calc'd"):"pending"},
+      {label:"Lock",    sub:locked?"locked":"open"},
+      {label:"Sent",    sub:total?(settled+"/"+total):"—"},
+      {label:"Settled", sub:done5?"done":(total?(reconciled+"/"+total):"—")},
+    ];
+    const firstTodo=flags.indexOf(false);
+    pipe=defs.map((d,i)=>({...d, cls: flags[i]?"done":(i===firstTodo?"active":"todo")}));
+    if(current.pay_date){
+      const dd=Math.round((new Date(current.pay_date+"T00:00:00")-new Date(today+"T00:00:00"))/86400000);
+      payday = stt==="paid" ? "paid" : dd>1?("pay day in "+dd+" days") : dd===1?"pay day tomorrow"
+             : dd===0?"pay day today" : dd===-1?"pay day was yesterday" : ("pay day "+Math.abs(dd)+" days ago");
     }
+  }
+  if(scoped && series.length>=2){
+    const last=series[series.length-1].net, prev=series[series.length-2].net;
+    spark={ values:series.map(p=>p.net), last, pct: prev>0 ? ((last-prev)/prev*100) : null };
   }
   // contractors needing setup: active worker with no payout method OR no current rate
   let blocked=null;
@@ -10581,10 +10721,40 @@ function Overview({ client, companyId, consolidated, goTab }){
           <h2 style={{margin:0}}>Overview</h2>
           <div className="sub" style={{margin:0}}>{consolidated?"All companies":((period&&period.company)||"This company")} · what needs your attention</div>
         </div>
-        <button className="btn ghost sm" onClick={reload} disabled={loading}>{loading?"Refreshing…":"↻ Refresh"}</button>
+        <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6}}>
+          <button className="btn ghost sm" onClick={reload} disabled={loading}>{loading?"Refreshing…":"↻ Refresh"}</button>
+          {updatedAt && <span className={"ov-updated"+(refreshing?" refreshing":"")}><span className="dot"/>{refreshing?"updating…":("updated "+timeAgo(updatedAt))}</span>}
+        </div>
       </div>
+      {scoped && period && (
+        <div className="card ov-cycle ov-anim">
+          <div className="ov-cycle-head">
+            <div>
+              <div className="ov-tile-label" style={{marginBottom:4}}><span aria-hidden="true">📅</span>THIS PAY CYCLE</div>
+              <div style={{fontWeight:700,fontSize:16}}>{period.start} → {period.end}</div>
+              <div className="sub" style={{marginTop:2}}>{stLabel(period.state)}{payday?(" · "+payday):""} · {period.contractors} contractor(s)</div>
+            </div>
+            <div className="ov-cycle-net">
+              <div className="ov-tile-label" style={{justifyContent:"flex-end"}}>Net this period</div>
+              <div className="ov-tile-num">{money(period.net,"PHP")}</div>
+            </div>
+          </div>
+          {pipe && (
+            <div className="ov-pipe" role="list" aria-label="Pay cycle progress">
+              {pipe.map((s,i)=>(
+                <div key={s.label} className={"ov-pipe-step "+s.cls} role="listitem"
+                     aria-label={s.label+": "+(s.cls==="done"?"done":s.cls==="active"?"in progress":"not started")}>
+                  <span className="ov-pipe-pip" aria-hidden="true">{s.cls==="done"?"✓":(i+1)}</span>
+                  <span className="ov-pipe-label">{s.label}</span>
+                  <span className="ov-pipe-sub">{s.sub}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <div className="ov-grid">
-        {tile({tone:period?stTone(period.state):"info", icon:"📅", label:"Current pay period", error:err("period"),
+        {!(scoped && period) && tile({tone:period?stTone(period.state):"info", icon:"📅", label:"Current pay period", error:err("periods8"),
           num: period? <span style={{fontSize:17}}>{period.start} → {period.end}</span> : "—",
           sub: period? `${stLabel(period.state)} · ${period.contractors} contractor(s) · net ${money(period.net,"PHP")}` : "No pay periods yet — run a payroll",
           drill:"process"})}
@@ -10609,6 +10779,22 @@ function Overview({ client, companyId, consolidated, goTab }){
           sub: failed? "failed payout(s) need attention" : "No failed payouts",
           drill:"batches"})}
       </div>
+      {spark && (
+        <div className="card ov-anim" style={{marginTop:12}}>
+          <div className="ov-spark-wrap">
+            <div className="ov-spark-meta">
+              <div className="ov-tile-label"><span aria-hidden="true">📈</span>NET PAY · last {spark.values.length} periods</div>
+              <div className="ov-tile-num" style={{fontSize:22,margin:"2px 0"}}>{money(spark.last,"PHP")}</div>
+              {spark.pct!=null
+                ? <span className={"ov-delta "+(spark.pct>0.5?"up":spark.pct<-0.5?"down":"flat")}>
+                    {spark.pct>0.5?"▲":spark.pct<-0.5?"▼":"▬"} {Math.abs(spark.pct).toFixed(1)}% vs prior period
+                  </span>
+                : <span className="ov-delta flat">— vs prior period</span>}
+            </div>
+            <Sparkline values={spark.values}/>
+          </div>
+        </div>
+      )}
       <div className="card" style={{marginTop:12}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
           <div><b>Data-quality</b>
