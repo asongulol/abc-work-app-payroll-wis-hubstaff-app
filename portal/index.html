@@ -113,37 +113,51 @@
   .docicon{width:40px; height:40px; border-radius:10px; background:var(--accent-soft); color:var(--accent); display:flex; align-items:center; justify-content:center; font-size:19px; flex:0 0 auto;}
   .ptabs button{transition:color .15s, border-color .15s;}
   @media (prefers-reduced-motion: reduce){ *{transition:none !important; animation:none !important;} }
-  /* ===== Desktop layout (>=900px): sidebar + dashboard ======================
-     ADDITIVE only — the mobile layout (default rules above) is unchanged. All
-     overrides are scoped to .portal-shell (the signed-in workspace), so the
-     Login and Onboarding screens stay centered-narrow on desktop too. The fixed
-     bottom tab bar (.tabs) is restyled into a left sidebar purely in CSS — fixed
-     positioning ignores DOM order, so no markup move is needed. ===== */
+  /* collapse toggle: only for the desktop sidebar — hidden on the mobile bottom
+     bar (the desktop @media reveals it). */
+  .portal-shell .nav-collapse{ display:none; }
+  /* ===== Desktop layout (>=900px): full-width header on top + collapsible left
+     sidebar + dashboard. ADDITIVE only — mobile (default rules above) is
+     unchanged; everything is scoped to .portal-shell, so Login/Onboarding stay
+     centered-narrow. The fixed bottom tab bar (.tabs) is restyled into the
+     sidebar purely in CSS (fixed positioning ignores DOM order). ===== */
   @media (min-width:900px){
-    .portal-shell{ padding-left:212px; }                 /* clear the fixed sidebar gutter */
-    /* bottom tab bar -> left sidebar */
+    .portal-shell{ --pnav-w:212px; }
+    .portal-shell.nav-collapsed{ --pnav-w:62px; }
+    /* header spans the FULL width, pinned on top */
+    .portal-shell .top{ position:sticky; top:0; z-index:6; }
+    /* sidebar sits BELOW the header (pinned via the header's measured height) */
     .portal-shell .tabs{
-      top:0; bottom:0; left:0; right:auto; width:212px;
-      flex-direction:column; align-items:stretch; gap:4px;
+      top:var(--ptop-h,62px); bottom:0; left:0; right:auto; width:var(--pnav-w);
+      flex-direction:column; align-items:stretch; justify-content:flex-start; gap:2px;
       border-top:0; border-right:1px solid var(--line);
-      padding:16px 10px; z-index:5;
+      padding:12px 10px; z-index:5; overflow-x:hidden; overflow-y:auto;
+      transition:width .15s ease;
     }
+    /* flex:none so items keep their natural height and STACK at the top
+       (instead of growing to fill the column) */
     .portal-shell .tabs button{
-      flex:0 0 auto; flex-direction:row; align-items:center; justify-content:flex-start;
-      gap:11px; padding:11px 13px; border-radius:10px; font-size:14px;
+      flex:none; flex-direction:row; align-items:center; justify-content:flex-start;
+      gap:12px; padding:10px 12px; border-radius:10px; font-size:14px;
+      white-space:nowrap; overflow:hidden; min-height:0;
     }
     .portal-shell .tabs button:hover{ background:var(--bg); }
-    .portal-shell .tabs button.on{ background:var(--accent-soft); color:var(--accent); }
-    .portal-shell .tabs .ic{ display:inline; font-size:18px; line-height:1; }
-    /* header + content occupy the area right of the sidebar */
-    .portal-shell .wrap{ max-width:760px; padding:24px 28px 44px; }
-    /* Home -> 2-column masonry dashboard; header zone (clock, greeting, hero)
-       spans both columns, the rest flows into two columns, each card intact. */
+    .portal-shell .tabs button.on{ background:var(--accent-soft); color:var(--accent); font-weight:700; }
+    .portal-shell .tabs .ic{ display:inline-flex; align-items:center; justify-content:center; width:22px; flex:none; font-size:18px; line-height:1; }
+    /* collapse toggle pinned to the sidebar bottom */
+    .portal-shell .nav-collapse{ display:flex; margin-top:auto; color:var(--muted); }
+    /* collapsed = icon rail: hide labels (font-size:0); icons keep their size */
+    .portal-shell.nav-collapsed .tabs button{ justify-content:center; gap:0; padding:10px 0; font-size:0; }
+    .portal-shell.nav-collapsed .tabs .ic{ font-size:19px; }
+    /* header full width; content + footer offset right of the sidebar */
+    .portal-shell .wrap{ margin-left:var(--pnav-w); max-width:760px; padding:24px 28px 44px; transition:margin-left .15s ease; }
+    .portal-shell .pbuild{ margin-left:var(--pnav-w); transition:margin-left .15s ease; }
+    /* Home -> 2-column masonry dashboard; clock/greeting/hero span both columns */
     .portal-shell .wrap.home{ max-width:1060px; column-count:2; column-gap:20px; }
     .portal-shell .wrap.home > *{ break-inside:avoid; }
-    .portal-shell .wrap.home > .stickwrap{ break-after:avoid; }   /* keep a label with its card */
-    .portal-shell .wrap.home > div:nth-child(1),                  /* "· PHT" clock line */
-    .portal-shell .wrap.home > div:nth-child(2),                  /* avatar + greeting */
+    .portal-shell .wrap.home > .stickwrap{ break-after:avoid; }
+    .portal-shell .wrap.home > div:nth-child(1),
+    .portal-shell .wrap.home > div:nth-child(2),
     .portal-shell .wrap.home > .nyhero{ column-span:all; }
   }
 </style>
@@ -1183,11 +1197,20 @@ function Portal({ client, session }){
   const docCount=od.show?od.outstanding.length:0;
   useEffect(()=>{ client.from("workers").select("first_name").maybeSingle()
     .then(({data})=>setFirst((data&&data.first_name||"").trim())); },[]);
+  // Desktop sidebar: collapse state (persisted) + pin it below the full-width
+  // header using the header's real height (mirrors the admin app's --topbar-h).
+  const [navCollapsed,setNavCollapsed]=useState(()=>{ try{ return localStorage.getItem("portal_nav_collapsed")==="1"; }catch{ return false; } });
+  useEffect(()=>{ try{ localStorage.setItem("portal_nav_collapsed", navCollapsed?"1":"0"); }catch(_e){} },[navCollapsed]);
+  useEffect(()=>{
+    const set=()=>{ const t=document.querySelector(".portal-shell .top"); if(t) document.documentElement.style.setProperty("--ptop-h", t.offsetHeight+"px"); };
+    set(); window.addEventListener("resize",set);
+    return ()=>window.removeEventListener("resize",set);
+  },[]);
   // Gate tab switches + sign-out on unsaved edits (e.g. an in-progress Profile edit).
   const goTab=async(id)=>{ if(id===tab) return; if(unsavedDirty() && !(await confirmUnsaved())) return; setTab(id); };
   const signOut=async()=>{ if(unsavedDirty() && !(await confirmUnsaved())) return; client.auth.signOut(); };
   return (
-    <div className="portal-shell">
+    <div className={"portal-shell"+(navCollapsed?" nav-collapsed":"")}>
       <div className="top">
         <img src="mark-light.png" alt="" onError={e=>{e.currentTarget.style.display="none";}}
           style={{height:34,marginRight:12}}/>
@@ -1199,13 +1222,17 @@ function Portal({ client, session }){
       {tab==="time" && <TimeView client={client}/>}
       {tab==="docs" && <DocsView client={client} session={session} od={od}/>}
       {tab==="me"   && <ProfileView client={client} session={session} onSignOut={signOut}/>}
-      <div style={{textAlign:"center",color:"var(--muted)",fontSize:11,padding:"10px 0 84px"}}>Build {BUILD}</div>
+      <div className="pbuild" style={{textAlign:"center",color:"var(--muted)",fontSize:11,padding:"10px 0 84px"}}>Build {BUILD}</div>
       <div className="tabs">
         <button className={tab==="home"?"on":""} onClick={()=>goTab("home")}><span className="ic">🏠</span>Home</button>
         <button className={tab==="pay"?"on":""}  onClick={()=>goTab("pay")}><span className="ic">₱</span>Pay slips</button>
         <button className={tab==="time"?"on":""} onClick={()=>goTab("time")}><span className="ic">⏱</span>Time</button>
         <button className={tab==="docs"?"on":""} onClick={()=>goTab("docs")}><span className="ic"><span style={{position:"relative",display:"inline-block"}}>📄{docCount>0 && <span aria-label={`${docCount} to upload`} style={{position:"absolute",top:-6,right:-11,background:"#dc2626",color:"#fff",borderRadius:999,fontSize:10,fontWeight:800,minWidth:15,height:15,lineHeight:"15px",textAlign:"center",padding:"0 3px",boxShadow:"0 0 0 2px #fff"}}>{docCount}</span>}</span></span>Docs</button>
         <button className={tab==="me"?"on":""}   onClick={()=>goTab("me")}><span className="ic">👤</span>Profile</button>
+        <button className="nav-collapse" onClick={()=>setNavCollapsed(c=>!c)}
+          aria-label={navCollapsed?"Expand menu":"Collapse menu"} title={navCollapsed?"Expand":"Collapse"}>
+          <span className="ic" aria-hidden="true">{navCollapsed?"»":"«"}</span>Collapse
+        </button>
       </div>
     </div>
   );
