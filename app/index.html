@@ -591,7 +591,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 15:49 EDT · 6757215";
+const BUILD = "2026-06-06 15:54 EDT · c961e53";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -5354,6 +5354,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // Seed from the last-known list (per company) so the Calculate tab shows its
   // batch list INSTANTLY on open; loadBatches() then refreshes in the background.
   const [batches,setBatches]=useState(()=>{ try{ const c=(companyId&&!consolidated)&&sessionStorage.getItem("eis_batches_"+companyId); return c?JSON.parse(c):null; }catch{ return null; } });
+  const [batchesPartial,setBatchesPartial]=useState(false);   // true = only the recent ~10 are loaded
   // Default the batch list to the actionable ones (not-calculated + draft);
   // locked/paid are hidden behind a toggle so they don't bury the to-do items.
   const [showFinishedBatches,setShowFinishedBatches]=useState(false);
@@ -5889,15 +5890,16 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // (the navigable list on this tab). Each batch carries its contractor count,
   // total hours, and current state (uncalculated / draft / locked). Paid
   // periods are excluded — they're done and live in Process & Pay.
-  async function loadBatches(){
+  async function loadBatches(loadAll=false){
     if(!client||!companyId||consolidated){ setBatches(null); return; }
     const cacheKey="eis_batches_"+companyId;
     // SWR: paint this company's cached list immediately (covers company switches),
     // or null -> skeleton if it has none yet; then refresh below.
     try{ const c=sessionStorage.getItem(cacheKey); setBatches(c?JSON.parse(c):null); }catch(_e){ setBatches(null); }
-    // Paginate — there can be thousands of approved entries (one busy period
-    // alone is hundreds of rows), and Supabase caps a single response at 1000.
-    // Without paging, periods beyond the first page would silently go missing.
+    // Heavy part = scanning approved time_entries to total hours/contractors per
+    // period. Default to RECENT-ONLY (newest ~10 periods) so the tab loads fast;
+    // "Show earlier periods" calls loadBatches(true) for the full history.
+    const COLS="worker_id,source_name,work_date,tracked_seconds,pto_seconds";
     const g={};
     const PAGE=1000;
     const agg=te=>(te||[]).forEach(t=>{
@@ -5906,19 +5908,33 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       b.workers.add(t.worker_id||t.source_name);
       b.sec+=(Number(t.tracked_seconds||0))+(Number(t.pto_seconds||0));
     });
-    // Count once, then fetch all pages CONCURRENTLY. The old loop paged
-    // SEQUENTIALLY (an await per 1000 rows), multiplying network latency by the
-    // page count — the main reason the first Calculate load occasionally lagged.
-    const {count}=await client.from("time_entries").select("id",{count:"exact",head:true})
-      .eq("company_id",companyId).eq("approval","approved");
-    const reqs=[];
-    for(let from=0; from<(count||0); from+=PAGE){
-      reqs.push(client.from("time_entries")
-        .select("worker_id,source_name,work_date,tracked_seconds,pto_seconds")
-        .eq("company_id",companyId).eq("approval","approved")
-        .order("work_date",{ascending:true}).range(from,from+PAGE-1));
+    let partial=false;
+    if(loadAll){
+      // Full history — one HEAD count, then all pages concurrently.
+      const {count}=await client.from("time_entries").select("id",{count:"exact",head:true})
+        .eq("company_id",companyId).eq("approval","approved");
+      const reqs=[];
+      for(let from=0; from<(count||0); from+=PAGE){
+        reqs.push(client.from("time_entries").select(COLS)
+          .eq("company_id",companyId).eq("approval","approved")
+          .order("work_date",{ascending:true}).range(from,from+PAGE-1));
+      }
+      (await Promise.all(reqs)).forEach(({data})=>agg(data));
+    } else {
+      // Recent-first — page newest→oldest until the 10 most-recent periods are
+      // fully captured (we've crossed into an 11th), then stop. Fast first paint.
+      let reachedEnd=false;
+      for(let from=0, pg=0; pg<8; pg++, from+=PAGE){
+        const {data:te}=await client.from("time_entries").select(COLS)
+          .eq("company_id",companyId).eq("approval","approved")
+          .order("work_date",{ascending:false}).range(from,from+PAGE-1);
+        if(!te||!te.length){ reachedEnd=true; break; }
+        agg(te);
+        if(te.length<PAGE){ reachedEnd=true; break; }          // last page → we have it all
+        if(Object.keys(g).length>10) break;                    // 10 newest complete; older periods exist
+      }
+      partial=!reachedEnd;   // stopped early (more history exists) → offer "Show earlier"
     }
-    (await Promise.all(reqs)).forEach(({data})=>agg(data));
     const {data:pp}=await client.from("pay_periods")
       .select("id,period_start,period_end,pay_date,state").eq("company_id",companyId);
     const ppByKey={}; (pp||[]).forEach(p=>{ ppByKey[`${p.period_start}|${p.period_end}`]=p; });
@@ -5950,12 +5966,17 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
         state, noTime: !b,   // draft with no approved time backing it
       };
     }).sort((a,b)=>b.start.localeCompare(a.start));
-    setBatches(list);
-    try{ sessionStorage.setItem(cacheKey, JSON.stringify(list)); }catch(_e){}   // refresh the SWR cache
-    // Phantom EMPTY drafts: open periods with NO statements AND no approved time.
-    const empties=openPP.filter(p=>!(payCount[p.id]>0) && !g[`${p.period_start}|${p.period_end}`])
-      .map(p=>({id:p.id,start:p.period_start,end:p.period_end}));
-    setEmptyDrafts(empties);
+    const shownList = partial ? list.slice(0,10) : list;   // partial scan -> show only the complete recent 10
+    setBatches(shownList);
+    setBatchesPartial(partial);
+    try{ sessionStorage.setItem(cacheKey, JSON.stringify(shownList)); }catch(_e){}   // refresh the SWR cache
+    // Phantom EMPTY drafts need the FULL time scan to be accurate (a partial scan
+    // would falsely flag periods whose time simply wasn't fetched), so only on loadAll.
+    if(loadAll){
+      const empties=openPP.filter(p=>!(payCount[p.id]>0) && !g[`${p.period_start}|${p.period_end}`])
+        .map(p=>({id:p.id,start:p.period_start,end:p.period_end}));
+      setEmptyDrafts(empties);
+    } else { setEmptyDrafts([]); }
   }
   const [emptyDrafts,setEmptyDrafts]=useState([]);
   // Delete phantom empty draft periods (open, no payments, no approved time).
@@ -6166,6 +6187,12 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
               {finishedCount>0 && (
                 <button className="btn ghost sm" onClick={()=>setShowFinishedBatches(s=>!s)}>
                   {showFinishedBatches ? `Hide locked/paid (${finishedCount})` : `Show locked/paid (${finishedCount})`}
+                </button>
+              )}
+              {batchesPartial && (
+                <button className="btn ghost sm" disabled={busy} onClick={()=>loadBatches(true)}
+                  title="Currently showing the 10 most recent periods. Load the full history.">
+                  ↓ Show earlier periods
                 </button>
               )}
             </div>
