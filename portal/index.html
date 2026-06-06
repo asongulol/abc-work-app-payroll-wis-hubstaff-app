@@ -9,6 +9,7 @@
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2214%22%20fill%3D%22%231F3A68%22%2F%3E%3Cpath%20d%3D%22M13%2047%20L21%2026%20L29%2047%20Z%22%20fill%3D%22%23D4A24C%22%2F%3E%3Cpath%20d%3D%22M23%2047%20L32%2020%20L41%2047%20Z%22%20fill%3D%22%23F2C879%22%2F%3E%3Cpath%20d%3D%22M35%2047%20L43%2026%20L51%2047%20Z%22%20fill%3D%22%23D4A24C%22%2F%3E%3Cpath%20d%3D%22M11%2045%20Q32%2034%2053%2045%22%20stroke%3D%22%23D4A24C%22%20stroke-width%3D%223%22%20fill%3D%22none%22%20stroke-linecap%3D%22round%22%2F%3E%3C%2Fsvg%3E" />
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
 <script type="module">
   import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -119,7 +120,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 08:39 PHT · a01771a";
+const BUILD = "2026-06-06 10:37 PHT · f6c2e56";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -209,6 +210,10 @@ function UnsavedGuardModal(){
 // without a login. See schema/migrations/2026-05-30_contractor_portal_rls.sql.
 const SUPABASE_URL  = "https://cgsidolrauzsowqlllsz.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNnc2lkb2xyYXV6c293cWxsbHN6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4MDMwMzEsImV4cCI6MjA5NTM3OTAzMX0.2Z_dDcN0la3c5l2YMYWjeUejhAGZH4ROHXQtYRGWYfY";
+// Cloudflare Turnstile site key (public). Empty string = CAPTCHA disabled (no
+// widget, no token sent) so the portal keeps working if it's ever unset. The
+// matching Secret Key is configured in Supabase Auth → Attack Protection.
+const TURNSTILE_SITE_KEY = "0x4AAAAAADfnaW1d76MhtZAb";
 
 const peso = n => (n==null||isNaN(n)) ? "—" : "₱"+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 const hrs  = s => ((Number(s||0))/3600);
@@ -339,16 +344,45 @@ function useClient(){
 function Login({ client }){
   const [email,setEmail]=useState(""); const [pw,setPw]=useState("");
   const [busy,setBusy]=useState(false); const [err,setErr]=useState(""); const [sent,setSent]=useState("");
+  // Cloudflare Turnstile: render the widget, capture its (single-use) token, and
+  // attach it to the password / reset calls. When TURNSTILE_SITE_KEY is empty the
+  // whole thing is a no-op so the portal still works.
+  const [captcha,setCaptcha]=useState("");
+  const capRef=React.useRef(null); const widgetId=React.useRef(null);
+  useEffect(()=>{
+    if(!TURNSTILE_SITE_KEY) return;
+    let cancelled=false;
+    (function mount(){
+      if(cancelled) return;
+      if(!window.turnstile || !capRef.current){ setTimeout(mount,150); return; }   // wait for api.js
+      if(widgetId.current!=null) return;
+      try{
+        widgetId.current=window.turnstile.render(capRef.current,{
+          sitekey:TURNSTILE_SITE_KEY,
+          callback:(t)=>setCaptcha(t),
+          "expired-callback":()=>setCaptcha(""),
+          "error-callback":()=>setCaptcha(""),
+        });
+      }catch(_e){ /* already rendered / transient */ }
+    })();
+    return ()=>{ cancelled=true; try{ if(widgetId.current!=null&&window.turnstile) window.turnstile.remove(widgetId.current); }catch(_e){} widgetId.current=null; };
+  },[]);
+  function resetCaptcha(){ try{ if(widgetId.current!=null&&window.turnstile) window.turnstile.reset(widgetId.current); }catch(_e){} setCaptcha(""); }
+  // We attach the Turnstile token when we have it but never client-block on it —
+  // Supabase Auth is the real enforcer, so a Turnstile load hiccup can't brick login.
   async function signIn(e){
     e.preventDefault(); setBusy(true); setErr(""); setSent("");
-    const { error }=await client.auth.signInWithPassword({ email:email.trim().toLowerCase(), password:pw });
+    const { error }=await client.auth.signInWithPassword({ email:email.trim().toLowerCase(), password:pw,
+      options: captcha?{ captchaToken:captcha }:undefined });
     if(error) setErr(error.message);
+    resetCaptcha();   // Turnstile tokens are single-use — refresh for the next attempt
     setBusy(false);
   }
   async function reset(){
     if(!email.trim()){ setErr("Enter your email first, then tap reset."); return; }
     setErr(""); const { error }=await client.auth.resetPasswordForEmail(email.trim().toLowerCase(),
-      { redirectTo: window.location.origin + window.location.pathname });
+      { redirectTo: window.location.origin + window.location.pathname, captchaToken: captcha||undefined });
+    resetCaptcha();
     if(error) setErr(error.message); else setSent("Password-reset email sent — check your inbox.");
   }
   return (
@@ -364,6 +398,7 @@ function Login({ client }){
         <input type="email" autoComplete="username" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/>
         <label className="sub">Password</label>
         <input type="password" autoComplete="current-password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="••••••••"/>
+        {TURNSTILE_SITE_KEY && <div ref={capRef} style={{marginTop:10,display:"flex",justifyContent:"center"}}></div>}
         {err && <div className="err">{err}</div>}
         {sent && <div style={{color:"var(--good)",fontSize:14,padding:"6px 0"}}>{sent}</div>}
         <button className="btn" style={{width:"100%",marginTop:8}} disabled={busy}>{busy?"Signing in…":"Sign in"}</button>
