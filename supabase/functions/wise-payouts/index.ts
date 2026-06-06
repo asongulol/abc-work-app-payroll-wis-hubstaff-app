@@ -142,6 +142,53 @@ Deno.serve(async (req) => {
     if (!token) return json({ error: "WISE_API_TOKEN not set on the server" }, 500);
     const body = await req.json().catch(() => ({}));
 
+    // --- caller authorization -------------------------------------------------
+    // This function wields the company Wise token AND the service-role key, so
+    // EVERY action requires an authenticated admin (the public anon key alone is
+    // not enough). Money-staging actions (draft / batch) require the OWNER role.
+    // The machine reconcile actions (poll / match) may alternatively present the
+    // cron secret, so a scheduled job can run them without a user session. This
+    // is the same in-function gate portal-admin / admin-manage use; the function
+    // stays --no-verify-jwt like its siblings (the in-code gate is the control).
+    {
+      const SB = Deno.env.get("SUPABASE_URL");
+      const SR = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+      if (!SB || !SR) return json({ error: "server missing SUPABASE_URL / SERVICE_ROLE_KEY" }, 500);
+      const svc = { apikey: SR, Authorization: `Bearer ${SR}`, "Content-Type": "application/json" };
+      const action = body.action;
+      const OWNER_ACTIONS = new Set(["draft", "batch"]);
+      const CRON_ACTIONS = new Set(["poll", "match"]);
+
+      let authed = false;
+      // machine path: a scheduled reconcile may authenticate with the cron secret.
+      if (CRON_ACTIONS.has(action)) {
+        const cronSecret = req.headers.get("x-cron-secret");
+        if (cronSecret) {
+          const sRes = await fetch(`${SB}/rest/v1/app_secrets?key=eq.cron_secret&select=value`, { headers: svc });
+          const secrets = await sRes.json().catch(() => []);
+          const expected = Array.isArray(secrets) && secrets[0]?.value;
+          if (!expected || cronSecret !== expected) return json({ error: "invalid cron secret" }, 401);
+          authed = true;
+        }
+      }
+      // user path: validate the bearer JWT and require an admin (owner for staging).
+      if (!authed) {
+        const bearer = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+        if (!bearer) return json({ error: "missing auth" }, 401);
+        const uRes = await fetch(`${SB}/auth/v1/user`, { headers: { Authorization: `Bearer ${bearer}`, apikey: SR } });
+        if (!uRes.ok) return json({ error: "invalid session" }, 401);
+        const caller = await uRes.json().catch(() => null);
+        if (!caller?.id) return json({ error: "invalid session" }, 401);
+        const aRes = await fetch(`${SB}/rest/v1/admin_users?user_id=eq.${caller.id}&select=role`, { headers: svc });
+        const admins = await aRes.json().catch(() => []);
+        const me = Array.isArray(admins) && admins[0];
+        if (!me) return json({ error: "not authorized — admins only" }, 403);
+        if (OWNER_ACTIONS.has(action) && me.role !== "owner")
+          return json({ error: "not authorized — owner only for staging transfers" }, 403);
+      }
+    }
+    // --------------------------------------------------------------------------
+
     if (body.action === "profile") {
       return json({ profile_id: await getBusinessProfileId(token) });
     }
