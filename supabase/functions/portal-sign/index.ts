@@ -89,6 +89,22 @@ Deno.serve(async (req) => {
     if (signature_method !== "typed" && signature_method !== "drawn") return json({ error: "signature_method must be typed|drawn" }, 400);
     if (body.scrolled_to_end !== true) return json({ error: "you must read to the end of the document before signing" }, 422);
 
+    // signature_data is contractor-controlled. For a DRAWN signature it is a
+    // canvas export rendered into the admin Print view inside <img src=...>, so it
+    // MUST be a bounded data:image base64 URI (that charset can't carry markup/JS).
+    // For a TYPED signature the portal sends the typed name here (rendered only via
+    // escapeHtml, never as an image) — just length-cap it.
+    let signature_data: string | null =
+      (body.signature_data != null && String(body.signature_data) !== "") ? String(body.signature_data) : null;
+    if (signature_method === "drawn") {
+      if (!signature_data || signature_data.length > 1_000_000 ||
+          !/^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/]+=*$/.test(signature_data)) {
+        return json({ error: "drawn signature must be a data:image/(png|jpeg|webp);base64 URI under ~1MB" }, 400);
+      }
+    } else if (signature_data && signature_data.length > 300) {
+      signature_data = signature_data.slice(0, 300);
+    }
+
     // ensure a progress row exists (new hire's first action) — fail loudly on error
     const opIns = await fetch(`${SB}/rest/v1/onboarding_progress`, {
       method: "POST",
@@ -130,7 +146,7 @@ Deno.serve(async (req) => {
         worker_id, agreement_kind, doc_version,
         doc_sha256: body.doc_sha256 ?? null,
         signed_legal_name, signature_method, signed_date,
-        signature_data: body.signature_data ?? null,
+        signature_data,
         scrolled_to_end: true,
         ip_address: clientIp(req),
         user_agent: req.headers.get("user-agent"),

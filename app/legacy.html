@@ -8948,9 +8948,15 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
     const r=insts[k]||{}; const sig=signedBy[k];
     const merged=mergeAgreement(tpls[k]||"",{ contractor_name:workerName, rate:r.f_rate, start_date:r.f_start_date,
       position:r.f_position, countersigner_name:r.countersigner_name, today });
-    const mark=(method,data,name)=> (method==="drawn"&&data)
-      ? `<img src="${data}" alt="signature" style="height:46px;max-width:240px;object-fit:contain;display:block"/>`
-      : `<span style="font-family:cursive;font-size:18px">${escapeHtml(name||"")}</span>`;
+    // signature_data / countersign_data are user-controlled — only emit them as an
+    // <img> if they're a clean data:image base64 URI (that charset can't contain a
+    // quote or '<', so no breakout), else fall back to the escaped typed name.
+    // Defense against stored XSS when this string is written into the print window.
+    const safeSigImg=(d)=>{ const s=String(d||""); return /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/]+=*$/.test(s)?s:""; };
+    const mark=(method,data,name)=>{ const img=(method==="drawn")?safeSigImg(data):"";
+      return img
+        ? `<img src="${img}" alt="signature" style="height:46px;max-width:240px;object-fit:contain;display:block"/>`
+        : `<span style="font-family:cursive;font-size:18px">${escapeHtml(name||"")}</span>`; };
     const sigBlock=
       `<div style="margin-top:32px;display:flex;gap:48px;flex-wrap:wrap">`+
       `<div><div style="border-bottom:1px solid #000;min-width:240px;min-height:30px;padding-bottom:2px">${sig?mark(sig.signature_method,sig.signature_data,sig.signed_legal_name):""}</div>`+
