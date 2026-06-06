@@ -129,21 +129,22 @@
     /* sidebar sits BELOW the header (pinned via the header's measured height) */
     .portal-shell .tabs{
       top:var(--ptop-h,62px); bottom:0; left:0; right:auto; width:var(--pnav-w);
-      flex-direction:column; align-items:stretch; justify-content:flex-start; gap:2px;
+      flex-direction:column; align-items:stretch; justify-content:flex-start; gap:6px;
       border-top:0; border-right:1px solid var(--line);
-      padding:12px 10px; z-index:5; overflow-x:hidden; overflow-y:auto;
+      padding:14px 12px; z-index:5; overflow-x:hidden; overflow-y:auto;
       transition:width .15s ease;
     }
-    /* flex:none so items keep their natural height and STACK at the top
-       (instead of growing to fill the column) */
+    /* flex:none so items keep their natural height and STACK at the top with even
+       gaps (instead of growing to fill the column); left-aligned content. */
     .portal-shell .tabs button{
       flex:none; flex-direction:row; align-items:center; justify-content:flex-start;
-      gap:12px; padding:10px 12px; border-radius:10px; font-size:14px;
+      gap:12px; padding:10px 12px; border-radius:10px; font-size:14px; text-align:left;
       white-space:nowrap; overflow:hidden; min-height:0;
     }
     .portal-shell .tabs button:hover{ background:var(--bg); }
     .portal-shell .tabs button.on{ background:var(--accent-soft); color:var(--accent); font-weight:700; }
-    .portal-shell .tabs .ic{ display:inline-flex; align-items:center; justify-content:center; width:22px; flex:none; font-size:18px; line-height:1; }
+    /* fixed-width icon column so every label starts at the same x (aligned left) */
+    .portal-shell .tabs .ic{ display:inline-flex; align-items:center; justify-content:center; width:24px; flex:0 0 24px; font-size:18px; line-height:1; }
     /* collapse toggle pinned to the sidebar bottom */
     .portal-shell .nav-collapse{ display:flex; margin-top:auto; color:var(--muted); }
     /* collapsed = icon rail: hide labels (font-size:0); icons keep their size */
@@ -152,13 +153,15 @@
     /* header full width; content + footer offset right of the sidebar */
     .portal-shell .wrap{ margin-left:var(--pnav-w); max-width:760px; padding:24px 28px 44px; transition:margin-left .15s ease; }
     .portal-shell .pbuild{ margin-left:var(--pnav-w); transition:margin-left .15s ease; }
-    /* Home -> 2-column masonry dashboard; clock/greeting/hero span both columns */
-    .portal-shell .wrap.home{ max-width:1060px; column-count:2; column-gap:20px; }
-    .portal-shell .wrap.home > *{ break-inside:avoid; }
-    .portal-shell .wrap.home > .stickwrap{ break-after:avoid; }
-    .portal-shell .wrap.home > div:nth-child(1),
-    .portal-shell .wrap.home > div:nth-child(2),
-    .portal-shell .wrap.home > .nyhero{ column-span:all; }
+    /* Home -> explicit 2-column dashboard grid. Everything is full width by
+       default (clock, greeting, hero, "Word from Your Mother", toolkit); only
+       the Next-pay and Activity cells sit side by side. */
+    .portal-shell .wrap.home{ display:grid; grid-template-columns:1fr 1fr; gap:14px 18px; align-items:start; max-width:1060px; }
+    .portal-shell .wrap.home > *{ grid-column:1 / -1; }
+    .portal-shell .wrap.home > .dash-pay{ grid-column:1; }
+    .portal-shell .wrap.home > .dash-act{ grid-column:2; }
+    /* inside a dash cell the sticker's big top margin isn't needed (grid gap handles it) */
+    .portal-shell .wrap.home .dash-cell > .stickwrap{ margin-top:0; }
   }
 </style>
 </head>
@@ -1134,6 +1137,7 @@ function Home({ client, session, od }){
         </div>
       </div>
       <NyPanel/>
+      <div className="dash-cell dash-word">
       <div className="stickwrap"><span className="sticker">📣 Word from Your Mother</span></div>
       {anns===null?<div className="empty">Loading…</div>: !anns.length?<div className="empty">No announcements right now.</div>:
         <div className="card annlist">
@@ -1145,6 +1149,8 @@ function Home({ client, session, od }){
             </div>
           ))}
         </div>}
+      </div>
+      <div className="dash-cell dash-pay">
       <div className="stickwrap"><span className="sticker">📮 Your pay</span></div>
       <div className="paycard">
         <div className="row" style={{alignItems:"flex-end",padding:0}}>
@@ -1170,8 +1176,11 @@ function Home({ client, session, od }){
             : "—"}</span>
         </div>
       </div>
+      </div>
+      <div className="dash-cell dash-act">
       <div className="stickwrap"><span className="sticker">📊 Activity</span></div>
       <ActivityChart client={client}/>
+      </div>
       <QuickLinks/>
       {moodPrompt && (
         <div role="dialog" aria-modal="true" aria-label="Shift mood check-in"
