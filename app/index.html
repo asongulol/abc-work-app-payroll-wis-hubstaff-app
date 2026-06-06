@@ -591,7 +591,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 15:24 EDT · acb766b";
+const BUILD = "2026-06-06 15:38 EDT · 57bec53";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -5351,7 +5351,9 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // company), surfaced as a banner so it never silently vanishes.
   const [dropped,setDropped]=useState([]);
   // Approved-time batches grouped by pay period (the list on this tab).
-  const [batches,setBatches]=useState(null);
+  // Seed from the last-known list (per company) so the Calculate tab shows its
+  // batch list INSTANTLY on open; loadBatches() then refreshes in the background.
+  const [batches,setBatches]=useState(()=>{ try{ const c=(companyId&&!consolidated)&&sessionStorage.getItem("eis_batches_"+companyId); return c?JSON.parse(c):null; }catch{ return null; } });
   // Default the batch list to the actionable ones (not-calculated + draft);
   // locked/paid are hidden behind a toggle so they don't bury the to-do items.
   const [showFinishedBatches,setShowFinishedBatches]=useState(false);
@@ -5889,6 +5891,10 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
   // periods are excluded — they're done and live in Process & Pay.
   async function loadBatches(){
     if(!client||!companyId||consolidated){ setBatches(null); return; }
+    const cacheKey="eis_batches_"+companyId;
+    // SWR: paint this company's cached list immediately (covers company switches),
+    // or null -> skeleton if it has none yet; then refresh below.
+    try{ const c=sessionStorage.getItem(cacheKey); setBatches(c?JSON.parse(c):null); }catch(_e){ setBatches(null); }
     // Paginate — there can be thousands of approved entries (one busy period
     // alone is hundreds of rows), and Supabase caps a single response at 1000.
     // Without paging, periods beyond the first page would silently go missing.
@@ -5945,6 +5951,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       };
     }).sort((a,b)=>b.start.localeCompare(a.start));
     setBatches(list);
+    try{ sessionStorage.setItem(cacheKey, JSON.stringify(list)); }catch(_e){}   // refresh the SWR cache
     // Phantom EMPTY drafts: open periods with NO statements AND no approved time.
     const empties=openPP.filter(p=>!(payCount[p.id]>0) && !g[`${p.period_start}|${p.period_end}`])
       .map(p=>({id:p.id,start:p.period_start,end:p.period_end}));
@@ -6132,6 +6139,15 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     <div>
       {/* Approved-time batches by pay period — the navigable list. Pick one to
           Calculate (it flows to Process & Pay once locked) or Delete. */}
+      {/* Cold load (no cached list yet): show the section with a skeleton instead
+          of a blank gap, so the tab feels instant while the scan runs. */}
+      {!consolidated && companyId && batches===null && (
+        <div className="card">
+          <h2 style={{margin:"0 0 4px"}}>Pay periods ready for calculation</h2>
+          <p className="sub" style={{marginTop:0}}>Loading approved time…</p>
+          <Skeleton rows={3}/>
+        </div>
+      )}
       {!consolidated && companyId && ((batches && batches.length>0) || emptyDrafts.length>0) && (() => {
         const finishedCount = batches.filter(b=>b.state==="locked"||b.state==="paid").length;
         const shown = showFinishedBatches ? batches : batches.filter(b=>b.state!=="locked"&&b.state!=="paid");
