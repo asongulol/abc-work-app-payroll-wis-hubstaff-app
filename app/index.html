@@ -413,7 +413,7 @@
     .grid-2{grid-template-columns:1fr !important}
   }
   /* two-column responsive grid used by Time Import options */
-  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
   /* ===== Phase 4: Dashboard stat cards & summary grids =======================
      The dashboard summary strips (.dash-stats) are flex `.row`s of `.field`
      stat cards (.dash-stat) with a big `.val` number (.dash-stat-num). On
