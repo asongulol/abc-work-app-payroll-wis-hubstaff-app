@@ -96,7 +96,7 @@
   .hair{height:1px; background:var(--line); margin:12px 0;}
   .annlist > .item{padding:10px 0; border-top:1px solid var(--line);} .annlist > .item:first-child{border-top:0;}
   .annlist .dot{color:var(--gold); font-weight:900; margin-right:4px;}
-  .qgrid{display:grid; grid-template-columns:1fr 1fr; gap:8px;}
+  .qgrid{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px;}
   .qgrid a{display:flex; align-items:center; gap:10px; padding:11px 12px; border:1px solid var(--line); border-radius:10px; text-decoration:none; color:var(--text); background:#fff;}
   .qgrid .qico{width:24px; height:24px; display:flex; align-items:center; justify-content:center; font-size:20px;}
   /* ---- shared sub-page polish (Pay slips / Time / Docs / Profile) ---- */
@@ -160,15 +160,25 @@
     /* Home -> explicit 2-column dashboard grid (~1000px reads best for cards).
        Everything is full width by default (clock, greeting, hero, "Word from
        Your Mother", toolkit); only Next-pay and Activity sit side by side. */
-    .portal-shell .wrap.home{ --cw:1000px; display:grid; grid-template-columns:1fr 1fr; gap:14px 18px; align-items:start; }
-    .portal-shell .wrap.home > *{ grid-column:1 / -1; }
+    /* minmax(0,1fr) lets the columns shrink below their content's intrinsic width
+       so the grid can NEVER force horizontal page scroll as the window narrows. */
+    .portal-shell .wrap.home{ --cw:1000px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 18px; align-items:start; }
+    .portal-shell .wrap.home > *{ grid-column:1 / -1; min-width:0; }
     /* pay + activity: same row, EQUAL height (stretch the cell, let the card fill) */
-    .portal-shell .wrap.home > .dash-pay{ grid-column:1; align-self:stretch; display:flex; flex-direction:column; }
-    .portal-shell .wrap.home > .dash-act{ grid-column:2; align-self:stretch; display:flex; flex-direction:column; }
+    .portal-shell .wrap.home > .dash-pay{ grid-column:1; align-self:stretch; display:flex; flex-direction:column; min-width:0; }
+    .portal-shell .wrap.home > .dash-act{ grid-column:2; align-self:stretch; display:flex; flex-direction:column; min-width:0; }
     .portal-shell .wrap.home > .dash-pay > .paycard,
     .portal-shell .wrap.home > .dash-act > .card{ flex:1; margin:0; }
     /* inside a dash cell the sticker's big top margin isn't needed (grid gap handles it) */
     .portal-shell .wrap.home .dash-cell > .stickwrap{ margin-top:0; }
+  }
+  /* Narrow desktop: when there isn't room for two columns beside an EXPANDED
+     sidebar, stack the dashboard to one column so nothing needs horizontal
+     scrolling. A collapsed sidebar has the room, so it keeps two columns. */
+  @media (min-width:900px) and (max-width:1024px){
+    .portal-shell:not(.nav-collapsed) .wrap.home{ grid-template-columns:1fr; }
+    .portal-shell:not(.nav-collapsed) .wrap.home > .dash-pay,
+    .portal-shell:not(.nav-collapsed) .wrap.home > .dash-act{ grid-column:1 / -1; align-self:auto; }
   }
 </style>
 </head>
