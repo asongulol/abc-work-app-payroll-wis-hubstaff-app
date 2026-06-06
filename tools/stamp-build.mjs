@@ -3,16 +3,22 @@
 // deploy:  node tools/stamp-build.mjs
 //
 // Replaces the `const BUILD = "...";` line in app/index.html and
-// portal/index.html with a fresh PHT timestamp. The sha is the CURRENT HEAD
+// portal/index.html with a fresh US-Eastern (EST/EDT) timestamp. The sha is the CURRENT HEAD
 // (i.e. the commit this build is based on) — good enough to identify the build.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 
 const now = new Date();
-const stamp = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+// US Eastern time. The abbreviation is EST in winter, EDT in summer — we emit the
+// accurate one via Intl rather than hardcoding "EST" (which would be wrong May–Nov).
+const tz = 'America/New_York';
+const datePart = new Intl.DateTimeFormat('en-CA', {
+  timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
   hour: '2-digit', minute: '2-digit', hour12: false,
-}).format(now).replace(',', '') + ' PHT';
+}).format(now).replace(',', '');
+const abbr = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' })
+  .formatToParts(now).find(p => p.type === 'timeZoneName')?.value || 'ET';
+const stamp = `${datePart} ${abbr}`;
 
 let sha = '';
 try { sha = execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch { /* not a git checkout */ }
