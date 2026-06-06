@@ -591,7 +591,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-06 15:19 EDT · 50ae4a7";
+const BUILD = "2026-06-06 15:24 EDT · acb766b";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -5894,21 +5894,25 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     // Without paging, periods beyond the first page would silently go missing.
     const g={};
     const PAGE=1000;
-    for(let from=0; from<50000; from+=PAGE){
-      const {data:te,error}=await client.from("time_entries")
+    const agg=te=>(te||[]).forEach(t=>{
+      const p=periodFor(t.work_date); const key=`${p.start}|${p.end}`;
+      const b=g[key]||(g[key]={start:p.start,end:p.end,payDate:p.payDate,workers:new Set(),sec:0});
+      b.workers.add(t.worker_id||t.source_name);
+      b.sec+=(Number(t.tracked_seconds||0))+(Number(t.pto_seconds||0));
+    });
+    // Count once, then fetch all pages CONCURRENTLY. The old loop paged
+    // SEQUENTIALLY (an await per 1000 rows), multiplying network latency by the
+    // page count — the main reason the first Calculate load occasionally lagged.
+    const {count}=await client.from("time_entries").select("id",{count:"exact",head:true})
+      .eq("company_id",companyId).eq("approval","approved");
+    const reqs=[];
+    for(let from=0; from<(count||0); from+=PAGE){
+      reqs.push(client.from("time_entries")
         .select("worker_id,source_name,work_date,tracked_seconds,pto_seconds")
         .eq("company_id",companyId).eq("approval","approved")
-        .order("work_date",{ascending:true})
-        .range(from,from+PAGE-1);
-      if(error||!te||!te.length) break;
-      te.forEach(t=>{
-        const p=periodFor(t.work_date); const key=`${p.start}|${p.end}`;
-        const b=g[key]||(g[key]={start:p.start,end:p.end,payDate:p.payDate,workers:new Set(),sec:0});
-        b.workers.add(t.worker_id||t.source_name);
-        b.sec+=(Number(t.tracked_seconds||0))+(Number(t.pto_seconds||0));
-      });
-      if(te.length<PAGE) break;
+        .order("work_date",{ascending:true}).range(from,from+PAGE-1));
     }
+    (await Promise.all(reqs)).forEach(({data})=>agg(data));
     const {data:pp}=await client.from("pay_periods")
       .select("id,period_start,period_end,pay_date,state").eq("company_id",companyId);
     const ppByKey={}; (pp||[]).forEach(p=>{ ppByKey[`${p.period_start}|${p.period_end}`]=p; });
