@@ -904,24 +904,43 @@ function useSupabase() {
   const [client, setClient] = useState(null);
   const [session, setSession] = useState(null);   // Supabase Auth session (Google sign-in)
   const [authReady, setAuthReady] = useState(false);
+  const [libTimedOut, setLibTimedOut] = useState(false);  // esm.sh client factory never loaded
   const [creds, setCreds] = useState({
     url: localStorage.getItem(LS_URL) || SUPABASE_URL,
     key: localStorage.getItem(LS_KEY) || SUPABASE_ANON,
   });
   useEffect(() => {
-    if (creds.url && creds.key && window.__createClient) {
+    if (!(creds.url && creds.key)) return;   // no creds (user disconnected) → ConnectScreen
+    let cancelled = false, sub = null, tries = 0;
+    setLibTimedOut(false);
+    // The supabase-js client factory loads as a SEPARATE esm.sh module
+    // (window.__createClient). On a slow/cold network that import can resolve
+    // AFTER React has mounted — so POLL until it's ready instead of giving up
+    // once. The old code checked __createClient a single time and, if it wasn't
+    // there yet, left client=null forever → the app fell back to the Connect
+    // screen (and stranded the OAuth #access_token in the URL) until a manual
+    // reload. This is why it "occasionally" showed Connect, esp. right after the
+    // Google redirect (fresh page load races the esm.sh fetch).
+    const start = () => {
+      if (cancelled) return;
+      if (!window.__createClient) {
+        if (++tries > 200) { setLibTimedOut(true); return; }   // ~10s, then offer Reload
+        setTimeout(start, 50); return;
+      }
       const c = window.__createClient(creds.url, creds.key);
       setClient(c);
       // Pick up an existing session, then subscribe to sign-in/out. The session
       // gates the app; its email becomes the audit actor (replaces "admin").
       setAuthReady(false);
       c.auth.getSession().then(({ data }) => {
+        if (cancelled) return;
         applySession(data?.session || null);
         setAuthReady(true);
-      }).catch(() => setAuthReady(true));
-      const sub = c.auth.onAuthStateChange((_e, s) => applySession(s || null));
-      return () => { try { sub?.data?.subscription?.unsubscribe(); } catch (_e) {} };
-    }
+      }).catch(() => { if (!cancelled) setAuthReady(true); });
+      sub = c.auth.onAuthStateChange((_e, s) => { if (!cancelled) applySession(s || null); });
+    };
+    start();
+    return () => { cancelled = true; try { sub?.data?.subscription?.unsubscribe(); } catch (_e) {} };
   }, [creds]);
   function applySession(s) {
     setSession(s);
@@ -938,7 +957,7 @@ function useSupabase() {
     setCreds({ url: "", key: "" }); setClient(null); setSession(null);
   };
   const signOut = async () => { try { if (client) await client.auth.signOut(); } catch (_e) {} };
-  return { client, session, authReady, creds, connect, disconnect, signOut };
+  return { client, session, authReady, libTimedOut, creds, connect, disconnect, signOut };
 }
 
 function ConnectScreen({ onConnect }) {
@@ -1122,9 +1141,12 @@ function useQuery(client, runner, deps) {
 }
 
 // ============================ COMPANY SWITCHER ===============================
-function CompanySwitcher({ client, companyId, setCompanyId, consolidated, setConsolidated }) {
+function CompanySwitcher({ client, companyId, setCompanyId, consolidated, setConsolidated, companiesNonce }) {
+  // Only ACTIVE companies appear here; archived ones are hidden (managed in
+  // Configuration → Companies). Re-fetches when companiesNonce bumps so a newly
+  // added / archived company shows up without a full reload.
   const { data } = useQuery(client,
-    c => c.from("companies").select("id,name,status").order("name"), [client]);
+    c => c.from("companies").select("id,name,status").eq("status","active").order("name"), [client, companiesNonce]);
   const companies = data || [];
   return (
     <div style={{display:"flex",alignItems:"center",gap:8,marginLeft:"auto"}}>
@@ -10952,12 +10974,194 @@ function CommandPalette({ client, companyId, consolidated, tabGroups, navIcon, g
   );
 }
 
+// ===== Companies management ===============================================
+// Add / rename / archive / delete the companies the app runs payroll for.
+// REMOVE IS ARCHIVE BY DEFAULT (status -> 'inactive'): companies anchor ALL
+// payroll history — payments, pay_periods, rates, time_entries and
+// worker_companies FK to companies ON DELETE CASCADE — so a hard delete of a
+// company with data would WIPE that history. Permanent delete is therefore
+// owner-only and allowed ONLY for a genuinely empty company (typed-confirm);
+// otherwise we offer "Archive instead". Archive hides the company from the
+// switcher but keeps every record; Restore brings it back. Per the ID-first
+// convention, hubstaff_org_id is the stable link the Hubstaff sync matches on.
+function CompaniesModal({ client, isOwner, currentCompanyId, setCompanyId, onChanged, onClose }){
+  const [rows,setRows]=useState(null);
+  const mref=useModalA11y(onClose,{escClose:true, dep:rows!==null});
+  const [busy,setBusy]=useState(false);
+  const [msg,setMsg]=useState("");
+  const [editId,setEditId]=useState("");
+  const [eName,setEName]=useState(""); const [eOrg,setEOrg]=useState("");
+  const [nName,setNName]=useState(""); const [nOrg,setNOrg]=useState("");
+  async function load(){
+    const {data,error}=await client.from("companies").select("id,name,status,hubstaff_org_id").order("name");
+    if(error){ setMsg("Couldn't load companies: "+error.message); setRows([]); return; }
+    setRows(data||[]);
+  }
+  useEffect(()=>{ load(); },[]);  // eslint-disable-line
+  const norm=s=>String(s||"").trim().toLowerCase();
+  const orgNum=s=>{ const t=String(s||"").trim(); if(!t) return null; if(!/^\d+$/.test(t)) return NaN; return Number(t); };
+
+  async function add(){
+    const name=(nName||"").trim();
+    if(!name){ setMsg("Enter a company name."); return; }
+    const org=orgNum(nOrg);
+    if(Number.isNaN(org)){ setMsg("Hubstaff org ID must be a whole number (or blank)."); return; }
+    const cur=rows||[];
+    if(cur.some(c=>norm(c.name)===norm(name))){ setMsg(`A company named "${name}" already exists.`); return; }
+    if(org!=null){ const clash=cur.find(c=>Number(c.hubstaff_org_id)===org); if(clash){ setMsg(`Hubstaff org ${org} is already linked to "${clash.name}".`); return; } }
+    setBusy(true);
+    const {data,error}=await client.from("companies").insert({name, hubstaff_org_id:org}).select("id").maybeSingle();
+    setBusy(false);
+    if(error){ setMsg("Add failed: "+error.message); return; }
+    logEvent(client,{company_id:data&&data.id, action:"company_added", entity:"company "+name, detail:{hubstaff_org_id:org}});
+    setNName(""); setNOrg(""); setMsg(`Added "${name}".`);
+    await load(); onChanged&&onChanged();
+  }
+
+  function startEdit(c){ setEditId(c.id); setEName(c.name); setEOrg(c.hubstaff_org_id!=null?String(c.hubstaff_org_id):""); setMsg(""); }
+  function cancelEdit(){ setEditId(""); setEName(""); setEOrg(""); }
+  async function saveEdit(c){
+    const name=(eName||"").trim();
+    if(!name){ setMsg("Name can't be empty."); return; }
+    const org=orgNum(eOrg);
+    if(Number.isNaN(org)){ setMsg("Hubstaff org ID must be a whole number (or blank)."); return; }
+    const others=(rows||[]).filter(x=>x.id!==c.id);
+    if(others.some(x=>norm(x.name)===norm(name))){ setMsg(`Another company is already named "${name}".`); return; }
+    if(org!=null){ const clash=others.find(x=>Number(x.hubstaff_org_id)===org); if(clash){ setMsg(`Hubstaff org ${org} is linked to "${clash.name}".`); return; } }
+    setBusy(true);
+    const {error}=await client.from("companies").update({name, hubstaff_org_id:org}).eq("id",c.id);
+    setBusy(false);
+    if(error){ setMsg("Save failed: "+error.message); return; }
+    logEvent(client,{company_id:c.id, action:"company_updated", entity:"company "+name, detail:{hubstaff_org_id:org}});
+    cancelEdit(); setMsg(`Saved "${name}".`);
+    await load(); onChanged&&onChanged();
+  }
+
+  async function doSetStatus(c,status){
+    setBusy(true);
+    const {error}=await client.from("companies").update({status}).eq("id",c.id);
+    setBusy(false);
+    if(error){ setMsg("Update failed: "+error.message); return false; }
+    logEvent(client,{company_id:c.id, action:status==="inactive"?"company_archived":"company_restored", entity:"company "+c.name});
+    setMsg(`${status==="inactive"?"Archived":"Restored"} "${c.name}".`);
+    if(status==="inactive" && currentCompanyId===c.id && setCompanyId) setCompanyId(""); // don't strand the switcher on a hidden company
+    await load(); onChanged&&onChanged(); return true;
+  }
+  async function archive(c){
+    const ok=await confirmDanger({ title:`Archive "${c.name}"?`,
+      message:`This hides the company from the switcher and new payroll, but KEEPS all its history (payments, pay periods, time, rates, contractor links). You can Restore it anytime.`,
+      confirmLabel:"Archive company" });
+    if(ok) await doSetStatus(c,"inactive");
+  }
+
+  async function countDeps(id){
+    const tables=["payments","pay_periods","time_entries","rates","worker_companies"];
+    const res=await Promise.all(tables.map(t=>client.from(t).select("*",{count:"exact",head:true}).eq("company_id",id)));
+    const counts={}; let total=0;
+    tables.forEach((t,i)=>{ const n=res[i].count||0; counts[t]=n; total+=n; });
+    return {counts,total};
+  }
+  async function destroy(c){
+    setBusy(true); setMsg("Checking dependent data…");
+    let dep; try{ dep=await countDeps(c.id); }catch(e){ setBusy(false); setMsg("Couldn't check dependent data: "+String((e&&e.message)||e)); return; }
+    setBusy(false); setMsg("");
+    if(dep.total>0){
+      const parts=Object.entries(dep.counts).filter(([,n])=>n>0).map(([t,n])=>`${n} ${t.replace(/_/g," ")}`).join(", ");
+      const goArchive=await confirmDanger({ title:`"${c.name}" has payroll history`,
+        message:`It has ${parts}. Permanently deleting would cascade-delete all of that and erase the history. Archive it instead — that hides the company but keeps every record (Restore anytime).`,
+        confirmLabel: c.status==="active" ? "Archive instead" : "OK" });
+      if(goArchive && c.status==="active") await doSetStatus(c,"inactive");
+      return;
+    }
+    const ok=await confirmDanger({ title:`Permanently delete "${c.name}"?`,
+      message:`This company has no payments, pay periods, time, rates, or contractor links. It will be removed completely. This cannot be undone.`,
+      confirmWord:c.name, confirmLabel:"Delete permanently" });
+    if(!ok) return;
+    setBusy(true);
+    const {error}=await client.from("companies").delete().eq("id",c.id);
+    setBusy(false);
+    if(error){ setMsg("Delete failed: "+error.message); return; }
+    logEvent(client,{action:"company_deleted", entity:"company "+c.name});
+    setMsg(`Deleted "${c.name}".`);
+    if(currentCompanyId===c.id && setCompanyId) setCompanyId("");
+    await load(); onChanged&&onChanged();
+  }
+
+  if(rows===null) return <div className="modal-bg" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}><Skeleton rows={4}/></div></div>;
+  const active=rows.filter(c=>c.status==="active");
+  const archived=rows.filter(c=>c.status!=="active");
+  const badge=s=> s==="active" ? <span className="pill good">Active</span> : <span className="pill">Archived</span>;
+  const orgTxt=c=> c.hubstaff_org_id!=null ? ("Hubstaff org "+c.hubstaff_org_id) : "no Hubstaff link";
+
+  const rowView=(c)=>(
+    <div key={c.id} className="row" style={{justifyContent:"space-between",alignItems:"center",gap:10,borderTop:"1px solid var(--border)",padding:"10px 0",flexWrap:"wrap"}}>
+      {editId===c.id ? (
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",flex:1}}>
+          <input value={eName} onChange={e=>setEName(e.target.value)} placeholder="Company name" style={{minWidth:180}} aria-label="Company name"/>
+          <input value={eOrg} onChange={e=>setEOrg(e.target.value)} placeholder="Hubstaff org ID (optional)" inputMode="numeric" style={{minWidth:160}} aria-label="Hubstaff org ID"/>
+          <button className="btn sm" disabled={busy} onClick={()=>saveEdit(c)}>Save</button>
+          <button className="btn ghost sm" disabled={busy} onClick={cancelEdit}>Cancel</button>
+        </div>
+      ) : (
+        <React.Fragment>
+          <div style={{minWidth:200}}>
+            <div style={{fontWeight:600,display:"flex",alignItems:"center",gap:8}}>{c.name} {badge(c.status)}</div>
+            <div className="sub" style={{fontSize:12}}>{orgTxt(c)}{currentCompanyId===c.id?" · currently selected":""}</div>
+          </div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            <button className="btn ghost sm" disabled={busy} onClick={()=>startEdit(c)}>Edit</button>
+            {c.status==="active"
+              ? <button className="btn ghost sm" disabled={busy} onClick={()=>archive(c)}>Archive</button>
+              : <button className="btn ghost sm" disabled={busy} onClick={()=>doSetStatus(c,"active")}>Restore</button>}
+            {isOwner && <button className="btn danger-outline sm" disabled={busy} onClick={()=>destroy(c)}>Delete</button>}
+          </div>
+        </React.Fragment>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="co-title" onClick={e=>e.stopPropagation()}
+           style={{maxWidth:680,maxHeight:"86vh",overflowY:"auto"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <h2 id="co-title" style={{margin:0}}>Companies</h2>
+          <button className="btn ghost sm" onClick={onClose}>Close</button>
+        </div>
+        <p className="sub" style={{marginTop:6}}>Add a company, set its Hubstaff org link, or archive one. Archiving keeps all payroll history{isOwner?"; permanent delete is only for empty companies":""}.</p>
+        {msg && <div className="banner info" style={{margin:"10px 0"}}>{msg}</div>}
+
+        <div className="card" style={{marginTop:6}}>
+          <b>Add a company</b>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginTop:8}}>
+            <input value={nName} onChange={e=>setNName(e.target.value)} placeholder="Company name (required)" style={{minWidth:200,flex:1}} aria-label="New company name"/>
+            <input value={nOrg} onChange={e=>setNOrg(e.target.value)} placeholder="Hubstaff org ID (optional)" inputMode="numeric" style={{minWidth:170}} aria-label="New company Hubstaff org ID"/>
+            <button className="btn" disabled={busy||!nName.trim()} onClick={add}>Add</button>
+          </div>
+          <div className="sub" style={{fontSize:11.5,marginTop:6}}>Hubstaff org ID links the company for time sync (ID-first matching). Find it in Hubstaff → Organization settings, or leave blank and set it later via Edit.</div>
+        </div>
+
+        <div style={{marginTop:14}}>
+          <div className="ov-tile-label" style={{marginBottom:2}}>Active ({active.length})</div>
+          {active.length ? active.map(rowView) : <div className="sub" style={{padding:"8px 0"}}>No active companies.</div>}
+        </div>
+        {archived.length>0 && (
+          <div style={{marginTop:16}}>
+            <div className="ov-tile-label" style={{marginBottom:2}}>Archived ({archived.length})</div>
+            {archived.map(rowView)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Configuration tab — one home for the admin config + global maintenance tools.
 // Portal Fields / Agreement Templates / Onboarding Configuration open the same
 // modals used elsewhere; the Wise admin tools (Backfill all paid periods, Email
 // cross-check, Cross-system drift) live in WiseReconciliation.
-function Configuration({ client, companyId, consolidated }){
-  const [show,setShow]=useState("");   // "" | "portal" | "tpl" | "cfg"
+function Configuration({ client, companyId, consolidated, isOwner, setCompanyId, onCompaniesChanged }){
+  const [show,setShow]=useState("");   // "" | "companies" | "portal" | "tpl" | "cfg"
   const Row=({title,desc,onClick})=>(
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,borderTop:"1px solid var(--border)",padding:"10px 0",flexWrap:"wrap"}}>
       <div><b>{title}</b><div className="sub" style={{fontSize:12,maxWidth:560}}>{desc}</div></div>
@@ -10969,12 +11173,14 @@ function Configuration({ client, companyId, consolidated }){
       <div className="card">
         <h2 style={{marginTop:0}}>Configuration</h2>
         <p className="sub">Admin setup and global maintenance tools.</p>
+        <Row title="Companies" desc="Add a company, set its Hubstaff org link, or archive/remove one. Archiving keeps all payroll history." onClick={()=>setShow("companies")}/>
         <Row title="Portal Fields" desc="Choose which profile fields contractors can edit in the self-service portal." onClick={()=>setShow("portal")}/>
         <Row title="Agreement Templates" desc="Edit the wording of the onboarding agreements (IC, Non-Compete, NDA, BAA)." onClick={()=>setShow("tpl")}/>
         <Row title="Onboarding Configuration" desc="Turn onboarding on/off and set the required documents and agreements." onClick={()=>setShow("cfg")}/>
       </div>
       {/* Backfill all paid periods · Email cross-check · Cross-system drift */}
       <WiseReconciliation client={client} companyId={companyId} consolidated={consolidated}/>
+      {show==="companies" && <CompaniesModal client={client} isOwner={isOwner} currentCompanyId={companyId} setCompanyId={setCompanyId} onChanged={onCompaniesChanged} onClose={()=>setShow("")}/>}
       {show==="portal" && <PortalSettingsModal client={client} onClose={()=>setShow("")}/>}
       {show==="tpl" && <AgreementTemplatesModal client={client} onClose={()=>setShow("")}/>}
       {show==="cfg" && <OnboardingConfigModal client={client} onClose={()=>setShow("")}/>}
@@ -11010,7 +11216,11 @@ function App() {
   },[sb.session]);
   const [companyId, setCompanyId] = useState(localStorage.getItem("sel_company")||"");
   const [consolidated, setConsolidated] = useState(false);
-  useEffect(()=>{ if(companyId) localStorage.setItem("sel_company",companyId); },[companyId]);
+  useEffect(()=>{ if(companyId) localStorage.setItem("sel_company",companyId); else localStorage.removeItem("sel_company"); },[companyId]);
+  // Bumped when companies are added/archived/deleted (Configuration → CompaniesModal)
+  // so the CompanySwitcher re-fetches its list without a full reload.
+  const [companiesNonce,setCompaniesNonce]=useState(0);
+  const bumpCompanies=React.useCallback(()=>setCompaniesNonce(n=>n+1),[]);
 
   // Session-scoped "billing dirty" tracker: ProfileModal pushes a record into
   // billingDirty whenever a billing-relevant field (rate, payout method, Wise
@@ -11099,7 +11309,21 @@ function App() {
     return ()=>{ live=false; };
   },[sb.client, sb.session?.user?.id, roleNonce]);   // re-run on real user change / explicit retry — NOT on every token refresh
 
-  if (!sb.client) return <ConnectScreen onConnect={sb.connect} />;
+  if (!sb.client) {
+    // Credentials are built-in, so a null client means the supabase-js module is
+    // still loading from esm.sh — show Loading (or a Reload prompt if the CDN
+    // never answered), NOT the Connect screen. Connect only appears when creds
+    // are genuinely absent (the user explicitly disconnected).
+    if (sb.creds.url && sb.creds.key) return (
+      <div className="connect"><div className="card">
+        {sb.libTimedOut
+          ? <><p className="sub">Couldn't load the app — check your connection, then reload.</p>
+              <button className="btn" style={{width:"100%"}} onClick={()=>window.location.reload()}>Reload</button></>
+          : <p className="sub">Loading…</p>}
+      </div></div>
+    );
+    return <ConnectScreen onConnect={sb.connect} />;
+  }
   if (!sb.authReady) return <div className="connect"><div className="card"><p className="sub">Loading…</p></div></div>;
   if (!sb.session) return <SignInScreen client={sb.client} onBack={sb.disconnect} />;
   if (myAdminRole===undefined) return <div className="connect"><div className="card"><p className="sub">Checking access…</p></div></div>;
@@ -11134,7 +11358,7 @@ function App() {
           HR &amp; Payroll<small>PH independent contractors</small></h1>
         <div className="topbar-actions">
           <button className="btn ghost sm" onClick={()=>setPaletteOpen(true)} title="Quick find (⌘K / Ctrl-K)" aria-label="Quick find">🔎 Find</button>
-          <div className="company-switcher"><CompanySwitcher {...{client:sb.client,companyId,setCompanyId,consolidated,setConsolidated}} /></div>
+          <div className="company-switcher"><CompanySwitcher {...{client:sb.client,companyId,setCompanyId,consolidated,setConsolidated,companiesNonce}} /></div>
           {sb.session?.user?.email && <span className="sub" style={{fontSize:12,whiteSpace:"nowrap"}} title="Signed in">{sb.session.user.email}</span>}
           {isOwner && <button className="btn ghost sm" onClick={()=>setShowAdmins(true)}>Admins</button>}
           <button className="btn ghost sm" onClick={async()=>{ if(unsavedDirty() && !(await confirmUnsaved())) return; sb.signOut(); }}>Sign out</button>
@@ -11179,7 +11403,7 @@ function App() {
         <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="onboarding"?"block":"none"}}><OnboardingAdmin {...{client:sb.client,companyId,consolidated,active:tab==="onboarding"}} /></div>
-        {tab==="configuration" && <ErrorBoundary><Configuration {...{client:sb.client,companyId,consolidated}} /></ErrorBoundary>}
+        {tab==="configuration" && <ErrorBoundary><Configuration {...{client:sb.client,companyId,consolidated,isOwner,setCompanyId,onCompaniesChanged:bumpCompanies}} /></ErrorBoundary>}
         <div className="no-print" style={{textAlign:"center",color:"var(--muted)",fontSize:11,padding:"18px 0 32px",letterSpacing:".02em"}}>Build {BUILD}</div>
       </main>
       </div>{/* /shell */}

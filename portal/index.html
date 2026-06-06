@@ -328,16 +328,26 @@ function stepOf(prog){
 }
 
 function useClient(){
-  const [client]=useState(()=> window.__createClient ? window.__createClient(SUPABASE_URL,SUPABASE_ANON) : null);
+  const [client,setClient]=useState(null);
   const [session,setSession]=useState(null);
   const [ready,setReady]=useState(false);
   useEffect(()=>{
-    if(!client){ return; }
-    let sub;
-    client.auth.getSession().then(({data})=>{ setSession(data?.session||null); setReady(true); });
-    sub=client.auth.onAuthStateChange((_e,s)=>setSession(s||null));
-    return ()=>{ try{ sub?.data?.subscription?.unsubscribe(); }catch(_e){} };
-  },[client]);
+    let cancelled=false, sub=null;
+    // supabase-js loads as a SEPARATE esm.sh module (window.__createClient). On a
+    // slow/cold network that import can resolve AFTER React mounts — so POLL
+    // until it's ready instead of capturing it once. The old one-shot useState
+    // initializer left client=null forever when the module wasn't ready yet,
+    // stranding the portal on its loading screen until a manual reload.
+    (function init(){
+      if(cancelled) return;
+      if(!window.__createClient){ setTimeout(init,50); return; }
+      const c=window.__createClient(SUPABASE_URL,SUPABASE_ANON);
+      setClient(c);
+      c.auth.getSession().then(({data})=>{ if(!cancelled){ setSession(data?.session||null); setReady(true); } });
+      sub=c.auth.onAuthStateChange((_e,s)=>{ if(!cancelled) setSession(s||null); });
+    })();
+    return ()=>{ cancelled=true; try{ sub?.data?.subscription?.unsubscribe(); }catch(_e){} };
+  },[]);
   return { client, session, ready };
 }
 
