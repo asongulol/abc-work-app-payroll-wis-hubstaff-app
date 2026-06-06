@@ -58,6 +58,35 @@ Deno.serve(async (req) => {
   try {
     if (!SB_URL || !SB_KEY) return json({ error: "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set" }, 500);
     const body = await req.json().catch(() => ({}));
+
+    // --- caller authorization -------------------------------------------------
+    // Schedule-driven, service-role read of contractor PII (names + companies +
+    // document kinds). Require the cron secret (for the scheduled job) OR a valid
+    // admin JWT (for an ad-hoc admin call). Never open to the bare anon key.
+    {
+      let authed = false;
+      const cronSecret = req.headers.get("x-cron-secret");
+      if (cronSecret) {
+        const sRes = await fetch(`${SB_URL}/rest/v1/app_secrets?key=eq.cron_secret&select=value`, { headers: restHdr });
+        const secrets = await sRes.json().catch(() => []);
+        const expected = Array.isArray(secrets) && secrets[0]?.value;
+        if (!expected || cronSecret !== expected) return json({ error: "invalid cron secret" }, 401);
+        authed = true;
+      }
+      if (!authed) {
+        const bearer = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+        if (!bearer) return json({ error: "missing auth" }, 401);
+        const uRes = await fetch(`${SB_URL}/auth/v1/user`, { headers: { Authorization: `Bearer ${bearer}`, apikey: SB_KEY } });
+        if (!uRes.ok) return json({ error: "invalid session" }, 401);
+        const caller = await uRes.json().catch(() => null);
+        if (!caller?.id) return json({ error: "invalid session" }, 401);
+        const aRes = await fetch(`${SB_URL}/rest/v1/admin_users?user_id=eq.${caller.id}&select=user_id`, { headers: restHdr });
+        const admins = await aRes.json().catch(() => []);
+        if (!Array.isArray(admins) || !admins.length) return json({ error: "not authorized — admins only" }, 403);
+      }
+    }
+    // --------------------------------------------------------------------------
+
     const withinDays = Number(body.within_days ?? 30);
     const today = new Date();
 
