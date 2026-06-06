@@ -692,12 +692,17 @@ function DocsView({ client, session, od }){
   );
 }
 
+// Dropdown choices for the Personal section. Years run from the current year
+// back 60. The renderers keep any existing value that isn't in the list.
+const REL_OPTS=["Parent","Spouse","Sibling","Child","Grandparent","Relative","Friend","Partner","Guardian","Other"];
+const MARITAL_OPTS=["Single","Married","Widowed","Separated","Annulled","Divorced"];
+const GRAD_YEARS=(()=>{ const y=new Date().getFullYear(); return Array.from({length:60},(_,i)=>String(y-i)); })();
 const FIELD_DEFS = [
   {k:"first_name",label:"First name",s:"contact"}, {k:"middle_name",label:"Middle name",s:"contact"}, {k:"last_name",label:"Last name",s:"contact"},
   {k:"mobile",label:"Mobile",type:"tel",s:"contact"}, {k:"ph_address",label:"Current PH address",s:"contact"}, {k:"permanent_address",label:"Permanent address",s:"contact"},
   {k:"address_landmark",label:"Landmark",s:"contact"}, {k:"postal_code",label:"Postal code",s:"contact"}, {k:"date_of_birth",label:"Date of birth",type:"date",s:"contact"},
-  {k:"emergency_name",label:"Emergency contact name",s:"personal"}, {k:"emergency_relationship",label:"Emergency contact relationship",s:"personal"}, {k:"emergency_mobile",label:"Emergency contact mobile",type:"tel",s:"personal"},
-  {k:"marital_status",label:"Marital status",s:"personal"}, {k:"education_level",label:"Highest Degree Attained",s:"personal",opts:["Elementary","High School","Some College","College","Masters","Doctorate"]}, {k:"course",label:"Degree and Major",s:"personal"}, {k:"year_graduated",label:"Year graduated",s:"personal"}, {k:"school",label:"School",s:"personal"},
+  {k:"emergency_name",label:"Emergency contact name",s:"personal"}, {k:"emergency_relationship",label:"Emergency contact relationship",s:"personal",opts:REL_OPTS}, {k:"emergency_mobile",label:"Emergency contact mobile",type:"tel",s:"personal"},
+  {k:"marital_status",label:"Marital status",s:"personal",opts:MARITAL_OPTS}, {k:"education_level",label:"Highest Degree Attained",s:"personal",opts:["Elementary","High School","Some College","College","Masters","Doctorate"]}, {k:"course",label:"Degree and Major",s:"personal"}, {k:"year_graduated",label:"Year graduated",s:"personal",opts:GRAD_YEARS}, {k:"school",label:"School",s:"personal"},
   {k:"gcash",label:"GCash",s:"payout"}, {k:"paymaya",label:"PayMaya",s:"payout"}, {k:"paypal",label:"PayPal",s:"payout"}, {k:"wise_tag",label:"Wise Tag",wise:true,s:"payout"},
   // "Culture" / fun facts — stored in the profile_extras jsonb (ex:true), not flat columns
   {k:"nickname",label:"Nickname",s:"about",ex:true}, {k:"favorite_color",label:"Favorite color",s:"about",ex:true}, {k:"favorite_food",label:"Favorite food",s:"about",ex:true}, {k:"tshirt_size",label:"T-shirt size",s:"about",ex:true}, {k:"shoe_size",label:"Shoe size",s:"about",ex:true}, {k:"hobbies",label:"Hobbies",s:"about",ex:true}, {k:"motto",label:"Personal motto",s:"about",ex:true},

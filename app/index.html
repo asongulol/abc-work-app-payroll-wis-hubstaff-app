@@ -2356,6 +2356,11 @@ function Field({label,children}){return(
   <div className="field"><label>{label}</label><div className="val">{children||<span className="muted">—</span>}</div></div>
 );}
 
+// Dropdown choices for the Personal / HR tab (kept in sync with the portal's).
+// Years run from the current year back 60; selects keep any existing off-list value.
+const REL_OPTS=["Parent","Spouse","Sibling","Child","Grandparent","Relative","Friend","Partner","Guardian","Other"];
+const MARITAL_OPTS=["Single","Married","Widowed","Separated","Annulled","Divorced"];
+const GRAD_YEARS=(()=>{ const y=new Date().getFullYear(); return Array.from({length:60},(_,i)=>String(y-i)); })();
 function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   const close=guardedClose(onClose);   // prompt to Save/Discard if there are unsaved edits
   const mref=useModalA11y(close,{escClose:false}); // data-entry form: no Escape-close (don't lose edits)
@@ -2916,19 +2921,19 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
           <summary style={{cursor:"pointer",fontWeight:600}}>Personal / HR details <span className="muted" style={{fontWeight:400,fontSize:12}}>(editable · also self-maintained via the portal)</span></summary>
           <div className="row" style={{marginTop:8}}>
             <div className="field"><label>Emergency contact</label><input style={inp} value={f.emergency_name} onChange={e=>set("emergency_name",e.target.value)}/></div>
-            <div className="field"><label>Relationship</label><input style={inp} value={f.emergency_relationship} onChange={e=>set("emergency_relationship",e.target.value)}/></div>
+            <div className="field"><label>Relationship</label><select style={inp} value={f.emergency_relationship} onChange={e=>set("emergency_relationship",e.target.value)}><option value="">Select…</option>{REL_OPTS.map(o=><option key={o} value={o}>{o}</option>)}{f.emergency_relationship&&!REL_OPTS.includes(f.emergency_relationship)&&<option value={f.emergency_relationship}>{f.emergency_relationship}</option>}</select></div>
             <div className="field"><label>Emergency mobile</label><input style={inp} type="tel" value={f.emergency_mobile} onChange={e=>set("emergency_mobile",e.target.value)}/></div>
           </div>
           <div className="field"><label>Permanent address</label><input style={inp} value={f.permanent_address} onChange={e=>set("permanent_address",e.target.value)}/></div>
           <div className="row">
             <div className="field"><label>Landmark</label><input style={inp} value={f.address_landmark} onChange={e=>set("address_landmark",e.target.value)}/></div>
             <div className="field"><label>Postal code</label><input style={inp} value={f.postal_code} onChange={e=>set("postal_code",e.target.value)}/></div>
-            <div className="field"><label>Marital status</label><input style={inp} value={f.marital_status} onChange={e=>set("marital_status",e.target.value)}/></div>
+            <div className="field"><label>Marital status</label><select style={inp} value={f.marital_status} onChange={e=>set("marital_status",e.target.value)}><option value="">Select…</option>{MARITAL_OPTS.map(o=><option key={o} value={o}>{o}</option>)}{f.marital_status&&!MARITAL_OPTS.includes(f.marital_status)&&<option value={f.marital_status}>{f.marital_status}</option>}</select></div>
           </div>
           <div className="row">
             <div className="field"><label>Education level</label><input style={inp} value={f.education_level} onChange={e=>set("education_level",e.target.value)}/></div>
             <div className="field"><label>Course</label><input style={inp} value={f.course} onChange={e=>set("course",e.target.value)}/></div>
-            <div className="field"><label>Year graduated</label><input style={inp} value={f.year_graduated} onChange={e=>set("year_graduated",e.target.value)}/></div>
+            <div className="field"><label>Year graduated</label><select style={inp} value={f.year_graduated} onChange={e=>set("year_graduated",e.target.value)}><option value="">Select…</option>{GRAD_YEARS.map(o=><option key={o} value={o}>{o}</option>)}{f.year_graduated&&!GRAD_YEARS.includes(String(f.year_graduated))&&<option value={f.year_graduated}>{f.year_graduated}</option>}</select></div>
             <div className="field"><label>School</label><input style={inp} value={f.school} onChange={e=>set("school",e.target.value)}/></div>
           </div>
           <div style={{fontWeight:600,fontSize:13,color:"var(--muted)",margin:"10px 0 2px"}}>About / culture <span style={{fontWeight:400}}>(fun facts — contractors can fill these in during onboarding)</span></div>
