@@ -397,3 +397,92 @@ drop trigger if exists trg_payments_lock_enforce on payments;
 create trigger trg_payments_lock_enforce
 before update on payments
 for each row execute function payments_lock_enforce();
+
+-- ============================================================================
+-- Admin → company scoping (2026-06-06; full RLS enforcement, incl. worker PII)
+-- Supersedes the is_admin() admin policies above with per-company scoping:
+-- owners see everything, a non-owner admin sees only the companies assigned to
+-- them in admin_companies (nothing until assigned). Contractor (my_worker_id)
+-- policies are unchanged. See schema/migrations/2026-06-06_admin_company_scoping.sql
+-- (incl. verbatim rollback). Applied to prod 2026-06-06 after JWT-sim dry-run.
+-- ============================================================================
+create table if not exists admin_companies (
+  admin_email text not null,
+  company_id  uuid not null references companies(id) on delete cascade,
+  added_at    timestamptz not null default now(),
+  added_by    uuid,
+  primary key (admin_email, company_id)
+);
+create index if not exists admin_companies_email_idx on admin_companies (lower(admin_email));
+alter table admin_companies enable row level security;
+drop policy if exists admin_companies_owner_all on admin_companies;
+create policy admin_companies_owner_all on admin_companies for all to authenticated
+  using (is_owner()) with check (is_owner());
+drop policy if exists admin_companies_read_self on admin_companies;
+create policy admin_companies_read_self on admin_companies for select to authenticated
+  using (lower(admin_email) = (select lower(email) from admin_users where user_id = auth.uid()));
+
+-- owner OR caller assigned to this company
+create or replace function is_company_admin(cid uuid) returns boolean
+  language sql stable security definer set search_path = public as $$
+  select is_owner() or (cid is not null and exists (
+    select 1 from admin_companies ac
+    where ac.company_id = cid
+      and lower(ac.admin_email) = (select lower(email) from admin_users where user_id = auth.uid())
+  ));
+$$;
+-- owner OR caller assigned to a company this worker is linked to
+create or replace function admin_can_see_worker(wid uuid) returns boolean
+  language sql stable security definer set search_path = public as $$
+  select is_owner() or (wid is not null and exists (
+    select 1 from worker_companies wc
+    where wc.worker_id = wid and is_company_admin(wc.company_id)
+  ));
+$$;
+-- lets a scoped admin read back a worker they just created (INSERT…RETURNING)
+alter table workers add column if not exists created_by uuid default auth.uid();
+
+-- company_id-scoped admin policies
+do $$
+declare t text;
+begin
+  foreach t in array array['companies','audit_log','documents','pay_periods',
+                           'payments','rates','time_entries','worker_companies']
+  loop
+    execute format('drop policy if exists %I_admin_all on %I;', t, t);
+    if t = 'companies' then
+      execute 'create policy companies_admin_all on companies for all to authenticated using (is_company_admin(id)) with check (is_company_admin(id));';
+    else
+      execute format(
+        'create policy %I_admin_all on %I for all to authenticated using (is_company_admin(company_id)) with check (is_company_admin(company_id));', t, t);
+    end if;
+  end loop;
+end$$;
+
+-- workers: split so any admin may INSERT (they link to their company next), and
+-- the creator can read/update the row they just inserted (created_by).
+drop policy if exists workers_admin_all    on workers;
+drop policy if exists workers_admin_select on workers;
+drop policy if exists workers_admin_insert on workers;
+drop policy if exists workers_admin_update on workers;
+drop policy if exists workers_admin_delete on workers;
+create policy workers_admin_select on workers for select to authenticated using (admin_can_see_worker(id) or created_by = auth.uid());
+create policy workers_admin_insert on workers for insert to authenticated with check (is_admin());
+create policy workers_admin_update on workers for update to authenticated using (admin_can_see_worker(id) or created_by = auth.uid()) with check (admin_can_see_worker(id) or created_by = auth.uid());
+create policy workers_admin_delete on workers for delete to authenticated using (admin_can_see_worker(id));
+
+-- worker-keyed PII tables: scope the admin reach via worker_companies
+drop policy if exists contractor_logins_self on contractor_logins;
+create policy contractor_logins_self on contractor_logins for select to authenticated using (auth_user_id = auth.uid() or admin_can_see_worker(worker_id));
+drop policy if exists onboarding_progress_read on onboarding_progress;
+create policy onboarding_progress_read on onboarding_progress for select to authenticated using (worker_id = my_worker_id() or admin_can_see_worker(worker_id));
+drop policy if exists onboarding_progress_admin_write on onboarding_progress;
+create policy onboarding_progress_admin_write on onboarding_progress for all to authenticated using (admin_can_see_worker(worker_id)) with check (admin_can_see_worker(worker_id));
+drop policy if exists onboarding_agreements_admin_all on onboarding_agreements;
+create policy onboarding_agreements_admin_all on onboarding_agreements for all to authenticated using (admin_can_see_worker(worker_id)) with check (admin_can_see_worker(worker_id));
+drop policy if exists onboarding_signatures_read on onboarding_signatures;
+create policy onboarding_signatures_read on onboarding_signatures for select to authenticated using (worker_id = my_worker_id() or admin_can_see_worker(worker_id));
+drop policy if exists mood_self_read on mood_checkins;
+create policy mood_self_read on mood_checkins for select to authenticated using (worker_id = my_worker_id() or admin_can_see_worker(worker_id));
+drop policy if exists portal_notifications_read on portal_notifications;
+create policy portal_notifications_read on portal_notifications for select to authenticated using (worker_id = my_worker_id() or admin_can_see_worker(worker_id));

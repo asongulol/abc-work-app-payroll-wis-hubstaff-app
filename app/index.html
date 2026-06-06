@@ -1047,6 +1047,8 @@ function AdminsModal({ client, meId, onClose }) {
   const mref=useModalA11y(onClose,{escClose:true});
   const [rows,setRows]=useState(null);
   const [pending,setPending]=useState([]);
+  const [companies,setCompanies]=useState([]);     // active companies, for the picker
+  const [assigns,setAssigns]=useState([]);          // [{admin_email, company_id}] (owner reads all)
   const [email,setEmail]=useState(""); const [role,setRole]=useState("admin");
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [note,setNote]=useState("");
   function load(){
@@ -1054,8 +1056,43 @@ function AdminsModal({ client, meId, onClose }) {
       .then(({data,error})=>{ if(error){ setMsg("Couldn't load the admin list: "+error.message); setRows([]); } else setRows(data||[]); });
     client.from("pending_admins").select("email,role,added_at").order("added_at")
       .then(({data})=>setPending(data||[]));
+    client.from("companies").select("id,name,status").order("name").then(({data})=>setCompanies(data||[]));
+    client.from("admin_companies").select("admin_email,company_id").then(({data})=>setAssigns(data||[]));
   }
   useEffect(load,[]);
+  // company assignment (admin_companies is owner-RLS; email-keyed so it covers
+  // pending invites too). A non-owner admin sees ONLY their assigned companies
+  // (enforced by RLS); owners see everything.
+  const assignedSet=(em)=> new Set(assigns.filter(a=>String(a.admin_email).toLowerCase()===String(em||"").toLowerCase()).map(a=>a.company_id));
+  async function toggleCompany(em, companyId, on){
+    const e=String(em||"").toLowerCase();
+    setBusy(true); setMsg("");
+    try{
+      if(on){ const {error}=await client.from("admin_companies").insert({admin_email:e, company_id:companyId, added_by:meId}); if(error) throw error; }
+      else  { const {error}=await client.from("admin_companies").delete().eq("admin_email",e).eq("company_id",companyId); if(error) throw error; }
+      const {data}=await client.from("admin_companies").select("admin_email,company_id"); setAssigns(data||[]);
+    }catch(ex){ setMsg("Couldn't update companies: "+(ex.message||String(ex))); }
+    finally{ setBusy(false); }
+  }
+  const activeCompanies=companies.filter(c=>c.status==="active");
+  // chips of companies for a non-owner admin/pending (toggle = grant/revoke)
+  function companyPicker(em){
+    const set=assignedSet(em);
+    return (
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginTop:6}}>
+        <span className="muted" style={{fontSize:11}}>Companies:</span>
+        {activeCompanies.length===0 && <span className="muted" style={{fontSize:11}}>add a company first</span>}
+        {activeCompanies.map(c=>{ const on=set.has(c.id); return (
+          <button key={c.id} type="button" disabled={busy} aria-pressed={on} onClick={()=>toggleCompany(em,c.id,!on)}
+            style={{fontSize:11,padding:"3px 9px",borderRadius:999,cursor:"pointer",lineHeight:1.4,
+              border:"1px solid "+(on?"var(--navy)":"var(--border)"), background:on?"var(--navy)":"#fff", color:on?"#fff":"var(--text)"}}>
+            {on?"✓ ":""}{c.name}
+          </button>
+        );})}
+        {activeCompanies.length>0 && set.size===0 && <span style={{fontSize:11,color:"var(--bad)"}}>no access until assigned</span>}
+      </div>
+    );
+  }
   async function call(action, extra){
     setBusy(true); setMsg(""); setNote("");
     try{
@@ -1079,7 +1116,10 @@ function AdminsModal({ client, meId, onClose }) {
   async function changeRole(user_id, newRole){ if(await call("set_role",{ user_id, role:newRole })) load(); }
   async function remove(user_id, em){
     if(!window.confirm(user_id ? `Remove admin access for ${em}? They'll keep their Google account but lose access to this app.` : `Cancel the pending invite for ${em}?`)) return;
-    if(await call("remove_admin", user_id ? { user_id } : { email: em })) load();
+    if(await call("remove_admin", user_id ? { user_id } : { email: em })){
+      try{ await client.from("admin_companies").delete().eq("admin_email",String(em||"").toLowerCase()); }catch(_e){} // tidy up their assignments
+      load();
+    }
   }
   return (
     <div className="modal-bg" onClick={onClose}>
@@ -1088,7 +1128,7 @@ function AdminsModal({ client, meId, onClose }) {
           <h2 id="adm-title" style={{margin:0}}>Admins</h2>
           <button className="btn ghost sm" onClick={onClose}>Close</button>
         </div>
-        <p className="sub">Add anyone by their work email — even before they've signed in. They get access the moment they first sign in with Google (allowed domains: <b>abckidsny.com</b>, <b>abbilabs.com</b>). <b>Owners</b> manage this list; <b>admins</b> have full app access but can't.</p>
+        <p className="sub">Add anyone by their work email — even before they've signed in. They get access the moment they first sign in with Google (allowed domains: <b>abckidsny.com</b>, <b>abbilabs.com</b>). <b>Owners</b> manage this list and see all companies; <b>admins</b> see only the companies you assign below (and nothing until you assign at least one).</p>
         <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",margin:"8px 0"}}>
           <input style={{flex:1,minWidth:200,padding:"6px 8px"}} type="email" placeholder="name@abckidsny.com" value={email}
                  onChange={e=>setEmail(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter"&&!busy) add(); }} />
@@ -1100,22 +1140,32 @@ function AdminsModal({ client, meId, onClose }) {
         {rows===null ? <Skeleton rows={3}/> :
           <div style={{marginTop:8}}>
             {rows.map(a=>(
-              <div key={a.user_id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,borderTop:"1px solid #e5e7eb",padding:"8px 0",flexWrap:"wrap"}}>
-                <div><b>{a.email}</b> <span className="pill" style={{marginLeft:6}}>{a.role}</span>{a.user_id===meId && <span className="muted" style={{fontSize:11,marginLeft:6}}>(you)</span>}</div>
-                {a.user_id===meId
-                  ? <span className="muted" style={{fontSize:11}}>another owner manages your access</span>
-                  : <div style={{display:"flex",gap:6}}>
-                      {a.role==="admin"
-                        ? <button className="btn ghost sm" disabled={busy} onClick={()=>changeRole(a.user_id,"owner")}>Make owner</button>
-                        : <button className="btn ghost sm" disabled={busy} onClick={()=>changeRole(a.user_id,"admin")}>Make admin</button>}
-                      <button className="btn ghost sm" disabled={busy} onClick={()=>remove(a.user_id,a.email)}>Remove</button>
-                    </div>}
+              <div key={a.user_id} style={{borderTop:"1px solid #e5e7eb",padding:"8px 0"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                  <div><b>{a.email}</b> <span className="pill" style={{marginLeft:6}}>{a.role}</span>{a.user_id===meId && <span className="muted" style={{fontSize:11,marginLeft:6}}>(you)</span>}</div>
+                  {a.user_id===meId
+                    ? <span className="muted" style={{fontSize:11}}>another owner manages your access</span>
+                    : <div style={{display:"flex",gap:6}}>
+                        {a.role==="admin"
+                          ? <button className="btn ghost sm" disabled={busy} onClick={()=>changeRole(a.user_id,"owner")}>Make owner</button>
+                          : <button className="btn ghost sm" disabled={busy} onClick={()=>changeRole(a.user_id,"admin")}>Make admin</button>}
+                        <button className="btn ghost sm" disabled={busy} onClick={()=>remove(a.user_id,a.email)}>Remove</button>
+                      </div>}
+                </div>
+                {a.role==="owner"
+                  ? <div className="muted" style={{fontSize:11,marginTop:4}}>Owner · all companies</div>
+                  : companyPicker(a.email)}
               </div>
             ))}
             {pending.map(p=>(
-              <div key={"pending:"+p.email} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,borderTop:"1px solid #e5e7eb",padding:"8px 0",flexWrap:"wrap"}}>
-                <div><b>{p.email}</b> <span className="pill" style={{marginLeft:6,background:"#fef3c7",color:"#92400e"}}>{p.role} · invited</span> <span className="muted" style={{fontSize:11,marginLeft:6}}>hasn't signed in yet</span></div>
-                <button className="btn ghost sm" disabled={busy} onClick={()=>remove(null,p.email)}>Remove</button>
+              <div key={"pending:"+p.email} style={{borderTop:"1px solid #e5e7eb",padding:"8px 0"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                  <div><b>{p.email}</b> <span className="pill" style={{marginLeft:6,background:"#fef3c7",color:"#92400e"}}>{p.role} · invited</span> <span className="muted" style={{fontSize:11,marginLeft:6}}>hasn't signed in yet</span></div>
+                  <button className="btn ghost sm" disabled={busy} onClick={()=>remove(null,p.email)}>Remove</button>
+                </div>
+                {p.role==="owner"
+                  ? <div className="muted" style={{fontSize:11,marginTop:4}}>Owner · all companies</div>
+                  : companyPicker(p.email)}
               </div>
             ))}
           </div>}
