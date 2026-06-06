@@ -1,23 +1,24 @@
 # Response headers for the served app/ files (honored by Cloudflare Pages and
 # Workers static assets). Keep the app out of search indexes + basic hardening.
 #
-# Content-Security-Policy is shipped in REPORT-ONLY mode (M2). The app compiles
-# itself in-browser with Babel-standalone (needs 'unsafe-eval') and renders an
-# inline <script type="text/babel"> block plus the kill-switch + module import
-# (needs 'unsafe-inline'), so the realistic protection here is host-allowlisting
-# external scripts/connections — NOT inline-script blocking. Report-only never
-# blocks anything; it just posts console violations so we can confirm the
-# allowlist is complete before flipping to an enforcing `Content-Security-Policy`.
+# Content-Security-Policy is ENFORCING (M2, flipped 2026-06-06 after a code audit
+# of every loaded resource + a report-only run). The app compiles itself in-browser
+# with Babel-standalone (needs 'unsafe-eval') and renders an inline
+# <script type="text/babel"> block plus the kill-switch + module import (needs
+# 'unsafe-inline'), so the realistic protection here is host-allowlisting external
+# scripts/connections, not inline-script blocking. Anything not allowlisted is now
+# BLOCKED. To debug a regression, temporarily rename this to
+# `Content-Security-Policy-Report-Only` (logs without blocking).
 # Hosts: cdnjs (React/ReactDOM/Babel), esm.sh (supabase-js), *.supabase.co
 # (REST/realtime/storage/functions), app.hubstaff.com + open.er-api.com (FX) for
-# fetches, accounts.google.com for the OAuth redirect, and *.cloudflareinsights.com
-# for Cloudflare's auto-injected Web Analytics beacon (script + its RUM POST).
+# fetches, accounts.google.com for the OAuth redirect, *.cloudflareinsights.com for
+# Cloudflare's auto-injected Web Analytics beacon, and img blob: for avatar upload.
 /*
   X-Robots-Tag: noindex, nofollow
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
-  Content-Security-Policy-Report-Only: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://esm.sh https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: https:; font-src 'self' data: https://cdnjs.cloudflare.com; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://app.hubstaff.com https://open.er-api.com https://esm.sh https://cloudflareinsights.com; form-action 'self' https://accounts.google.com; frame-src 'self' https://accounts.google.com
+  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://esm.sh https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: https: blob:; font-src 'self' data: https://cdnjs.cloudflare.com; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://app.hubstaff.com https://open.er-api.com https://esm.sh https://cloudflareinsights.com; form-action 'self' https://accounts.google.com; frame-src 'self' https://accounts.google.com
   # Images/favicon: revalidate (cheap 304s).
   Cache-Control: no-cache
 
