@@ -151,15 +151,22 @@
     .portal-shell.nav-collapsed .tabs button{ justify-content:center; gap:0; padding:10px 0; font-size:0; }
     .portal-shell.nav-collapsed .tabs .ic{ font-size:19px; }
     /* header full width; content + footer offset right of the sidebar */
-    .portal-shell .wrap{ margin-left:var(--pnav-w); max-width:760px; padding:24px 28px 44px; transition:margin-left .15s ease; }
+    /* Capped content width, CENTERED in the area beside the sidebar (never slides
+       under it on narrow screens). --cw = the comfortable content width per view. */
+    .portal-shell .wrap{ --cw:720px; max-width:var(--cw); margin-right:auto;
+      margin-left:calc(var(--pnav-w) + max(0px, (100% - var(--pnav-w) - var(--cw))/2));
+      padding:24px 28px 44px; transition:margin-left .15s ease; }
     .portal-shell .pbuild{ margin-left:var(--pnav-w); transition:margin-left .15s ease; }
-    /* Home -> explicit 2-column dashboard grid. Everything is full width by
-       default (clock, greeting, hero, "Word from Your Mother", toolkit); only
-       the Next-pay and Activity cells sit side by side. */
-    .portal-shell .wrap.home{ display:grid; grid-template-columns:1fr 1fr; gap:14px 18px; align-items:start; max-width:1060px; }
+    /* Home -> explicit 2-column dashboard grid (~1000px reads best for cards).
+       Everything is full width by default (clock, greeting, hero, "Word from
+       Your Mother", toolkit); only Next-pay and Activity sit side by side. */
+    .portal-shell .wrap.home{ --cw:1000px; display:grid; grid-template-columns:1fr 1fr; gap:14px 18px; align-items:start; }
     .portal-shell .wrap.home > *{ grid-column:1 / -1; }
-    .portal-shell .wrap.home > .dash-pay{ grid-column:1; }
-    .portal-shell .wrap.home > .dash-act{ grid-column:2; }
+    /* pay + activity: same row, EQUAL height (stretch the cell, let the card fill) */
+    .portal-shell .wrap.home > .dash-pay{ grid-column:1; align-self:stretch; display:flex; flex-direction:column; }
+    .portal-shell .wrap.home > .dash-act{ grid-column:2; align-self:stretch; display:flex; flex-direction:column; }
+    .portal-shell .wrap.home > .dash-pay > .paycard,
+    .portal-shell .wrap.home > .dash-act > .card{ flex:1; margin:0; }
     /* inside a dash cell the sticker's big top margin isn't needed (grid gap handles it) */
     .portal-shell .wrap.home .dash-cell > .stickwrap{ margin-top:0; }
   }
