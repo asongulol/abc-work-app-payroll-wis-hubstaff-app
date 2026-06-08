@@ -1219,19 +1219,43 @@ function AdminsModal({ client, meId, onClose }) {
 }
 
 // ---- small data hook --------------------------------------------------------
-function useQuery(client, runner, deps) {
+function useQuery(client, runner, deps, opts) {
+  // opts.enabled (default true): when false the query does NOT fetch — used to
+  // gate always-mounted tabs so a company switch doesn't refetch every hidden
+  // tab. If deps change while disabled, the query refetches once on re-enable.
+  const enabled = !opts || opts.enabled !== false;
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const dirtyRef = React.useRef(true);   // true = a fetch is owed (deps changed since last load)
   const reload = useCallback(() => {
     if (!client) return;
+    dirtyRef.current = false;
     setLoading(true);
     runner(client).then(({ data, error }) => {
       setData(data); setError(error); setLoading(false);
     });
   }, deps); // eslint-disable-line
-  useEffect(() => { reload(); }, [reload]);
+  // deps changed → owe a fetch; do it now if enabled, else defer to re-enable.
+  useEffect(() => { dirtyRef.current = true; if (enabled) reload(); }, [reload]); // eslint-disable-line
+  // became enabled with a pending fetch → run it once.
+  useEffect(() => { if (enabled && dirtyRef.current) reload(); }, [enabled]); // eslint-disable-line
   return { data, error, loading, reload };
+}
+
+// Fetch ALL rows for a query that may exceed PostgREST's 1000-row cap, returning
+// {data,error} like a normal runner. Pass a `count()` head-count query and a
+// `range(from,to)` data query (ordered by a stable column). Pages are fetched
+// concurrently. Use in a useQuery runner: () => pageAll(countQ, rangeQ).
+async function pageAll(countQuery, rangeQuery, pageSize = 1000) {
+  const { count, error: ce } = await countQuery();
+  if (ce) return { data: null, error: ce };
+  const reqs = [];
+  for (let from = 0; from < (count || 0); from += pageSize) reqs.push(rangeQuery(from, from + pageSize - 1));
+  const results = await Promise.all(reqs);
+  const err = (results.find(r => r.error) || {}).error || null;
+  if (err) return { data: null, error: err };
+  return { data: results.flatMap(r => r.data || []), error: null };
 }
 
 // ============================ COMPANY SWITCHER ===============================
@@ -6939,14 +6963,18 @@ function Reports({client,companyId,consolidated}){
   // Pull the full per-contractor breakdown so each period row can expand to
   // show who was paid what (no extra round-trip per period).
   const {data,loading}=useQuery(client,c=>{
-    let q=c.from("payments").select(
-      "company_id,worked_hours,rate_php,gross_php,health_allowance_php,pdd_lunch_php,"+
+    // Page the FULL payments set (HEAD count + concurrent ranges) — a single
+    // query silently truncates at PostgREST's 1000-row cap, which would make the
+    // grand-total cards under-report once payments exceed 1000 rows.
+    const applyF=q=>{ if(!consolidated&&companyId)q=q.eq("company_id",companyId); return q; };
+    const sel="company_id,worked_hours,rate_php,gross_php,health_allowance_php,pdd_lunch_php,"+
       "bonus_php,thirteenth_month_php,deduction_php,misc_items,net_php,payout_amount,payout_currency,"+
       "fx_rate,status,payout_method,worker_id,"+
       "pay_periods(period_start,period_end,pay_date,state),"+
-      "companies(name),workers(first_name,middle_name,last_name)");
-    if(!consolidated&&companyId)q=q.eq("company_id",companyId);
-    return q;
+      "companies(name),workers(first_name,middle_name,last_name)";
+    return pageAll(
+      ()=>applyF(c.from("payments").select("worker_id",{count:"exact",head:true})),
+      (from,to)=>applyF(c.from("payments").select(sel)).order("pay_period_id",{ascending:true}).range(from,to));
   },[client,companyId,consolidated]);
 
   const [openKey,setOpenKey]=useState(null);   // which period row is expanded
@@ -7133,13 +7161,16 @@ function PerContractorSummary({client,companyId,consolidated}){
   const [to,setTo]=useState("");
   const [sel,setSel]=useState(()=>new Set());  // selected worker_ids (empty = none chosen)
   const {data,loading}=useQuery(client,c=>{
-    let q=c.from("payments").select(
-      "company_id,worked_hours,gross_php,health_allowance_php,pdd_lunch_php,bonus_php,"+
+    // Page the full payments set — same 1000-row-cap correctness fix as Reports
+    // (this drives year-to-date statements, so truncation would under-report).
+    const applyF=q=>{ if(!consolidated&&companyId)q=q.eq("company_id",companyId); return q; };
+    const sel="company_id,worked_hours,gross_php,health_allowance_php,pdd_lunch_php,bonus_php,"+
       "thirteenth_month_php,deduction_php,net_php,misc_items,status,worker_id,"+
       "pay_periods(period_start,period_end,pay_date),companies(name),"+
-      "workers(first_name,middle_name,last_name)");
-    if(!consolidated&&companyId)q=q.eq("company_id",companyId);
-    return q;
+      "workers(first_name,middle_name,last_name)";
+    return pageAll(
+      ()=>applyF(c.from("payments").select("worker_id",{count:"exact",head:true})),
+      (from,to)=>applyF(c.from("payments").select(sel)).order("pay_period_id",{ascending:true}).range(from,to));
   },[client,companyId,consolidated]);
 
   const pays=data||[];
@@ -7407,13 +7438,20 @@ function WiseReconciliation({client,companyId,consolidated}){
       //    calls but only for linked workers, typically <50)
       const hubLinked=workers.filter(w=>w.hubstaff_user_id);
       const hubById=new Map();
-      for(const w of hubLinked){
-        try{
-          const { data, error }=await client.functions.invoke("hubstaff-sync",{
-            body:{ action:"get_user", user_id:w.hubstaff_user_id } });
-          if(error || data?.error) continue;
-          if(data?.user) hubById.set(String(w.hubstaff_user_id), data.user);
-        }catch(_){ /* skip on error */ }
+      // Fetch each linked user's Hubstaff record with bounded concurrency (was a
+      // fully sequential loop of N cold edge calls). Per-worker errors are skipped
+      // exactly as before — one failed id never aborts the scan.
+      const CHUNK=6;
+      for(let i=0;i<hubLinked.length;i+=CHUNK){
+        const settled=await Promise.all(hubLinked.slice(i,i+CHUNK).map(async w=>{
+          try{
+            const { data, error }=await client.functions.invoke("hubstaff-sync",{
+              body:{ action:"get_user", user_id:w.hubstaff_user_id } });
+            if(error || data?.error) return null;
+            return data?.user ? [String(w.hubstaff_user_id), data.user] : null;
+          }catch(_){ return null; }
+        }));
+        settled.forEach(e=>{ if(e) hubById.set(e[0],e[1]); });
       }
 
       // 4. Compute drift per worker
@@ -7708,10 +7746,12 @@ function WiseReconciliation({client,companyId,consolidated}){
 function UtilizationReport({client,companyId,consolidated}){
   const [sel,setSel]=useState(()=>new Set());
   const {data,loading}=useQuery(client,c=>{
-    let q=c.from("time_entries").select("worker_id,source_name,work_date,tracked_seconds,activity_pct,approval,company_id")
-      .eq("approval","approved");
-    if(!consolidated&&companyId)q=q.eq("company_id",companyId);
-    return q;
+    // Page the full approved time_entries set — 10k+ rows would otherwise truncate
+    // at 1000 and silently drop weeks from the activity table.
+    const applyF=q=>{ q=q.eq("approval","approved"); if(!consolidated&&companyId)q=q.eq("company_id",companyId); return q; };
+    return pageAll(
+      ()=>applyF(c.from("time_entries").select("worker_id",{count:"exact",head:true})),
+      (from,to)=>applyF(c.from("time_entries").select("worker_id,source_name,work_date,tracked_seconds,activity_pct,approval,company_id")).order("work_date",{ascending:true}).range(from,to));
   },[client,companyId,consolidated]);
   const te=data||[];
   const optMap={}; te.forEach(t=>{ const id=String(t.worker_id||t.source_name||""); if(id && !optMap[id]) optMap[id]=t.source_name||"(unknown)"; });
@@ -7805,15 +7845,28 @@ function PullRecipients({client,companyId,consolidated,onClose}){
     try{
       const toSave=recSync.preview.filter(p=>p.matched && !p.already);
       let saved=0;
-      for(const p of toSave){
-        const {data:w}=await client.from("workers")
-          .select("wise_recipients,wise_recipient_id").eq("id",p.worker_id).single();
-        const list=Array.isArray(w?.wise_recipients)?w.wise_recipients:[];
-        if(!list.some(x=>x.id===p.recipient_id)) list.push({id:p.recipient_id,label:p.name||`Recipient ${p.recipient_id}`});
-        const nextDef=w?.wise_recipient_id||p.recipient_id;
-        const {error}=await client.from("workers")
-          .update({wise_recipients:list, wise_recipient_id:nextDef}).eq("id",p.worker_id);
-        if(!error)saved++;
+      if(toSave.length){
+        // One batched read instead of a per-row SELECT (was a read-modify-write N+1).
+        const ids=[...new Set(toSave.map(p=>p.worker_id))];
+        const {data:ws,error:re}=await client.from("workers").select("id,wise_recipients,wise_recipient_id").in("id",ids);
+        if(re) throw re;
+        const byId=new Map((ws||[]).map(w=>[w.id,w]));
+        // Merge each match into its worker (handles >1 recipient per worker), in memory.
+        const updates=new Map();
+        for(const p of toSave){
+          let cur=updates.get(p.worker_id);
+          if(!cur){ const w=byId.get(p.worker_id)||{}; cur={ wise_recipients:Array.isArray(w.wise_recipients)?[...w.wise_recipients]:[], wise_recipient_id:w.wise_recipient_id||null }; }
+          if(!cur.wise_recipients.some(x=>x.id===p.recipient_id)) cur.wise_recipients.push({id:p.recipient_id,label:p.name||`Recipient ${p.recipient_id}`});
+          if(!cur.wise_recipient_id) cur.wise_recipient_id=p.recipient_id;
+          updates.set(p.worker_id,cur);
+        }
+        // Apply the UPDATEs concurrently (bounded). Plain UPDATE — rows exist.
+        const entries=[...updates.entries()];
+        for(let i=0;i<entries.length;i+=8){
+          const res=await Promise.all(entries.slice(i,i+8).map(([wid,u])=>
+            client.from("workers").update({wise_recipients:u.wise_recipients, wise_recipient_id:u.wise_recipient_id}).eq("id",wid).then(({error})=>!error)));
+          saved+=res.filter(Boolean).length;
+        }
       }
       logEvent(client,{company_id:companyId,action:"wise_recipient_sync",
         entity:"Wise recipients",detail:{pulled:recSync.preview.length,saved}});
@@ -7946,17 +7999,24 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
           items:selected.map(r=>({worker_id:r.worker_id,recipient_id:r.recipient_id,amount_php:r.amount}))}});
       if(error)throw new Error(error.message||"Edge function error");
       if(data&&data.error)throw new Error(data.error);
-      let ok=0,fail=0;
-      for(const res of (data.results||[])){
-        if(res.transfer_id){
-          await client.from("payments").update({
-            wise_transfer_id:String(res.transfer_id), fx_rate:res.fx_rate, status:"queued"})
-            .eq("pay_period_id",periodId).eq("worker_id",res.worker_id);
-          // remember last-used recipient on the worker
-          const row=selected.find(r=>r.worker_id===res.worker_id);
-          if(row) await client.from("workers").update({wise_recipient_id:row.recipient_id}).eq("id",res.worker_id);
-          ok++;
-        } else fail++;
+      // Apply the post-batch DB writes concurrently (was 2 sequential writes per
+      // transfer). Still plain UPDATEs (rows already exist) — not upsert, to avoid
+      // a NOT-NULL insert-candidate on a partial payment row. ok/fail counts match
+      // the prior semantics (ok = transfers created).
+      const succ=(data.results||[]).filter(r=>r.transfer_id);
+      const ok=succ.length, fail=(data.results||[]).length-ok;
+      const CH=8;
+      for(let i=0;i<succ.length;i+=CH){
+        await Promise.all(succ.slice(i,i+CH).map(r=>client.from("payments").update({
+          wise_transfer_id:String(r.transfer_id), fx_rate:r.fx_rate, status:"queued"})
+          .eq("pay_period_id",periodId).eq("worker_id",r.worker_id)));
+      }
+      // remember last-used recipient per worker (dedup → one write each)
+      const recById=new Map();
+      for(const r of succ){ const row=selected.find(s=>s.worker_id===r.worker_id); if(row) recById.set(r.worker_id,row.recipient_id); }
+      const recEntries=[...recById.entries()];
+      for(let i=0;i<recEntries.length;i+=CH){
+        await Promise.all(recEntries.slice(i,i+CH).map(([wid,rid])=>client.from("workers").update({wise_recipient_id:rid}).eq("id",wid)));
       }
       setBatchId(data.batch_group_id);
       setMsg(`Created Wise batch with ${ok} transfer(s)${fail?`, ${fail} failed`:""}. `+
@@ -11444,6 +11504,13 @@ function App() {
     }catch{ return "overview"; }
   });
   useEffect(()=>{ setToastTab(tab); try{ localStorage.setItem("eis_tab",tab); }catch{ /* ignore */ } },[tab]);
+  // Lazy-mount tabs on first visit: a never-opened tab isn't mounted, so its
+  // useQuery calls never fire — this kills the on-app-load query storm where all
+  // ~10 always-mounted tabs fetched at once. Once a tab is opened it STAYS mounted
+  // (added to seenTabs), preserving its in-memory state across later switches —
+  // the original "keep tabs mounted" intent, minus the never-visited ones.
+  const [seenTabs,setSeenTabs]=useState(()=>new Set([tab]));
+  useEffect(()=>{ setSeenTabs(s=>s.has(tab)?s:new Set(s).add(tab)); },[tab]);
   const [sidebarCollapsed,setSidebarCollapsed]=useState(()=>{ try{ return localStorage.getItem("eis_sidebar")==="1"; }catch{ return false; } });
   useEffect(()=>{ try{ localStorage.setItem("eis_sidebar",sidebarCollapsed?"1":"0"); }catch{ /* ignore */ } },[sidebarCollapsed]);
   const [moreOpen,setMoreOpen]=useState(false);   // mobile "More" sheet
@@ -11645,16 +11712,16 @@ function App() {
         {/* All tabs stay mounted; only the active one is shown. This preserves
             each tab's in-memory state (selected period, loaded rows, filters)
             across tab switches. */}
-        <div style={{display:tab==="contractors"?"block":"none"}}><Contractors {...{client:sb.client,companyId,consolidated,onBillingChange:recordBillingChange,pendingWorkerId,consumePendingWorker,rosterNonce}} /></div>
-        <div style={{display:tab==="time"?"block":"none"}}><TimeImport {...{client:sb.client,companyId,consolidated,goTab:go,openPeriodForEdit}} /></div>
-        <div style={{display:tab==="imports"?"block":"none"}}><DeleteImports {...{client:sb.client,companyId,consolidated}} /></div>
-        <div style={{display:tab==="payroll"?"block":"none"}}><Payroll {...{client:sb.client,companyId,consolidated,confirmBillingDirty,openContractor,goTab:go,pendingPeriod,consumePendingPeriod}} /></div>
-        <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="process",confirmBillingDirty,openContractor,goTab:go,openPeriodForEdit}} /></div>
-        <div style={{display:tab==="documents"?"block":"none"}}><Documents {...{client:sb.client,companyId,consolidated}} /></div>
-        <div style={{display:tab==="batches"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="batches",confirmBillingDirty,openContractor,reconcileOnly:true}} /></div>
-        <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>
-        <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId,consolidated}} /></div>
-        <div style={{display:tab==="onboarding"?"block":"none"}}><OnboardingAdmin {...{client:sb.client,companyId,consolidated,active:tab==="onboarding",onContractorChanged:bumpRoster}} /></div>
+        {seenTabs.has("contractors") && <div style={{display:tab==="contractors"?"block":"none"}}><Contractors {...{client:sb.client,companyId,consolidated,onBillingChange:recordBillingChange,pendingWorkerId,consumePendingWorker,rosterNonce}} /></div>}
+        {seenTabs.has("time") && <div style={{display:tab==="time"?"block":"none"}}><TimeImport {...{client:sb.client,companyId,consolidated,goTab:go,openPeriodForEdit}} /></div>}
+        {seenTabs.has("imports") && <div style={{display:tab==="imports"?"block":"none"}}><DeleteImports {...{client:sb.client,companyId,consolidated}} /></div>}
+        {seenTabs.has("payroll") && <div style={{display:tab==="payroll"?"block":"none"}}><Payroll {...{client:sb.client,companyId,consolidated,confirmBillingDirty,openContractor,goTab:go,pendingPeriod,consumePendingPeriod}} /></div>}
+        {seenTabs.has("process") && <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="process",confirmBillingDirty,openContractor,goTab:go,openPeriodForEdit}} /></div>}
+        {seenTabs.has("documents") && <div style={{display:tab==="documents"?"block":"none"}}><Documents {...{client:sb.client,companyId,consolidated}} /></div>}
+        {seenTabs.has("batches") && <div style={{display:tab==="batches"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="batches",confirmBillingDirty,openContractor,reconcileOnly:true}} /></div>}
+        {seenTabs.has("reports") && <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>}
+        {seenTabs.has("audit") && <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId,consolidated}} /></div>}
+        {seenTabs.has("onboarding") && <div style={{display:tab==="onboarding"?"block":"none"}}><OnboardingAdmin {...{client:sb.client,companyId,consolidated,active:tab==="onboarding",onContractorChanged:bumpRoster}} /></div>}
         {tab==="configuration" && <ErrorBoundary><Configuration {...{client:sb.client,companyId,consolidated,isOwner,setCompanyId,onCompaniesChanged:bumpCompanies}} /></ErrorBoundary>}
         <div className="no-print" style={{textAlign:"center",color:"var(--muted)",fontSize:11,padding:"18px 0 32px",letterSpacing:".02em"}}>Build {BUILD}</div>
       </main>
