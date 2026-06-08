@@ -1066,6 +1066,7 @@ function AdminsModal({ client, meId, onClose }) {
   const [companies,setCompanies]=useState([]);     // active companies, for the picker
   const [assigns,setAssigns]=useState([]);          // [{admin_email, company_id}] (owner reads all)
   const [email,setEmail]=useState(""); const [role,setRole]=useState("admin");
+  const [inviteCos,setInviteCos]=useState([]);   // company_ids to grant on invite (admins only)
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [note,setNote]=useState("");
   function load(){
     client.from("admin_users").select("user_id,email,role,added_at").order("added_at")
@@ -1124,10 +1125,18 @@ function AdminsModal({ client, meId, onClose }) {
     if(!e){ setMsg("Enter an email."); return; }
     const d=await call("add_admin",{ email:e, role });
     if(!d) return;
-    setNote(d.pending
-      ? `${e} invited as ${d.role}. They'll have access the moment they first sign in with Google on this email.`
-      : `${e} added as ${d.role}.`);
-    setEmail(""); setRole("admin"); load();
+    // Grant the chosen companies right away (owners see all, so only for admins).
+    let coNote="";
+    if(d.role==="admin" && inviteCos.length){
+      const {error}=await client.from("admin_companies")
+        .upsert(inviteCos.map(cid=>({admin_email:e, company_id:cid, added_by:meId})),{onConflict:"admin_email,company_id",ignoreDuplicates:true});
+      if(error) coNote=" (couldn't assign companies: "+error.message+" — set them below)";
+      else coNote=` with access to ${inviteCos.length} compan${inviteCos.length===1?"y":"ies"}`;
+    }
+    setNote((d.pending
+      ? `${e} invited as ${d.role}${coNote}. They'll have access the moment they first sign in with Google on this email.`
+      : `${e} added as ${d.role}${coNote}.`));
+    setEmail(""); setRole("admin"); setInviteCos([]); load();
   }
   async function changeRole(user_id, newRole){ if(await call("set_role",{ user_id, role:newRole })) load(); }
   async function remove(user_id, em){
@@ -1151,6 +1160,23 @@ function AdminsModal({ client, meId, onClose }) {
           <select value={role} onChange={e=>setRole(e.target.value)}><option value="admin">Admin</option><option value="owner">Owner</option></select>
           <button className="btn sm" disabled={busy} onClick={add}>{busy?"…":"Add"}</button>
         </div>
+        {role==="admin" ? (
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",margin:"0 0 8px"}}>
+            <span className="muted" style={{fontSize:11}}>Assign companies:</span>
+            {activeCompanies.length===0 && <span className="muted" style={{fontSize:11}}>add a company first</span>}
+            {activeCompanies.map(c=>{ const on=inviteCos.includes(c.id); return (
+              <button key={c.id} type="button" disabled={busy} aria-pressed={on}
+                onClick={()=>setInviteCos(s=> on ? s.filter(x=>x!==c.id) : [...s,c.id])}
+                style={{fontSize:11,padding:"3px 9px",borderRadius:999,cursor:"pointer",lineHeight:1.4,
+                  border:"1px solid "+(on?"var(--navy)":"var(--border)"), background:on?"var(--navy)":"#fff", color:on?"#fff":"var(--text)"}}>
+                {on?"✓ ":""}{c.name}
+              </button>
+            );})}
+            {activeCompanies.length>0 && inviteCos.length===0 && <span style={{fontSize:11,color:"var(--muted)"}}>optional — you can also assign after they appear below</span>}
+          </div>
+        ) : (
+          <div className="muted" style={{fontSize:11,margin:"0 0 8px"}}>Owners see all companies — no assignment needed.</div>
+        )}
         {note && <div className="banner" style={{background:"#ecfdf5",borderColor:"#a7f3d0",color:"#065f46"}}>{note}</div>}
         {msg && <div className="banner" style={{background:"#fee2e2",borderColor:"#fca5a5"}}>{msg}</div>}
         {rows===null ? <Skeleton rows={3}/> :
