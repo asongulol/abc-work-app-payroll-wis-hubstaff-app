@@ -9846,7 +9846,7 @@ const ONB_AGR_KINDS = ["ic_agreement","non_compete","confidentiality_nda","baa"]
 // Build a formatted addendum block (per-hire) for an agreement, or "" if none.
 function agAddendum(type,text){
   const t=String(text||"").trim(); if(!t) return "";
-  return (type==="scope_of_work"?"ADDENDUM — SCOPE OF WORK":"ADDENDUM")+"\n"+t;
+  return t;
 }
 // Fill {{merge}} fields in an agreement body. Mirrors portal mergeAgreement().
 function mergeAgreement(body, v){
@@ -9863,9 +9863,10 @@ function escapeHtml(x){ return String(x==null?"":x).replace(/[&<>"']/g,c=>({"&":
 
 // Countersignature capture — typed name or drawn (canvas). Returns
 // { method:"typed"|"drawn", data, name } to onSubmit.
-function CountersignModal({ defaultName, onCancel, onSubmit }){
+function CountersignModal({ defaultName, allowed, onCancel, onSubmit }){
   const mref=useModalA11y(onCancel,{escClose:false}); // typed name + drawn signature: no Escape-close
-  const [mode,setMode]=useState("type"); const [name,setName]=useState(defaultName||"");
+  const allow=["both","typed","drawn"].includes(allowed)?allowed:"both";   // per onboarding config
+  const [mode,setMode]=useState(allow==="drawn"?"draw":"type"); const [name,setName]=useState(defaultName||"");
   const [drawn,setDrawn]=useState(false); const [err,setErr]=useState(""); const canvasRef=React.useRef(null);
   useEffect(()=>{
     if(mode!=="draw") return;
@@ -9897,10 +9898,10 @@ function CountersignModal({ defaultName, onCancel, onSubmit }){
           <button className="btn ghost sm" onClick={onCancel}>Close</button>
         </div>
         <p className="sub">Sign on behalf of ABC Kids NY.</p>
-        <div style={{display:"flex",gap:6,marginBottom:8}}>
+        {allow==="both" && <div style={{display:"flex",gap:6,marginBottom:8}}>
           <button className={"btn sm "+(mode==="type"?"":"ghost")} onClick={()=>setMode("type")}>Type</button>
           <button className={"btn sm "+(mode==="draw"?"":"ghost")} onClick={()=>setMode("draw")}>Draw</button>
-        </div>
+        </div>}
         <label className="muted" style={{fontSize:12,display:"block"}}>Full legal name</label>
         <input value={name} onChange={e=>setName(e.target.value)} style={{width:"100%"}}/>
         {mode==="draw" && <div style={{margin:"8px 0"}}>
@@ -9922,7 +9923,7 @@ function CountersignModal({ defaultName, onCancel, onSubmit }){
 // directly (is_admin() RLS); the contractor signature stays in onboarding_signatures.
 function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigChange }){
   const [insts,setInsts]=useState(null); const [tpls,setTpls]=useState({}); const [waddr,setWaddr]=useState(""); const [whire,setWhire]=useState("");
-  const [admins,setAdmins]=useState([]); const [me,setMe]=useState(null); const [cfgAgr,setCfgAgr]=useState(null);
+  const [admins,setAdmins]=useState([]); const [me,setMe]=useState(null); const [cfgAgr,setCfgAgr]=useState(null); const [csMethod,setCsMethod]=useState("both");
   const [edit,setEdit]=useState({}); const [busy,setBusy]=useState(""); const [msg,setMsg]=useState(""); const [cs,setCs]=useState(null);
   const [dateEdit,setDateEdit]=useState({}); const [dbusy,setDbusy]=useState("");
   const signedBy={}; (sigs||[]).filter(s=>s.status==="signed").forEach(s=>signedBy[s.agreement_kind]=s);
@@ -9936,7 +9937,7 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigC
     // Which agreements are currently required (drives the list below) — removed
     // agreements drop off unless the contractor already signed one (kept as record).
     client.from("portal_settings").select("onboarding_config").eq("id",1).maybeSingle()
-      .then(({data})=>{ const a=data&&data.onboarding_config&&data.onboarding_config.agreements; setCfgAgr(Array.isArray(a)?a.map(x=>x.kind):null); });
+      .then(({data})=>{ const oc=data&&data.onboarding_config; const a=oc&&oc.agreements; setCfgAgr(Array.isArray(a)?a.map(x=>x.kind):null); setCsMethod(ocSigMethods(oc).countersigner); });
     client.auth.getUser().then(({data})=>setMe(data&&data.user||null));
   }
   useEffect(load,[worker_id]);
@@ -10096,7 +10097,7 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigC
           </div>
         );
       })}
-      {cs && <CountersignModal defaultName={(me&&me.email)||""} onCancel={()=>setCs(null)} onSubmit={r=>doCountersign(cs,r)}/>}
+      {cs && <CountersignModal defaultName={(me&&me.email)||""} allowed={csMethod} onCancel={()=>setCs(null)} onSubmit={r=>doCountersign(cs,r)}/>}
     </div>
   );
 }
@@ -10333,25 +10334,33 @@ function AgreementTemplatesModal({ client, onClose }){
 // editor) keyed by `kind` — this list only controls which appear and their order.
 const ONB_DEFAULT_DOCS=[{kind:"resume",title:"Resume / CV",required:true},{kind:"diploma",title:"Diploma or Transcript of Records",required:true},{kind:"nbi_clearance",title:"NBI Clearance",required:true,freshness_months:6},{kind:"gov_id",title:"Government-issued ID or Passport",required:true,sides:["front","back"]}];
 function ocSlug(s){ return String(s||"").toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"").slice(0,40)||"item"; }
+// Allowed signature methods per signing party. "both" preserves the historical
+// behavior (contractor & countersigner pick Type or Draw); "typed"/"drawn" lock
+// the choice. Read by the portal SignaturePad and admin CountersignModal.
+const SIG_METHOD_OPTS=[["both","Typed or drawn"],["typed","Typed only"],["drawn","Drawn only"]];
+function ocSigMethods(c){ const s=(c&&c.signature_methods)||{}; const norm=v=>["both","typed","drawn"].includes(v)?v:"both";
+  return { contractor:norm(s.contractor), countersigner:norm(s.countersigner) }; }
 function ocUniq(items){ const seen={}; return items.map(o=>{ let k=o.kind||"item"; if(seen[k]){ let n=2; while(seen[k+"_"+n])n++; k=k+"_"+n; } seen[k]=1; return {...o,kind:k}; }); }
 function OnboardingConfigModal({ client, onClose }){
   const [cfg,setCfg]=useState(null);
   const [enabled,setEnabled]=useState(false);
   const [docs,setDocs]=useState([]);
   const [agrs,setAgrs]=useState([]);
+  const [sigMethods,setSigMethods]=useState({contractor:"both",countersigner:"both"});
   const [mode,setMode]=useState("form");        // "form" | "json"
   const [text,setText]=useState("");
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
   const close=guardedClose(onClose);   // prompt to Save/Discard if the config has unsaved edits
   const mref=useModalA11y(close,{escClose:false, dep:cfg!==null}); // re-establish trap once config loads
   const ucBase=React.useRef(null); const jsonBase=React.useRef("");   // jsonBase tracks the textarea baseline so merely VIEWING raw JSON isn't "dirty"
-  const ucSnap=()=>JSON.stringify({enabled,docs,agrs});   // form state only — raw-JSON edits tracked separately
+  const ucSnap=()=>JSON.stringify({enabled,docs,agrs,sigMethods});   // form state only — raw-JSON edits tracked separately
   useEffect(()=>{ if(cfg!==null) ucBase.current=ucSnap(); }, [cfg]);   // baseline = freshly loaded/saved config
   useUnsavedGuard({ dirty: (ucBase.current!==null && ucSnap()!==ucBase.current) || (mode==="json" && text!==jsonBase.current), label:"the onboarding configuration", save: ()=>save() });
   function hydrate(c){
     setCfg(c); setEnabled(!!c.onboarding_enabled);
     setDocs(Array.isArray(c.documents)&&c.documents.length ? c.documents.map(d=>({...d})) : ONB_DEFAULT_DOCS.map(d=>({...d})));
     setAgrs(Array.isArray(c.agreements) ? c.agreements.slice().sort((a,b)=>(a.order||0)-(b.order||0)).map(a=>({...a})) : []);
+    setSigMethods(ocSigMethods(c));
     const j=JSON.stringify(c,null,2); setText(j); jsonBase.current=j;
   }
   function load(){ client.from("portal_settings").select("onboarding_config").eq("id",1).maybeSingle()
@@ -10371,7 +10380,8 @@ function OnboardingConfigModal({ client, onClose }){
       const o={...a}; o.kind=a.kind||ocSlug(a.title); o.title=a.title.trim(); o.required=a.required!==false; o.order=i+1;
       return o;
     }));
-    return {...cfg, onboarding_enabled:enabled, documents:cleanDocs, agreements:cleanAgrs};
+    return {...cfg, onboarding_enabled:enabled, documents:cleanDocs, agreements:cleanAgrs,
+      signature_methods:{contractor:sigMethods.contractor, countersigner:sigMethods.countersigner}};
   }
   const preview = buildFromForm();
 
@@ -10466,6 +10476,25 @@ function OnboardingConfigModal({ client, onClose }){
             ))}
             <div style={{display:"flex",gap:8,marginBottom:8}}>
               <button className="btn ghost sm" onClick={()=>setAgrs(a=>[...a,{title:"",required:true}])}>+ Add agreement</button>
+            </div>
+
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"16px 0 0"}}>
+              <h3 style={{margin:0,fontSize:15}}>🖊️ Signature methods</h3>
+            </div>
+            <p className="sub" style={{marginTop:2}}>How each party signs agreements — typed name, drawn signature, or their choice.</p>
+            <div style={rowStyle}>
+              <label style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,fontSize:13}}>
+                <span><b>Contractor</b> <span className="muted">— signs in the onboarding portal</span></span>
+                <select value={sigMethods.contractor} onChange={e=>setSigMethods(s=>({...s,contractor:e.target.value}))} style={{minWidth:150}}>
+                  {SIG_METHOD_OPTS.map(([v,l])=><option key={v} value={v}>{l}</option>)}
+                </select>
+              </label>
+              <label style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,fontSize:13,marginTop:10}}>
+                <span><b>Countersigner</b> <span className="muted">— signs for ABC Kids NY</span></span>
+                <select value={sigMethods.countersigner} onChange={e=>setSigMethods(s=>({...s,countersigner:e.target.value}))} style={{minWidth:150}}>
+                  {SIG_METHOD_OPTS.map(([v,l])=><option key={v} value={v}>{l}</option>)}
+                </select>
+              </label>
             </div>
 
             <details style={{marginTop:10}}>

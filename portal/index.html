@@ -1297,11 +1297,15 @@ function SignaturePad({ client, agreement, text, canSign, onSigned }){
   const [mode,setMode]=useState("type"); const [name,setName]=useState("");
   const [consent,setConsent]=useState(false); const [busy,setBusy]=useState(false);
   const [err,setErr]=useState(""); const [drawn,setDrawn]=useState(false);
+  const [allow,setAllow]=useState("both");   // signature method the admin permits for contractors
   const [signedDate,setSignedDate]=useState(()=>new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Manila"}).format(new Date()));  // auto-fills today; editable
   const canvasRef = React.useRef(null);
   const prefillRef = React.useRef("");
   useEffect(()=>{ client.from("workers").select("first_name,middle_name,last_name").maybeSingle()
     .then(({data})=>{ if(data){ const n=fullName(data); setName(n); prefillRef.current=n; } }); },[]);
+  useEffect(()=>{ client.from("portal_settings").select("onboarding_config").eq("id",1).maybeSingle()
+    .then(({data})=>{ const s=(data&&data.onboarding_config&&data.onboarding_config.signature_methods)||{};
+      const a=["both","typed","drawn"].includes(s.contractor)?s.contractor:"both"; setAllow(a); if(a==="drawn") setMode("draw"); else if(a==="typed") setMode("type"); }); },[]);
   // Unsaved-changes guard: a drawn signature lives only on the canvas, and a ticked
   // consent / edited name are easy to lose on an accidental Close. No "save" —
   // signing needs the scroll + consent gate — so the prompt offers Discard / Stay.
@@ -1343,10 +1347,10 @@ function SignaturePad({ client, agreement, text, canSign, onSigned }){
   const ghost = { color:"var(--accent)", borderColor:"var(--accent)" };
   return (
     <div className="ob-sign">
-      <div style={{display:"flex",gap:6,marginBottom:8}}>
+      {allow==="both" && <div style={{display:"flex",gap:6,marginBottom:8}}>
         <button className={"btn ob-toggle "+(mode==="type"?"":"ghost")} style={mode==="type"?{}:ghost} onClick={()=>setMode("type")}>{t("ob.sign.type")}</button>
         <button className={"btn ob-toggle "+(mode==="draw"?"":"ghost")} style={mode==="draw"?{}:ghost} onClick={()=>setMode("draw")}>{t("ob.sign.draw")}</button>
-      </div>
+      </div>}
       <label className="sub" style={{display:"block"}}>{t("ob.sign.legalname")}</label>
       <input value={name} onChange={e=>setName(e.target.value)} aria-label={t("ob.sign.legalname")} />
       <label className="sub" style={{display:"block",marginTop:8}}>Date signed</label>
@@ -1370,7 +1374,7 @@ function SignaturePad({ client, agreement, text, canSign, onSigned }){
 // Build a formatted addendum block (per-hire) for an agreement, or "" if none.
 function agAddendum(type,text){
   const t=String(text||"").trim(); if(!t) return "";
-  return (type==="scope_of_work"?"ADDENDUM — SCOPE OF WORK":"ADDENDUM")+"\n"+t;
+  return t;
 }
 // Fill {{merge}} fields in an agreement body from the prepared instance + worker.
 // Auto-appends the addendum when the template doesn't place {{addendum}} itself.
