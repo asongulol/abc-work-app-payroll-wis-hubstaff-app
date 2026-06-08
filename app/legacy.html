@@ -8833,12 +8833,30 @@ function onbStatus(p, pending){
 function Badge({s}){ return <span style={{padding:"2px 8px",borderRadius:999,fontSize:11,fontWeight:600,color:s.color,background:s.bg,whiteSpace:"nowrap"}}>{s.txt}</span>; }
 
 const ONB_AGR_KINDS = ["ic_agreement","non_compete","confidentiality_nda","baa"];
-// Fill {{merge}} fields in an agreement body. Mirrors portal mergeAgreement().
+// Build a formatted addendum block (per-hire) for an agreement, or "" if none.
+function agAddendum(type,text){
+  const t=String(text||"").trim(); if(!t) return "";
+  return t;
+}
+// Monthly rate from a per-period rate (payroll is semi-monthly → ×2). "" when unparseable.
+function monthlyFromPeriod(rate){
+  const n=parseFloat(String(rate==null?"":rate).replace(/[^0-9.]/g,""));
+  if(!Number.isFinite(n)||n<=0) return "";
+  return (Math.round(n*2*100)/100).toLocaleString("en-US");
+}
+// Fill {{merge}} fields in an agreement body. MUST match app/index.html + portal
+// mergeAgreement() (shared agreement_templates) — kept in sync so the kill-switch
+// classic UI renders agreements identically (company_name / monthly_rate / addendum).
 function mergeAgreement(body, v){
   const s={ contractor_name:(v&&v.contractor_name)||"", rate:(v&&v.rate)||"________",
+    monthly_rate:(v&&v.monthly_rate)||"________", company_name:(v&&v.company_name)||"________",
     start_date:(v&&v.start_date)||"________", position:(v&&v.position)||"________",
-    countersigner_name:(v&&v.countersigner_name)||"________", today:(v&&v.today)||"" };
-  return String(body||"").replace(/\{\{\s*(\w+)\s*\}\}/g,(m,k)=> (k in s? s[k]: m));
+    contractor_address:(v&&v.contractor_address)||"________",
+    countersigner_name:(v&&v.countersigner_name)||"________", today:(v&&v.today)||"",
+    addendum:(v&&v.addendum)||"" };
+  let out = String(body||"").replace(/\{\{\s*(\w+)\s*\}\}/g,(m,k)=> (k in s? s[k]: m));
+  if(s.addendum && !/\{\{\s*addendum\s*\}\}/.test(String(body||""))) out += "\n\n"+s.addendum;
+  return out;
 }
 function escapeHtml(x){ return String(x==null?"":x).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
@@ -8946,8 +8964,10 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
   }
   function printDoc(k){
     const r=insts[k]||{}; const sig=signedBy[k];
-    const merged=mergeAgreement(tpls[k]||"",{ contractor_name:workerName, rate:r.f_rate, start_date:r.f_start_date,
-      position:r.f_position, countersigner_name:r.countersigner_name, today });
+    const merged=mergeAgreement(tpls[k]||"",{ contractor_name:workerName, rate:r.f_rate,
+      monthly_rate:monthlyFromPeriod(r.f_rate), company_name:r.f_company_name||"",
+      start_date:r.f_start_date, position:r.f_position, countersigner_name:r.countersigner_name,
+      addendum:agAddendum(r.addendum_type,r.addendum_text), today });
     // signature_data / countersign_data are user-controlled — only emit them as an
     // <img> if they're a clean data:image base64 URI (that charset can't contain a
     // quote or '<', so no breakout), else fall back to the escaped typed name.

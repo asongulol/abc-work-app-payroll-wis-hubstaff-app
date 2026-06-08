@@ -1395,16 +1395,15 @@ function monthlyFromPeriod(rate){
   if(!Number.isFinite(n)||n<=0) return "";
   return (Math.round(n*2*100)/100).toLocaleString("en-US");
 }
-function mergeAgreement(body, vals){
-  const v = vals||{};
-  const sub = { contractor_name:v.contractor_name||"", rate:v.rate||"________",
-    monthly_rate:v.monthly_rate||"________", company_name:v.company_name||"________",
-    start_date:v.start_date||"________", position:v.position||"________",
-    contractor_address:v.contractor_address||"________",
-    countersigner_name:v.countersigner_name||"________", today:v.today||"",
-    addendum:v.addendum||"" };
-  let out = String(body||"").replace(/\{\{\s*(\w+)\s*\}\}/g, (m,k)=> (k in sub ? sub[k] : m));
-  if(sub.addendum && !/\{\{\s*addendum\s*\}\}/.test(String(body||""))) out += "\n\n"+sub.addendum;
+function mergeAgreement(body, v){
+  const s={ contractor_name:(v&&v.contractor_name)||"", rate:(v&&v.rate)||"________",
+    monthly_rate:(v&&v.monthly_rate)||"________", company_name:(v&&v.company_name)||"________",
+    start_date:(v&&v.start_date)||"________", position:(v&&v.position)||"________",
+    contractor_address:(v&&v.contractor_address)||"________",
+    countersigner_name:(v&&v.countersigner_name)||"________", today:(v&&v.today)||"",
+    addendum:(v&&v.addendum)||"" };
+  let out = String(body||"").replace(/\{\{\s*(\w+)\s*\}\}/g,(m,k)=> (k in s? s[k]: m));
+  if(s.addendum && !/\{\{\s*addendum\s*\}\}/.test(String(body||""))) out += "\n\n"+s.addendum;
   return out;
 }
 function AgreementViewer({ client, agreement, onClose, onSigned }){
