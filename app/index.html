@@ -2422,7 +2422,10 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
           {rows.map((r,i)=>{
             const w=r.workers; const active=isActive(r);
             return (
-              <tr key={i} style={active?{}:{opacity:.6}}>
+              // Stable composite key (worker + company) so sorting/filtering can't
+              // mis-associate row-level DOM/state; worker.id alone repeats in
+              // consolidated mode where a worker spans multiple companies.
+              <tr key={(w&&w.id||i)+"|"+(r.company_id||"")} style={active?{}:{opacity:.6}}>
                 <td className="clickable card-title" onClick={()=>setSelected({...r,w})}>
                   <span style={{display:"inline-flex",alignItems:"center",gap:8}}>
                     <Avatar src={w.photo_url} name={fullName(w)} size={28}/><b>{fullName(w)}</b></span></td>
