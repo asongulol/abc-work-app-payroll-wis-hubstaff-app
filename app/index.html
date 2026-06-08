@@ -634,6 +634,22 @@ function ShiftEditor({ client, workerId }){
   );
 }
 
+// PH is UTC+8 year-round; US Eastern is UTC-5 (EST) / UTC-4 (EDT). Convert an
+// Eastern wall-clock "HH:MM" into the equivalent Philippine-time "HH:MM" for the
+// current date, so a shift entered as US office hours is stored in PHT like the
+// rest of the app (ShiftEditor / portal check-ins). Auto-tracks US daylight saving.
+function etOffsetHours(date){
+  const p=new Intl.DateTimeFormat("en-US",{timeZone:"America/New_York",timeZoneName:"shortOffset"}).formatToParts(date).find(x=>x.type==="timeZoneName");
+  const m=p&&p.value.match(/GMT([+-]\d+)(?::(\d+))?/);
+  return m? Number(m[1])+(m[2]?Math.sign(Number(m[1]))*Number(m[2])/60:0) : -5;
+}
+function etToPhtHHMM(hhmm){
+  const [h,m]=String(hhmm).split(":").map(Number);
+  const gap=8-etOffsetHours(new Date());   // 12 (EDT) or 13 (EST)
+  const t=(((h*60+m+gap*60)%1440)+1440)%1440;
+  return String(Math.floor(t/60)).padStart(2,"0")+":"+String(t%60).padStart(2,"0");
+}
+
 // Display label for a payout method: BPI uppercase, others Capitalized.
 // Next US daylight-saving transition (spring=2nd Sun Mar, fall=1st Sun Nov),
 // as a 'YYYY-MM-DD' ET date. Drives the shift-adjustment nudge banner.
@@ -1881,7 +1897,8 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
   const today=new Date().toISOString().slice(0,10);
   const DEFAULTS={ first_name:"", middle_name:"", last_name:"", email:"",
     ph_address:"", permanent_address:"", date_of_birth:"",
-    contract:"FT", role:"", rate:"", contract_date:today, hire_date:today,
+    company_id:companyId||"", contract:"FT", role:"", rate:"", contract_date:today, hire_date:today,
+    shift_start:etToPhtHHMM("08:00"), shift_end:etToPhtHHMM("17:00"),
     ic_addendum_type:"", ic_addendum_text:"", extra_docs:[],
     countersigner_user_id:"", countersigner_name:"",
     health_allowance_eligible:true, thirteenth_month_eligible:true, invite:true };
@@ -1903,9 +1920,11 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
   // success). escClose:false so a stray Escape never discards a half-typed hire;
   // dep:!!result re-establishes the trap when the success screen replaces the form.
   const mref=useModalA11y(onClose,{escClose:false, dep:!!result});
-  const [admins,setAdmins]=useState([]);
+  const [admins,setAdmins]=useState([]); const [companies,setCompanies]=useState([]);
   useEffect(()=>{
     client.from("admin_users").select("user_id,email").then(({data})=>setAdmins(data||[]));
+    // Companies the admin may assign to (RLS scopes this to their companies; owner sees all).
+    client.from("companies").select("id,name,status").eq("status","active").order("name").then(({data})=>setCompanies(data||[]));
     client.auth.getUser().then(({data})=>{ const u=data&&data.user; if(u) setF(x=>x.countersigner_user_id?x:{...x,countersigner_user_id:u.id,countersigner_name:u.email||""}); });
   },[]);  // eslint-disable-line
   const doneRef=React.useRef(false);
@@ -1934,8 +1953,11 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
       if(f.invite || ne(f.email)){ if(!ne(f.email)) e.email="Email required to invite"; else if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f.email.trim())) e.email="Enter a valid email"; }
     }
     if(s===2){
+      if(!ne(f.company_id)) e.company_id="Select a company";
       if(ne(f.rate) && !(parseFloat(f.rate)>0)) e.rate="Enter a positive amount";
       if(!ne(f.hire_date)) e.hire_date="Required";
+      if(!ne(f.countersigner_user_id)) e.countersigner_user_id="Assign a countersigner";
+      if(!ne(f.shift_start)||!ne(f.shift_end)) e.shift="Set a shift start and end";
     }
     return e;
   }
@@ -1944,7 +1966,8 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
   async function create(){
     const e={...validateStep(1),...validateStep(2)};
     if(Object.keys(e).length){ setErrs(e); setErr("Please fix the highlighted fields."); setStep((e.first_name||e.last_name||e.email)?1:2); return; }
-    if(!companyId){ setErr("Pick a single company first."); return; }
+    const coId=f.company_id||companyId;
+    if(!coId){ setErr("Select a company for this hire."); setErrs(p=>({...p,company_id:"Select a company"})); setStep(2); return; }
     setBusy(true); setErr("");
     let w=null;
     try{
@@ -1960,15 +1983,16 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
       const base={ first_name:f.first_name.trim(), middle_name:f.middle_name.trim()||null, last_name:f.last_name.trim(),
         email:f.email.trim()||null, ph_address:f.ph_address.trim()||null, permanent_address:f.permanent_address.trim()||null,
         date_of_birth:f.date_of_birth||null, hire_date:f.hire_date||null, status:"active",
+        shift_start:f.shift_start||null, shift_end:f.shift_end||null,
         health_allowance_eligible:!!f.health_allowance_eligible, thirteenth_month_eligible:!!f.thirteenth_month_eligible };
       let r=await client.from("workers").insert(base).select().single();
       if(r.error && /payout_method/i.test(r.error.message)) r=await client.from("workers").insert({...base,payout_method:"wise"}).select().single();
       if(r.error) throw r.error;
       w=r.data;
-      const {error:e2}=await client.from("worker_companies").insert({worker_id:w.id, company_id:companyId, contract:f.contract, role:f.role.trim()||null, status:"active", started_on:f.hire_date||null});
+      const {error:e2}=await client.from("worker_companies").insert({worker_id:w.id, company_id:coId, contract:f.contract, role:f.role.trim()||null, status:"active", started_on:f.hire_date||null});
       if(e2) throw e2;
       if(parseFloat(f.rate)>0){
-        const {error:e3}=await client.from("rates").insert({worker_id:w.id, company_id:companyId, amount_php:parseFloat(f.rate), effective_start:f.contract_date||f.hire_date||today});
+        const {error:e3}=await client.from("rates").insert({worker_id:w.id, company_id:coId, amount_php:parseFloat(f.rate), effective_start:f.contract_date||f.hire_date||today});
         if(e3) throw e3;
       }
       let invited=null;
@@ -1983,24 +2007,26 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
       try{
         const {data:u}=await client.auth.getUser(); const myId=(u&&u.user&&u.user.id)||null;
         const csId=f.countersigner_user_id||null, csName=(f.countersigner_name||"").trim()||null;
+        const coName=(companies.find(c=>c.id===coId)||{}).name||companyName||null;   // snapshot for {{company_name}}
         await client.from("onboarding_agreements").upsert({
           worker_id:w.id, agreement_kind:"ic_agreement",
           f_rate:f.rate?String(f.rate).trim():null, f_position:f.role.trim()||null, f_start_date:f.hire_date||null,
+          f_company_name:coName,
           addendum_type:f.ic_addendum_type||null, addendum_text:(f.ic_addendum_text||"").trim()||null,
           countersigner_user_id:csId, countersigner_name:csName,
           prepared_by:myId, prepared_at:new Date().toISOString(), updated_at:new Date().toISOString()
         },{onConflict:"worker_id,agreement_kind"});
-        // same countersigner on the other agreements so none show a blank signatory line
-        if(csId||csName){ for(const k of ONB_AGR_KINDS){ if(k==="ic_agreement") continue;
+        // same countersigner + company on the other agreements so none show a blank signatory/company line
+        if(csId||csName||coName){ for(const k of ONB_AGR_KINDS){ if(k==="ic_agreement") continue;
           await client.from("onboarding_agreements").upsert({ worker_id:w.id, agreement_kind:k,
-            countersigner_user_id:csId, countersigner_name:csName,
+            countersigner_user_id:csId, countersigner_name:csName, f_company_name:coName,
             prepared_by:myId, prepared_at:new Date().toISOString(), updated_at:new Date().toISOString() },{onConflict:"worker_id,agreement_kind"}); } }
         const xdocs=ocUniq((f.extra_docs||[]).filter(t=>(t||"").trim()).map(t=>({kind:ocSlug(t),title:t.trim(),required:true})));
         if(f.invite && xdocs.length){
           await client.from("onboarding_progress").upsert({worker_id:w.id, extra_documents:xdocs, updated_at:new Date().toISOString()},{onConflict:"worker_id"});
         }
       }catch(_e){ /* non-fatal */ }
-      logEvent(client,{company_id:companyId,action:"add_contractor",entity:`${f.first_name} ${f.last_name}`,detail:{from:"wizard",contract:f.contract,invited:!!f.invite,rate:parseFloat(f.rate)||null,addendum:f.ic_addendum_type||null,extra_docs:(f.extra_docs||[]).filter(t=>(t||"").trim()).length}});
+      logEvent(client,{company_id:coId,action:"add_contractor",entity:`${f.first_name} ${f.last_name}`,detail:{from:"wizard",contract:f.contract,invited:!!f.invite,rate:parseFloat(f.rate)||null,addendum:f.ic_addendum_type||null,extra_docs:(f.extra_docs||[]).filter(t=>(t||"").trim()).length}});
       clearDraft();   // created — discard the saved draft
       setResult(invited||{ok:true}); onCreated&&onCreated();
     }catch(ex){
@@ -2060,6 +2086,14 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
         {field("Date of birth","date_of_birth","date")}
       </div>}
       {step===2 && <div>
+        <div style={{margin:"6px 0"}}>
+          <label className="muted" style={{fontSize:12}}>Company *</label>
+          <select style={inp} value={f.company_id} onChange={e=>set("company_id",e.target.value)} aria-invalid={errs.company_id?"true":"false"}>
+            <option value="">— select company —</option>
+            {companies.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          {errs.company_id && <div style={{color:"#b91c1c",fontSize:12}}>{errs.company_id}</div>}
+        </div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
           <div style={{margin:"6px 0"}}><label className="muted" style={{fontSize:12}}>Contract</label>
             <select style={inp} value={f.contract} onChange={e=>set("contract",e.target.value)}><option value="FT">Full-time</option><option value="PT">Part-time</option></select></div>
@@ -2072,14 +2106,26 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
           <label style={{fontSize:13,display:"flex",gap:6,alignItems:"center"}}><input type="checkbox" checked={f.thirteenth_month_eligible} onChange={e=>set("thirteenth_month_eligible",e.target.checked)}/> 13th month</label>
         </div>
         <div style={{marginTop:12,paddingTop:10,borderTop:"1px solid #eef0f3"}}>
-          <label className="muted" style={{fontSize:12}}>Company countersigner <span style={{fontWeight:400}}>(signs for ABC Kids NY — their name appears on the agreement the contractor signs)</span></label>
+          <label className="muted" style={{fontSize:12}}>Daily shift * <span style={{fontWeight:400}}>(stored in Philippine time; defaults to 8am–5pm US Eastern)</span></label>
+          <div style={{display:"flex",gap:8,alignItems:"center",marginTop:4,flexWrap:"wrap"}}>
+            <input type="time" style={{...inp,width:"auto",margin:0}} value={f.shift_start} onChange={e=>set("shift_start",e.target.value)} aria-label="Shift start (PHT)"/>
+            <span className="muted">to</span>
+            <input type="time" style={{...inp,width:"auto",margin:0}} value={f.shift_end} onChange={e=>set("shift_end",e.target.value)} aria-label="Shift end (PHT)"/>
+            <button className="btn ghost sm" type="button" onClick={()=>setF(x=>({...x,shift_start:etToPhtHHMM("08:00"),shift_end:etToPhtHHMM("17:00")}))}>Reset to 8–5 ET</button>
+          </div>
+          <div className="muted" style={{fontSize:11,marginTop:2}}>= 8:00 AM – 5:00 PM US Eastern, converted to Philippine time.</div>
+          {errs.shift && <div style={{color:"#b91c1c",fontSize:12}}>{errs.shift}</div>}
+        </div>
+        <div style={{marginTop:12,paddingTop:10,borderTop:"1px solid #eef0f3"}}>
+          <label className="muted" style={{fontSize:12}}>Company countersigner * <span style={{fontWeight:400}}>(signs for ABC Kids NY — their name appears on the agreement the contractor signs)</span></label>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-            <select style={inp} value={f.countersigner_user_id} onChange={e=>{ const a=admins.find(x=>x.user_id===e.target.value); set("countersigner_user_id",e.target.value); set("countersigner_name",a?a.email:""); }}>
+            <select style={inp} value={f.countersigner_user_id} onChange={e=>{ const a=admins.find(x=>x.user_id===e.target.value); set("countersigner_user_id",e.target.value); set("countersigner_name",a?a.email:""); }} aria-invalid={errs.countersigner_user_id?"true":"false"}>
               <option value="">— select admin —</option>
               {admins.map(a=><option key={a.user_id} value={a.user_id}>{a.email}</option>)}
             </select>
             <input style={inp} value={f.countersigner_name} onChange={e=>set("countersigner_name",e.target.value)} placeholder="Name shown on the agreement"/>
           </div>
+          {errs.countersigner_user_id && <div style={{color:"#b91c1c",fontSize:12}}>{errs.countersigner_user_id}</div>}
         </div>
         <div style={{marginTop:12,paddingTop:10,borderTop:"1px solid #eef0f3"}}>
           <label className="muted" style={{fontSize:12}}>IC Agreement addendum <span style={{fontWeight:400}}>(optional — appended to the IC Agreement they sign)</span></label>
@@ -2110,9 +2156,11 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
           <div className="muted" style={{fontSize:12,marginBottom:4}}>Summary</div>
           <div className="row"><span className="muted">Name</span><span>{[f.first_name,f.middle_name,f.last_name].filter(Boolean).join(" ")||"—"}</span></div>
           <div className="row"><span className="muted">Email</span><span>{f.email||"—"}</span></div>
-          <div className="row"><span className="muted">Company / contract</span><span>{companyName} · {f.contract}{f.role?` · ${f.role}`:""}</span></div>
+          <div className="row"><span className="muted">Company / contract</span><span>{(companies.find(c=>c.id===f.company_id)||{}).name||companyName||"—"} · {f.contract}{f.role?` · ${f.role}`:""}</span></div>
           <div className="row"><span className="muted">Rate</span><span>{parseFloat(f.rate)>0?`₱${f.rate}/period`:"not set"}</span></div>
           <div className="row"><span className="muted">Hire date</span><span>{f.hire_date||"—"}</span></div>
+          <div className="row"><span className="muted">Shift (PHT)</span><span>{f.shift_start&&f.shift_end?`${f.shift_start}–${f.shift_end}`:"—"}</span></div>
+          <div className="row"><span className="muted">Countersigner</span><span>{f.countersigner_name||"—"}</span></div>
           {f.ic_addendum_type && <div className="row"><span className="muted">IC addendum</span><span>{f.ic_addendum_type==="scope_of_work"?"Scope of Work":"Other"}</span></div>}
           {(f.extra_docs||[]).filter(t=>(t||"").trim()).length>0 && <div className="row"><span className="muted">Extra documents</span><span>{(f.extra_docs||[]).filter(t=>(t||"").trim()).length}</span></div>}
         </div>
@@ -2128,7 +2176,7 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
   );
 }
 
-function Contractors({ client, companyId, consolidated, onBillingChange, pendingWorkerId, consumePendingWorker }) {
+function Contractors({ client, companyId, consolidated, onBillingChange, pendingWorkerId, consumePendingWorker, rosterNonce }) {
   const { data, loading, reload } = useQuery(client, c => {
     // workers joined to their company link(s) + current rate
     let q = c.from("worker_companies")
@@ -2138,7 +2186,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
               "emergency_name,emergency_relationship,emergency_mobile,permanent_address,address_landmark,postal_code,marital_status,education_level,course,year_graduated,school,work_email,work_number,work_extension,profile_extras)");
     if (!consolidated && companyId) q = q.eq("company_id", companyId);
     return q;
-  }, [client, companyId, consolidated]);
+  }, [client, companyId, consolidated, rosterNonce]);
 
   const [selected, setSelected] = useState(null);
   const [showInactive, setShowInactive] = useState(false);
@@ -9865,8 +9913,15 @@ function agAddendum(type,text){
   return t;
 }
 // Fill {{merge}} fields in an agreement body. Mirrors portal mergeAgreement().
+// Monthly rate from a per-period rate (payroll is semi-monthly → ×2). "" when unparseable.
+function monthlyFromPeriod(rate){
+  const n=parseFloat(String(rate==null?"":rate).replace(/[^0-9.]/g,""));
+  if(!Number.isFinite(n)||n<=0) return "";
+  return (Math.round(n*2*100)/100).toLocaleString("en-US");
+}
 function mergeAgreement(body, v){
   const s={ contractor_name:(v&&v.contractor_name)||"", rate:(v&&v.rate)||"________",
+    monthly_rate:(v&&v.monthly_rate)||"________", company_name:(v&&v.company_name)||"________",
     start_date:(v&&v.start_date)||"________", position:(v&&v.position)||"________",
     contractor_address:(v&&v.contractor_address)||"________",
     countersigner_name:(v&&v.countersigner_name)||"________", today:(v&&v.today)||"",
@@ -9941,7 +9996,7 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigC
   const [insts,setInsts]=useState(null); const [tpls,setTpls]=useState({}); const [waddr,setWaddr]=useState(""); const [whire,setWhire]=useState("");
   const [admins,setAdmins]=useState([]); const [me,setMe]=useState(null); const [cfgAgr,setCfgAgr]=useState(null); const [csMethod,setCsMethod]=useState("both");
   const [edit,setEdit]=useState({}); const [busy,setBusy]=useState(""); const [msg,setMsg]=useState(""); const [cs,setCs]=useState(null);
-  const [dateEdit,setDateEdit]=useState({}); const [dbusy,setDbusy]=useState("");
+  const [dateEdit,setDateEdit]=useState({}); const [dbusy,setDbusy]=useState(""); const [coName,setCoName]=useState("");
   const signedBy={}; (sigs||[]).filter(s=>s.status==="signed").forEach(s=>signedBy[s.agreement_kind]=s);
   function load(){
     client.from("onboarding_agreements").select("*").eq("worker_id",worker_id)
@@ -9950,6 +10005,9 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigC
       .then(({data})=>{ const m={}; (data||[]).forEach(r=>m[r.kind]=r.body); setTpls(m); });
     client.from("admin_users").select("user_id,email").then(({data})=>setAdmins(data||[]));
     client.from("workers").select("ph_address,hire_date").eq("id",worker_id).maybeSingle().then(({data})=>{ setWaddr((data&&data.ph_address)||""); setWhire((data&&data.hire_date)||""); });
+    // Live company name (fallback for {{company_name}} when an agreement row predates the snapshot).
+    client.from("worker_companies").select("status,companies(name)").eq("worker_id",worker_id)
+      .then(({data})=>{ const rows=data||[]; const act=rows.find(r=>r.status==="active")||rows[0]; setCoName((act&&act.companies&&act.companies.name)||""); });
     // Which agreements are currently required (drives the list below) — removed
     // agreements drop off unless the contractor already signed one (kept as record).
     client.from("portal_settings").select("onboarding_config").eq("id",1).maybeSingle()
@@ -9981,6 +10039,7 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigC
     const adminRow=admins.find(a=>a.user_id===f.countersigner_user_id);
     const row={ worker_id, agreement_kind:k,
       f_position:f.f_position||null, f_rate:f.f_rate||null, f_start_date:f.f_start_date||null,
+      f_company_name:(insts[k]&&insts[k].f_company_name)||coName||null,
       addendum_type:(k==="ic_agreement"&&f.addendum_type)||null, addendum_text:(k==="ic_agreement"&&(f.addendum_text||"").trim())||null,
       countersigner_user_id:f.countersigner_user_id||null,
       countersigner_name:(f.countersigner_name||(adminRow&&adminRow.email))||null,
@@ -10019,7 +10078,8 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigC
   }
   function printDoc(k){
     const r=insts[k]||{}; const sig=signedBy[k];
-    const merged=mergeAgreement(tpls[k]||"",{ contractor_name:workerName, rate:effF(r,"f_rate"), start_date:effStart(r),
+    const merged=mergeAgreement(tpls[k]||"",{ contractor_name:workerName, rate:effF(r,"f_rate"), monthly_rate:monthlyFromPeriod(effF(r,"f_rate")),
+      company_name:effF(r,"f_company_name")||coName, start_date:effStart(r),
       position:effF(r,"f_position"), countersigner_name:effCs(r), contractor_address:waddr,
       addendum:agAddendum(r.addendum_type,r.addendum_text), today });
     // signature_data / countersign_data are user-controlled — only emit them as an
@@ -10330,7 +10390,7 @@ function AgreementTemplatesModal({ client, onClose }){
           <h2 id="at-title" style={{margin:0}}>Agreement templates</h2>
           <button className="btn ghost sm" onClick={close}>Close</button>
         </div>
-        <p className="sub">Paste the standard agreement text. Use <code>{"{{contractor_name}}"}</code>, <code>{"{{position}}"}</code>, <code>{"{{rate}}"}</code>, <code>{"{{start_date}}"}</code>, <code>{"{{countersigner_name}}"}</code>, <code>{"{{today}}"}</code> where the preparer's values should be filled in per contractor.</p>
+        <p className="sub">Paste the standard agreement text. Use <code>{"{{contractor_name}}"}</code>, <code>{"{{company_name}}"}</code>, <code>{"{{position}}"}</code>, <code>{"{{rate}}"}</code> (per period), <code>{"{{monthly_rate}}"}</code>, <code>{"{{start_date}}"}</code>, <code>{"{{countersigner_name}}"}</code>, <code>{"{{contractor_address}}"}</code>, <code>{"{{today}}"}</code> where the preparer's values should be filled in per contractor.</p>
         <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
           {rows.map(r=>(<button key={r.kind} className={"btn sm "+(sel===r.kind?"":"ghost")} onClick={()=>pick(r.kind)}>{ONB_AGR_LABEL[r.kind]||r.kind}</button>))}
         </div>
@@ -10529,7 +10589,7 @@ function OnboardingConfigModal({ client, onClose }){
     </div>
   );
 }
-function OnboardingAdmin({ client, companyId, consolidated, active }){
+function OnboardingAdmin({ client, companyId, consolidated, active, onContractorChanged }){
   const [showDone,setShowDone]=useState(false); const [sel,setSel]=useState(null); const [showTpl,setShowTpl]=useState(false); const [showCfg,setShowCfg]=useState(false); const [showWizard,setShowWizard]=useState(false);
   const [coName,setCoName]=useState("");
   useEffect(()=>{ if(companyId) client.from("companies").select("name").eq("id",companyId).maybeSingle().then(({data})=>setCoName((data&&data.name)||"")); else setCoName(""); },[client,companyId]);
@@ -10577,7 +10637,7 @@ function OnboardingAdmin({ client, companyId, consolidated, active }){
           <button className="btn ghost sm" onClick={refresh}>Refresh</button>
         </div>
       </div>
-      {showWizard && <AddContractorWizard client={client} companyId={companyId} companyName={coName} onClose={()=>{setShowWizard(false); refresh();}} onCreated={refresh} />}
+      {showWizard && <AddContractorWizard client={client} companyId={companyId} companyName={coName} onClose={()=>{setShowWizard(false); refresh();}} onCreated={()=>{refresh(); onContractorChanged&&onContractorChanged();}} />}
       {showTpl && <AgreementTemplatesModal client={client} onClose={()=>setShowTpl(false)}/>}
       {showCfg && <OnboardingConfigModal client={client} onClose={()=>setShowCfg(false)}/>}
       <Alert show={needReview>0} type="warn" tab="onboarding">{needReview} contractor{needReview>1?"s have":" has"} documents waiting for review.{orphanReview>0?` (${orphanReview} uploaded outside onboarding — not listed below.)`:""}</Alert>
@@ -11380,6 +11440,12 @@ function App() {
   const [companiesNonce,setCompaniesNonce]=useState(0);
   const bumpCompanies=React.useCallback(()=>setCompaniesNonce(n=>n+1),[]);
 
+  // Bumped when a contractor is added from another tab (e.g. the Onboarding
+  // hire wizard) so the always-mounted Contractors list re-fetches instead of
+  // showing a stale roster until a manual refresh / company switch.
+  const [rosterNonce,setRosterNonce]=useState(0);
+  const bumpRoster=React.useCallback(()=>setRosterNonce(n=>n+1),[]);
+
   // Session-scoped "billing dirty" tracker: ProfileModal pushes a record into
   // billingDirty whenever a billing-relevant field (rate, payout method, Wise
   // recipient, UUID, payout account) is saved. Any action that could
@@ -11551,7 +11617,7 @@ function App() {
         {/* All tabs stay mounted; only the active one is shown. This preserves
             each tab's in-memory state (selected period, loaded rows, filters)
             across tab switches. */}
-        <div style={{display:tab==="contractors"?"block":"none"}}><Contractors {...{client:sb.client,companyId,consolidated,onBillingChange:recordBillingChange,pendingWorkerId,consumePendingWorker}} /></div>
+        <div style={{display:tab==="contractors"?"block":"none"}}><Contractors {...{client:sb.client,companyId,consolidated,onBillingChange:recordBillingChange,pendingWorkerId,consumePendingWorker,rosterNonce}} /></div>
         <div style={{display:tab==="time"?"block":"none"}}><TimeImport {...{client:sb.client,companyId,consolidated,goTab:go,openPeriodForEdit}} /></div>
         <div style={{display:tab==="imports"?"block":"none"}}><DeleteImports {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="payroll"?"block":"none"}}><Payroll {...{client:sb.client,companyId,consolidated,confirmBillingDirty,openContractor,goTab:go,pendingPeriod,consumePendingPeriod}} /></div>
@@ -11560,7 +11626,7 @@ function App() {
         <div style={{display:tab==="batches"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="batches",confirmBillingDirty,openContractor,reconcileOnly:true}} /></div>
         <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>
         <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId,consolidated}} /></div>
-        <div style={{display:tab==="onboarding"?"block":"none"}}><OnboardingAdmin {...{client:sb.client,companyId,consolidated,active:tab==="onboarding"}} /></div>
+        <div style={{display:tab==="onboarding"?"block":"none"}}><OnboardingAdmin {...{client:sb.client,companyId,consolidated,active:tab==="onboarding",onContractorChanged:bumpRoster}} /></div>
         {tab==="configuration" && <ErrorBoundary><Configuration {...{client:sb.client,companyId,consolidated,isOwner,setCompanyId,onCompaniesChanged:bumpCompanies}} /></ErrorBoundary>}
         <div className="no-print" style={{textAlign:"center",color:"var(--muted)",fontSize:11,padding:"18px 0 32px",letterSpacing:".02em"}}>Build {BUILD}</div>
       </main>

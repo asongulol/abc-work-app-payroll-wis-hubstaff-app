@@ -1386,9 +1386,16 @@ function agAddendum(type,text){
 }
 // Fill {{merge}} fields in an agreement body from the prepared instance + worker.
 // Auto-appends the addendum when the template doesn't place {{addendum}} itself.
+// Monthly rate from a per-period rate (payroll is semi-monthly → ×2). "" when unparseable.
+function monthlyFromPeriod(rate){
+  const n=parseFloat(String(rate==null?"":rate).replace(/[^0-9.]/g,""));
+  if(!Number.isFinite(n)||n<=0) return "";
+  return (Math.round(n*2*100)/100).toLocaleString("en-US");
+}
 function mergeAgreement(body, vals){
   const v = vals||{};
   const sub = { contractor_name:v.contractor_name||"", rate:v.rate||"________",
+    monthly_rate:v.monthly_rate||"________", company_name:v.company_name||"________",
     start_date:v.start_date||"________", position:v.position||"________",
     contractor_address:v.contractor_address||"________",
     countersigner_name:v.countersigner_name||"________", today:v.today||"",
@@ -1409,8 +1416,8 @@ function AgreementViewer({ client, agreement, onClose, onSigned }){
       const isIc = agreement.kind==="ic_agreement";
       const [{data:tpl},{data:inst},{data:ic},{data:w}] = await Promise.all([
         client.from("agreement_templates").select("body").eq("kind",agreement.kind).maybeSingle(),
-        client.from("onboarding_agreements").select("f_rate,f_start_date,f_position,countersigner_name,addendum_type,addendum_text").eq("agreement_kind",agreement.kind).maybeSingle(),
-        isIc ? Promise.resolve({data:null}) : client.from("onboarding_agreements").select("f_rate,f_start_date,f_position,countersigner_name").eq("agreement_kind","ic_agreement").maybeSingle(),
+        client.from("onboarding_agreements").select("f_rate,f_start_date,f_position,f_company_name,countersigner_name,addendum_type,addendum_text").eq("agreement_kind",agreement.kind).maybeSingle(),
+        isIc ? Promise.resolve({data:null}) : client.from("onboarding_agreements").select("f_rate,f_start_date,f_position,f_company_name,countersigner_name").eq("agreement_kind","ic_agreement").maybeSingle(),
         client.from("workers").select("first_name,middle_name,last_name,ph_address,hire_date").maybeSingle(),
       ]);
       if(!alive) return;
@@ -1422,7 +1429,8 @@ function AgreementViewer({ client, agreement, onClose, onSigned }){
       // per-document override on this agreement still wins.
       const pick=(field)=> (inst&&inst[field]) || (ic&&ic[field]) || "";
       const merged = mergeAgreement(body, {
-        contractor_name: w?fullName(w):"", rate:pick("f_rate"), start_date:pick("f_start_date")||(w&&w.hire_date)||"",
+        contractor_name: w?fullName(w):"", rate:pick("f_rate"), monthly_rate:monthlyFromPeriod(pick("f_rate")),
+        company_name:pick("f_company_name"), start_date:pick("f_start_date")||(w&&w.hire_date)||"",
         position:pick("f_position"), countersigner_name:(inst&&inst.countersigner_name)||(ic&&ic.countersigner_name)||"",
         contractor_address: w&&w.ph_address, addendum: agAddendum(inst&&inst.addendum_type, inst&&inst.addendum_text), today });
       setText(merged);
