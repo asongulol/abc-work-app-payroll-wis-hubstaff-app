@@ -129,7 +129,7 @@ One-time setup:
    supabase link --project-ref <your-project-ref>     # the xxxx in your URL
    supabase functions deploy hubstaff-sync --no-verify-jwt
    ```
-   (The function file is in `edge-functions/hubstaff-sync/index.ts`.)
+   (The function file is in `supabase/functions/hubstaff-sync/index.ts`.)
 4. **Set the secret token** (stays server-side, never in the app):
    ```
    supabase secrets set HUBSTAFF_REFRESH_TOKEN="paste-the-refresh-token"

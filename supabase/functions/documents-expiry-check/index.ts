@@ -90,13 +90,19 @@ Deno.serve(async (req) => {
     const withinDays = Number(body.within_days ?? 30);
     const today = new Date();
 
-    // Pull docs that have an expiry and join contractor + company names.
+    // Pull docs that have an expiry and join contractor + company names. Bound the
+    // query server-side to an upper expiry date (today + window, +1 day of slack so
+    // the time-of-day-aware JS filter below is still authoritative) — this keeps all
+    // overdue rows and everything in the window while dropping far-future docs, and
+    // avoids PostgREST's 1000-row cap silently truncating the result. The explicit
+    // date comparison also excludes NULLs, so a separate not-null filter is redundant.
+    const upper = new Date(today.getTime() + (withinDays + 1) * 86400000).toISOString().slice(0, 10);
     const qs = new URLSearchParams();
     qs.set("select",
       "id,kind,title,expires_on,worker_id," +
       "workers(first_name,middle_name,last_name,status)," +
       "companies(name)");
-    qs.set("expires_on", "not.is.null");
+    qs.set("expires_on", "lte." + upper);
     qs.set("order", "expires_on.asc");
     const r = await fetch(`${SB_URL}/rest/v1/documents?${qs}`, { headers: restHdr });
     if (!r.ok) return json({ error: `documents fetch ${r.status}: ${await r.text()}` }, 500);

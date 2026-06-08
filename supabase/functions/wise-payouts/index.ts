@@ -63,41 +63,80 @@ function authHeaders(token: string) {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 }
 
+// Run async `fn` over `items` with bounded concurrency, preserving input order.
+// Used to parallelize the per-transfer Wise GET loops (status / rates / poll)
+// without hammering the Wise API; cap kept modest for rate-limit safety.
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) break;
+      out[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+// The Wise business profile id is constant for the account, so memoize it at
+// module scope — warm isolates skip the redundant GET /v2/profiles round-trip.
+// Only the resolved value is cached; a thrown fetch never poisons the cache.
+let cachedProfileId: number | null = null;
 async function getBusinessProfileId(token: string): Promise<number> {
+  if (cachedProfileId != null) return cachedProfileId;
   const r = await fetch(`${BASE}/v2/profiles`, { headers: authHeaders(token) });
   if (!r.ok) throw new Error(`profiles ${r.status}: ${await r.text()}`);
   const profiles = await r.json();
   const biz = profiles.find((p: any) => p.type === "business") ?? profiles[0];
   if (!biz) throw new Error("no Wise profile found");
-  return biz.id;
+  cachedProfileId = biz.id;
+  return cachedProfileId;
 }
 
 // Pull a single transfer's full detail to capture the dateFunded / dateSent
 // timestamps that the list endpoint omits. Falls back to whatever was already
 // on the list row if the detail fetch fails. Returns ISO strings so the DB
 // can store them in jsonb without further conversion.
-async function fetchWiseDates(token: string, listRow: any): Promise<Record<string, string | null>> {
-  const toIso = (v: any): string | null => {
-    if (!v) return null;
-    // Wise sometimes returns space-separated "YYYY-MM-DD HH:MM:SS" (UTC),
-    // sometimes ISO. Normalise both into a real ISO string.
-    const s = String(v).trim();
-    const iso = s.includes("T") ? s : s.replace(" ", "T") + "Z";
-    const d = new Date(iso);
-    return isNaN(d.getTime()) ? null : d.toISOString();
+// Wise sometimes returns space-separated "YYYY-MM-DD HH:MM:SS" (UTC), sometimes
+// ISO. Normalise both into a real ISO string (or null).
+function toIsoWise(v: any): string | null {
+  if (!v) return null;
+  const s = String(v).trim();
+  const iso = s.includes("T") ? s : s.replace(" ", "T") + "Z";
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+// Pure: derive the created/dateFunded/dateSent triple from a FULL transfer
+// detail object (GET /v1/transfers/{id}) — no network. Use this when you already
+// have the detail row in hand (e.g. the poll loop) to avoid a second GET.
+function wiseDatesFromRow(row: any): Record<string, string | null> {
+  return {
+    created: toIsoWise(row.created ?? row.createdAt),
+    dateFunded: toIsoWise(row.dateFunded ?? row.fundedDate ?? null),
+    dateSent: toIsoWise(row.dateSent ?? row.sentDate ?? null),
   };
+}
+
+// Pull a single transfer's full detail to capture dateFunded / dateSent that the
+// LIST endpoint omits. Falls back to the list row's created if the detail fetch
+// fails. Use only when you have a list row (not the full detail) — the poll loop
+// already has the detail and should use wiseDatesFromRow() instead.
+async function fetchWiseDates(token: string, listRow: any): Promise<Record<string, string | null>> {
   const dates: Record<string, string | null> = {
-    created: toIso(listRow.created ?? listRow.createdAt),
+    created: toIsoWise(listRow.created ?? listRow.createdAt),
     dateFunded: null,
     dateSent: null,
   };
   try {
     const r = await fetch(`${BASE}/v1/transfers/${listRow.id}`, { headers: authHeaders(token) });
     if (r.ok) {
-      const t = await r.json();
-      dates.dateFunded = toIso(t.dateFunded ?? t.fundedDate ?? null);
-      dates.dateSent   = toIso(t.dateSent   ?? t.sentDate   ?? null);
-      if (!dates.created) dates.created = toIso(t.created ?? t.createdAt);
+      const d = wiseDatesFromRow(await r.json());
+      dates.dateFunded = d.dateFunded;
+      dates.dateSent   = d.dateSent;
+      if (!dates.created) dates.created = d.created;
     }
   } catch (_e) { /* best effort — keep created at minimum */ }
   return dates;
@@ -246,11 +285,10 @@ Deno.serve(async (req) => {
 
     if (body.action === "status") {
       const ids = body.transfer_ids ?? [];
-      const statuses = [];
-      for (const id of ids) {
+      const statuses = await mapLimit(ids, 8, async (id: any) => {
         const r = await fetch(`${BASE}/v1/transfers/${id}`, { headers: authHeaders(token) });
-        statuses.push(r.ok ? { id, status: (await r.json()).status } : { id, status: "unknown" });
-      }
+        return r.ok ? { id, status: (await r.json()).status } : { id, status: "unknown" };
+      });
       return json({ statuses });
     }
 
@@ -261,12 +299,11 @@ Deno.serve(async (req) => {
     // fx_rate stored on payments.
     if (body.action === "rates") {
       const ids = body.transfer_ids ?? [];
-      const rates = [];
-      for (const id of ids) {
+      const rates = await mapLimit(ids, 8, async (id: any) => {
         const r = await fetch(`${BASE}/v1/transfers/${id}`, { headers: authHeaders(token) });
-        if (!r.ok) { rates.push({ id, error: `wise ${r.status}` }); continue; }
+        if (!r.ok) return { id, error: `wise ${r.status}` };
         const t = await r.json();
-        rates.push({
+        return {
           id,
           rate: t.rate ?? null,
           status: t.status ?? null,
@@ -277,8 +314,8 @@ Deno.serve(async (req) => {
           targetAccount: t.targetAccount ?? null,
           reference: t.details?.reference ?? null,
           created: t.created ?? null,
-        });
-      }
+        };
+      });
       return json({ rates });
     }
 
@@ -322,21 +359,29 @@ Deno.serve(async (req) => {
       const results = [];
       let marked = 0, inFlight = 0, unknown = 0;
       const nowIso = new Date().toISOString();
-      for (const p of payments) {
+      // Fetch every transfer's full detail in parallel (bounded), then apply the
+      // per-row DB updates. Each transfer GET already returns the full detail, so
+      // we derive wise_dates from it directly (no second GET via fetchWiseDates).
+      const fetched = await mapLimit(payments, 8, async (p: any) => {
         const id = p.wise_transfer_id;
         const r = await fetch(`${BASE}/v1/transfers/${id}`, { headers: authHeaders(token) });
-        if (!r.ok) {
+        return r.ok ? { p, id, ok: true as const, wiseRow: await r.json() }
+                    : { p, id, ok: false as const, httpStatus: r.status };
+      });
+      for (const f of fetched) {
+        const { p, id } = f;
+        if (!f.ok) {
           unknown++;
-          results.push({ payment_id: p.id, transfer_id: id, status: "unknown", error: `wise ${r.status}` });
+          results.push({ payment_id: p.id, transfer_id: id, status: "unknown", error: `wise ${f.httpStatus}` });
           continue;
         }
-        const wiseRow = await r.json();
+        const wiseRow = f.wiseRow;
         const st = wiseRow.status;
         if (paidStates.has(st)) {
           // PATCH the single payment row to 'sent', using Wise's REAL sent date
           // (or dateFunded / created as fallbacks) instead of now(). Also
           // captures the full wise_dates triple for the UI tooltip.
-          const dates = await fetchWiseDates(token, wiseRow);
+          const dates = wiseDatesFromRow(wiseRow);
           const realSent = dates.dateSent || dates.dateFunded || dates.created || nowIso;
           const uRes = await fetch(
             `${supaUrl}/rest/v1/payments?id=eq.${p.id}`,

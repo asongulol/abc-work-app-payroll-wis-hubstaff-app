@@ -149,23 +149,25 @@ Deno.serve(async (req) => {
       };
 
       // tier 1 — payroll history: absolute block (and abort on probe failure).
-      const pay = await probe("payments", "id");
-      const te = await probe("time_entries", "work_date");
+      // Probes within a tier are independent → run them concurrently; keep the
+      // tier-1-before-tier-2 short-circuit so a blocked delete does no extra reads.
+      const [pay, te] = await Promise.all([probe("payments", "id"), probe("time_entries", "work_date")]);
       if (!pay.ok || !te.ok) return json({ error: "couldn't verify payroll history — delete aborted, please retry", code: "guard_error" }, 502);
       if (pay.n || te.n) return json({ error: "This contractor has payroll history (payments or time entries) and can't be deleted — deactivate them instead.", code: "has_history" }, 409);
 
       // tier 2 — signed legal / compliance records: require explicit force.
-      const sig = await probe("onboarding_signatures", "id");
-      const doc = await probe("documents", "id");
+      const [sig, doc] = await Promise.all([probe("onboarding_signatures", "id"), probe("documents", "id")]);
       if (!sig.ok || !doc.ok) return json({ error: "couldn't verify contractor records — delete aborted, please retry", code: "guard_error" }, 502);
       if (!force && (sig.n || doc.n))
         return json({ error: "This contractor has signed agreements / uploaded documents.", code: "has_records", signatures: sig.n, documents: doc.n }, 409);
 
-      // gather external artifacts BEFORE the cascade removes their rows
-      const docRes = await fetch(`${SB}/rest/v1/documents?worker_id=eq.${worker_id}&select=storage_path`, { headers: svc });
+      // gather external artifacts BEFORE the cascade removes their rows (concurrent)
+      const [docRes, clRes] = await Promise.all([
+        fetch(`${SB}/rest/v1/documents?worker_id=eq.${worker_id}&select=storage_path`, { headers: svc }),
+        fetch(`${SB}/rest/v1/contractor_logins?worker_id=eq.${worker_id}&select=auth_user_id`, { headers: svc }),
+      ]);
       const docs = await docRes.json().catch(() => []);
       const paths = (Array.isArray(docs) ? docs : []).map((d: any) => d.storage_path).filter(Boolean);
-      const clRes = await fetch(`${SB}/rest/v1/contractor_logins?worker_id=eq.${worker_id}&select=auth_user_id`, { headers: svc });
       const cl = await clRes.json().catch(() => []);
       const auth_user_id = (Array.isArray(cl) && cl[0]?.auth_user_id) || null;
 

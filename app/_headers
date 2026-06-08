@@ -23,12 +23,14 @@
   Cache-Control: no-cache
 
 # The app shell is ONE HTML file (everything else loads from CDNs at runtime).
-# Use no-store so the browser NEVER reuses a stored copy — a new deploy always
-# shows up on a normal refresh, no hard-refresh needed. (no-cache still let some
-# browsers serve a stale shell via a 304; no-store removes that path entirely.)
+# Use no-cache (NOT no-store): the browser may store the body but MUST revalidate
+# with the origin on every load. With the ETag Cloudflare sends, an unchanged
+# shell returns a cheap 304 (~0 bytes) and a changed shell returns a fresh 200 —
+# same deploy-freshness as no-store, without re-downloading ~700 KB every visit.
+# (The version.txt poll still covers the long-lived-open-tab case.)
 /
-  Cache-Control: no-store, must-revalidate
+  Cache-Control: no-cache
 /index.html
-  Cache-Control: no-store, must-revalidate
+  Cache-Control: no-cache
 /legacy.html
-  Cache-Control: no-store, must-revalidate
+  Cache-Control: no-cache
