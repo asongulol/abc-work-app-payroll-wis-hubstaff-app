@@ -1628,6 +1628,9 @@ function Stage2Profile({ client, onAdvance }){
             ? <select value={form[d.k]||""} onChange={e=>set(d.k,e.target.value)} aria-invalid={errs[d.k]?"true":"false"}><option value="">Select…</option>{d.opts.map(o=><option key={o} value={o}>{o}</option>)}{form[d.k]&&!d.opts.includes(form[d.k])&&<option value={form[d.k]}>{form[d.k]}</option>}</select>
             : <input type={d.type||"text"} value={form[d.k]||""} onChange={e=>set(d.k,e.target.value)}
                 aria-invalid={errs[d.k]?"true":"false"} placeholder={d.wise?"@yourtag":""}/>}
+          {d.wise &&
+            <a href="https://wise.com/invite/dic/olivert410" target="_blank" rel="noreferrer"
+               style={{fontSize:13,color:"var(--accent)",fontWeight:600,display:"inline-block",marginTop:2}}>Don't have a Wise account? Set one up →</a>}
           {errs[d.k] && <div className="err" style={{padding:"2px 0"}}>{errs[d.k]}</div>}
         </div>
       ))}
