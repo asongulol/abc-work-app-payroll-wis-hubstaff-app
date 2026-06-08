@@ -699,7 +699,7 @@ const MARITAL_OPTS=["Single","Married","Widowed","Separated","Annulled","Divorce
 const GRAD_YEARS=(()=>{ const y=new Date().getFullYear(); return Array.from({length:60},(_,i)=>String(y-i)); })();
 const FIELD_DEFS = [
   {k:"first_name",label:"First name",s:"contact"}, {k:"middle_name",label:"Middle name",s:"contact"}, {k:"last_name",label:"Last name",s:"contact"},
-  {k:"mobile",label:"Mobile",type:"tel",s:"contact"}, {k:"ph_address",label:"Current PH address",s:"contact"}, {k:"permanent_address",label:"Permanent address",s:"contact"},
+  {k:"mobile",label:"Mobile",type:"tel",s:"contact"}, {k:"ph_address",label:"Current PH address",s:"contact"}, {k:"permanent_address",label:"Permanent address",s:"contact",sameAs:"ph_address"},
   {k:"address_landmark",label:"Landmark",s:"contact"}, {k:"postal_code",label:"Postal code",s:"contact"}, {k:"date_of_birth",label:"Date of birth",type:"date",s:"contact"},
   {k:"emergency_name",label:"Emergency contact name",s:"personal"}, {k:"emergency_relationship",label:"Emergency contact relationship",s:"personal",opts:REL_OPTS}, {k:"emergency_mobile",label:"Emergency contact mobile",type:"tel",s:"personal"},
   {k:"marital_status",label:"Marital status",s:"personal",opts:MARITAL_OPTS}, {k:"education_level",label:"Highest Degree Attained",s:"personal",opts:["Elementary","High School","Some College","College","Masters","Doctorate"]}, {k:"course",label:"Degree and Major",s:"personal"}, {k:"year_graduated",label:"Year graduated",s:"personal",opts:GRAD_YEARS}, {k:"school",label:"School",s:"personal"},
@@ -711,15 +711,19 @@ function ProfileView({ client, session, onSignOut }){
   const [w,setW]=useState(null); const [editable,setEditable]=useState([]); const [form,setForm]=useState({});
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [err,setErr]=useState("");
   const [psec,setPsec]=useState("contact");
+  const [sameAddr,setSameAddr]=useState(false);   // permanent address mirrors current
   function load(){
     client.from("workers").select("first_name,middle_name,last_name,email,work_email,mobile,work_number,work_extension,ph_address,date_of_birth,gcash,paymaya,paypal,wise_tag,hire_date,payout_method,emergency_name,emergency_relationship,emergency_mobile,permanent_address,address_landmark,postal_code,marital_status,education_level,course,year_graduated,school,profile_extras")
       .then(({data})=>{ const row=(data||[])[0]||{}; setW(row);
         const ex=(row.profile_extras&&typeof row.profile_extras==="object")?row.profile_extras:{};
-        setForm(Object.fromEntries(FIELD_DEFS.map(f=>[f.k,(f.ex?ex[f.k]:row[f.k])||""]))); });
+        setForm(Object.fromEntries(FIELD_DEFS.map(f=>[f.k,(f.ex?ex[f.k]:row[f.k])||""])));
+        setSameAddr(!!row.ph_address && (row.permanent_address||"")===(row.ph_address||"")); });
     client.from("portal_settings").select("editable_fields").eq("id",1).maybeSingle()
       .then(({data})=>setEditable(Array.isArray(data?.editable_fields)?data.editable_fields:[]));
   }
   useEffect(load,[]);
+  // Keep permanent address synced to current while "Same as current" is ticked.
+  useEffect(()=>{ if(sameAddr) setForm(x=> x.permanent_address===x.ph_address ? x : {...x,permanent_address:x.ph_address}); },[sameAddr,form.ph_address]);
   const isEditable=k=>editable.includes(k);
   const set=(k,v)=>setForm(x=>({...x,[k]:v}));
   const curVal=f=>{ const ex=(w?.profile_extras&&typeof w.profile_extras==="object")?w.profile_extras:{}; return (f.ex?ex[f.k]:w[f.k])||""; };
@@ -766,10 +770,14 @@ function ProfileView({ client, session, onSignOut }){
         {secFields.map(f=>(
           <div key={f.k} style={{margin:"8px 0"}}>
             <label className="sub" style={{display:"block"}}>{f.label}</label>
+            {f.sameAs && isEditable(f.k) &&
+              <label className="sub" style={{display:"flex",gap:6,alignItems:"center",margin:"2px 0 4px"}}>
+                <input type="checkbox" checked={sameAddr} onChange={e=>setSameAddr(e.target.checked)}/> Same as current PH address
+              </label>}
             {isEditable(f.k)
               ? (f.opts
                   ? <select value={form[f.k]||""} onChange={e=>set(f.k,e.target.value)}><option value="">Select…</option>{f.opts.map(o=><option key={o} value={o}>{o}</option>)}{form[f.k]&&!f.opts.includes(form[f.k])&&<option value={form[f.k]}>{form[f.k]}</option>}</select>
-                  : <input type={f.type||"text"} value={form[f.k]||""} onChange={e=>set(f.k,e.target.value)} placeholder={f.wise?"@yourtag":""}/>)
+                  : <input type={f.type||"text"} value={form[f.k]||""} disabled={f.sameAs&&sameAddr} onChange={e=>set(f.k,e.target.value)} placeholder={f.wise?"@yourtag":""}/>)
               : <div style={{padding:"6px 0",fontSize:15}}>{curVal(f)||<span className="sub">—</span>}</div>}
             {f.wise && isEditable("wise_tag") &&
               <a href="https://wise.com/invite/dic/olivert410" target="_blank" rel="noreferrer"

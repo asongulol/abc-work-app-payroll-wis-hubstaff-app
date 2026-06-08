@@ -1896,6 +1896,9 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
   const set=(k,v)=>setF(x=>({...x,[k]:v}));
   const [busy,setBusy]=useState(false); const [err,setErr]=useState(""); const [errs,setErrs]=useState({});
   const [result,setResult]=useState(null);
+  const [sameAddr,setSameAddr]=useState(()=>{ const d=loadedDraft&&loadedDraft.f; return !!(d&&d.ph_address)&&((d.permanent_address||"")===(d.ph_address||"")); });
+  // Keep permanent address synced to current while "same as current" is ticked.
+  useEffect(()=>{ if(sameAddr) setF(x=> x.permanent_address===x.ph_address ? x : {...x,permanent_address:x.ph_address}); },[sameAddr,f.ph_address]);
   // a11y: focus-trap + focus-restore for whichever branch is mounted (form XOR
   // success). escClose:false so a stray Escape never discards a half-typed hire;
   // dep:!!result re-establishes the trap when the success screen replaces the form.
@@ -2047,7 +2050,13 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>{field("First name *","first_name")}{field("Middle name","middle_name")}{field("Last name *","last_name")}</div>
         {field("Personal email *","email","email","name@example.com")}
         {field("Current address","ph_address")}
-        {field("Permanent address","permanent_address")}
+        <div style={{margin:"6px 0"}}>
+          <label className="muted" style={{fontSize:12}}>Permanent address</label>
+          <label className="muted" style={{fontSize:12,display:"flex",gap:6,alignItems:"center",margin:"2px 0 4px"}}>
+            <input type="checkbox" checked={sameAddr} onChange={e=>setSameAddr(e.target.checked)}/> Same as current address
+          </label>
+          <input style={inp} value={f.permanent_address} disabled={sameAddr} onChange={e=>set("permanent_address",e.target.value)}/>
+        </div>
         {field("Date of birth","date_of_birth","date")}
       </div>}
       {step===2 && <div>
@@ -2559,6 +2568,9 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   const [rate,setRate]=useState("");
   const [rateEff,setRateEff]=useState(new Date().toISOString().slice(0,10));
   const set=(k,v)=>setF(x=>({...x,[k]:v}));
+  const [sameAddr,setSameAddr]=useState(()=> !!w.ph_address && (w.permanent_address||"")===(w.ph_address||""));
+  // Keep permanent address synced to current (PH) while "same as current" is ticked.
+  useEffect(()=>{ if(sameAddr) setF(x=> x.permanent_address===x.ph_address ? x : {...x,permanent_address:x.ph_address}); },[sameAddr,f.ph_address]);
   // Unsaved-changes guard: dirty when any field diverges from the snapshot taken
   // when the modal opened; reset after a successful "Save details".
   const ucSnap=()=>JSON.stringify({f,contract,role,hubName});
@@ -2924,7 +2936,11 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
             <div className="field"><label>Relationship</label><select style={inp} value={f.emergency_relationship} onChange={e=>set("emergency_relationship",e.target.value)}><option value="">Select…</option>{REL_OPTS.map(o=><option key={o} value={o}>{o}</option>)}{f.emergency_relationship&&!REL_OPTS.includes(f.emergency_relationship)&&<option value={f.emergency_relationship}>{f.emergency_relationship}</option>}</select></div>
             <div className="field"><label>Emergency mobile</label><input style={inp} type="tel" value={f.emergency_mobile} onChange={e=>set("emergency_mobile",e.target.value)}/></div>
           </div>
-          <div className="field"><label>Permanent address</label><input style={inp} value={f.permanent_address} onChange={e=>set("permanent_address",e.target.value)}/></div>
+          <div className="field"><label>Permanent address</label>
+            <label className="muted" style={{fontSize:12,display:"flex",gap:6,alignItems:"center",margin:"2px 0 4px"}}>
+              <input type="checkbox" checked={sameAddr} onChange={e=>setSameAddr(e.target.checked)}/> Same as current (PH) address
+            </label>
+            <input style={inp} value={f.permanent_address} disabled={sameAddr} onChange={e=>set("permanent_address",e.target.value)}/></div>
           <div className="row">
             <div className="field"><label>Landmark</label><input style={inp} value={f.address_landmark} onChange={e=>set("address_landmark",e.target.value)}/></div>
             <div className="field"><label>Postal code</label><input style={inp} value={f.postal_code} onChange={e=>set("postal_code",e.target.value)}/></div>
