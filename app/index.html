@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-09 14:51 EDT · 445d996";
+const BUILD = "2026-06-09 16:12 EDT · ce7ac44";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -1260,11 +1260,12 @@ async function pageAll(countQuery, rangeQuery, pageSize = 1000) {
 
 // ============================ COMPANY SWITCHER ===============================
 function CompanySwitcher({ client, companyId, setCompanyId, consolidated, setConsolidated, companiesNonce }) {
-  // Only ACTIVE companies appear here; archived ones are hidden (managed in
-  // Configuration → Companies). Re-fetches when companiesNonce bumps so a newly
-  // added / archived company shows up without a full reload.
+  // Only ACTIVE CLIENTS appear here (kind='client'); the employer (payroll home)
+  // is NOT selectable — payroll is employer-pinned and ignores this toggle. This
+  // picker scopes billing/display tabs (Contractors, Invoicing) only. Re-fetches
+  // when companiesNonce bumps so a newly added/archived client shows without reload.
   const { data } = useQuery(client,
-    c => c.from("companies").select("id,name,status").eq("status","active").order("name"), [client, companiesNonce]);
+    c => c.from("companies").select("id,name,status").eq("status","active").eq("kind","client").order("name"), [client, companiesNonce]);
   const companies = data || [];
   return (
     <div style={{display:"flex",alignItems:"center",gap:8,marginLeft:"auto"}}>
@@ -11445,7 +11446,7 @@ function CommandPalette({ client, companyId, consolidated, tabGroups, navIcon, g
 // otherwise we offer "Archive instead". Archive hides the company from the
 // switcher but keeps every record; Restore brings it back. Per the ID-first
 // convention, hubstaff_org_id is the stable link the Hubstaff sync matches on.
-function CompaniesModal({ client, isOwner, currentCompanyId, setCompanyId, onChanged, onClose }){
+function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId, onChanged, onClose }){
   const [rows,setRows]=useState(null);
   const mref=useModalA11y(onClose,{escClose:true, dep:rows!==null});
   const [busy,setBusy]=useState(false);
@@ -11454,7 +11455,9 @@ function CompaniesModal({ client, isOwner, currentCompanyId, setCompanyId, onCha
   const [eName,setEName]=useState(""); const [eOrg,setEOrg]=useState("");
   const [nName,setNName]=useState(""); const [nOrg,setNOrg]=useState("");
   async function load(){
-    const {data,error}=await client.from("companies").select("id,name,status,hubstaff_org_id").order("name");
+    let q=client.from("companies").select("id,name,status,hubstaff_org_id,kind").order("name");
+    if(kind) q=q.eq("kind",kind);   // 'employer' (payroll home) vs 'client' (billed)
+    const {data,error}=await q;
     if(error){ setMsg("Couldn't load companies: "+error.message); setRows([]); return; }
     setRows(data||[]);
   }
@@ -11471,7 +11474,7 @@ function CompaniesModal({ client, isOwner, currentCompanyId, setCompanyId, onCha
     if(cur.some(c=>norm(c.name)===norm(name))){ setMsg(`A company named "${name}" already exists.`); return; }
     if(org!=null){ const clash=cur.find(c=>Number(c.hubstaff_org_id)===org); if(clash){ setMsg(`Hubstaff org ${org} is already linked to "${clash.name}".`); return; } }
     setBusy(true);
-    const {data,error}=await client.from("companies").insert({name, hubstaff_org_id:org}).select("id").maybeSingle();
+    const {data,error}=await client.from("companies").insert({name, hubstaff_org_id:org, kind:kind||"client"}).select("id").maybeSingle();
     setBusy(false);
     if(error){ setMsg("Add failed: "+error.message); return; }
     logEvent(client,{company_id:data&&data.id, action:"company_added", entity:"company "+name, detail:{hubstaff_org_id:org}});
@@ -11571,10 +11574,11 @@ function CompaniesModal({ client, isOwner, currentCompanyId, setCompanyId, onCha
           </div>
           <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
             <button className="btn ghost sm" disabled={busy} onClick={()=>startEdit(c)}>Edit</button>
-            {c.status==="active"
+            {/* The employer is the payroll home — never archive/delete it (would orphan all pay history). */}
+            {kind!=="employer" && (c.status==="active"
               ? <button className="btn ghost sm" disabled={busy} onClick={()=>archive(c)}>Archive</button>
-              : <button className="btn ghost sm" disabled={busy} onClick={()=>doSetStatus(c,"active")}>Restore</button>}
-            {isOwner && <button className="btn danger-outline sm" disabled={busy} onClick={()=>destroy(c)}>Delete</button>}
+              : <button className="btn ghost sm" disabled={busy} onClick={()=>doSetStatus(c,"active")}>Restore</button>)}
+            {isOwner && kind!=="employer" && <button className="btn danger-outline sm" disabled={busy} onClick={()=>destroy(c)}>Delete</button>}
           </div>
         </React.Fragment>
       )}
@@ -11586,14 +11590,16 @@ function CompaniesModal({ client, isOwner, currentCompanyId, setCompanyId, onCha
       <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="co-title" onClick={e=>e.stopPropagation()}
            style={{maxWidth:680,maxHeight:"86vh",overflowY:"auto"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <h2 id="co-title" style={{margin:0}}>Companies</h2>
+          <h2 id="co-title" style={{margin:0}}>{kind==="employer"?"Employer":kind==="client"?"Clients":"Companies"}</h2>
           <button className="btn ghost sm" onClick={onClose}>Close</button>
         </div>
-        <p className="sub" style={{marginTop:6}}>Add a company, set its Hubstaff org link, or archive one. Archiving keeps all payroll history{isOwner?"; permanent delete is only for empty companies":""}.</p>
+        <p className="sub" style={{marginTop:6}}>{kind==="employer"
+          ? "The payroll home for every contractor (Aaron Anderson E.H.S. LLC). Set its Hubstaff org link here. It is never billed and can't be archived/deleted."
+          : "Add/edit/archive the clients you invoice. Assigning a contractor to a client is billing-only and never changes their pay."}{isOwner&&kind!=="employer"?" Permanent delete is only for empty clients.":""}</p>
         {msg && <div className="banner info" style={{margin:"10px 0"}}>{msg}</div>}
 
         <div className="card" style={{marginTop:6}}>
-          <b>Add a company</b>
+          <b>{kind==="employer"?"Add an employer (tenant)":kind==="client"?"Add a client":"Add a company"}</b>
           <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginTop:8}}>
             <input value={nName} onChange={e=>setNName(e.target.value)} placeholder="Company name (required)" style={{minWidth:200,flex:1}} aria-label="New company name"/>
             <input value={nOrg} onChange={e=>setNOrg(e.target.value)} placeholder="Hubstaff org ID (optional)" inputMode="numeric" style={{minWidth:170}} aria-label="New company Hubstaff org ID"/>
@@ -11625,7 +11631,7 @@ function CompaniesModal({ client, isOwner, currentCompanyId, setCompanyId, onCha
 // their USD bill rate (worker_companies.bill_rate_usd); PTO is excluded (it's the
 // employer's cost, never billed). Reads time_entries by company_id + date window;
 // persists an invoices header + invoice_lines snapshot (reproducible AR).
-function Invoicing({ client, companyId, consolidated }){
+function Invoicing({ client, companyId, consolidated, employerId }){
   const inp={width:"100%"};
   const yr=new Date().getFullYear();
   const cur=(()=>{ try{ return periodFor(new Date().toISOString().slice(0,10)); }catch{ return {start:"",end:""}; } })();
@@ -11642,23 +11648,32 @@ function Invoicing({ client, companyId, consolidated }){
   async function buildPreview(){
     if(consolidated||!companyId){ setErr("Pick a single client (top-right) to invoice."); return; }
     if(!from||!to){ setErr("Set a from and to date."); return; }
+    if(!employerId){ setErr("Employer not resolved yet — reload and retry."); return; }
     setBusy(true); setErr(""); setMsg(""); setPreview(null);
+    // 1) the CLIENT's roster + USD bill rates (the worker→client billing links).
+    const { data:wc, error:wcErr }=await client.from("worker_companies")
+      .select("worker_id,role,bill_rate_usd,workers(first_name,middle_name,last_name)")
+      .eq("company_id",companyId).eq("status","active");
+    if(wcErr){ setErr("Couldn't load client roster: "+wcErr.message); setBusy(false); return; }
+    const rateBy={}, nameBy={}, ids=[];
+    (wc||[]).forEach(l=>{ if(!l.worker_id) return; rateBy[l.worker_id]={ rate:Number(l.bill_rate_usd)||0, role:l.role||"" }; nameBy[l.worker_id]=fullName(l.workers); ids.push(l.worker_id); });
+    if(!ids.length){ setPreview({lines:[],subtotal:0,total_hours:0}); setMsg("No contractors are assigned to this client yet — assign them in Configuration → Clients."); setBusy(false); return; }
+    // 2) EMPLOYER time for those workers (time lives on the employer; we attribute
+    //    it to this client via the billing links above — NOT via time_entries.company_id).
     const { data:te, error }=await client.from("time_entries")
-      .select("worker_id,tracked_seconds,workers(first_name,middle_name,last_name)")
-      .eq("company_id",companyId).gte("work_date",from).lte("work_date",to).limit(100000);
+      .select("worker_id,tracked_seconds")
+      .eq("company_id",employerId).in("worker_id",ids).gte("work_date",from).lte("work_date",to).limit(100000);
     if(error){ setErr("Couldn't load time: "+error.message); setBusy(false); return; }
-    const { data:wc }=await client.from("worker_companies").select("worker_id,role,bill_rate_usd").eq("company_id",companyId);
-    const rateBy={}; (wc||[]).forEach(l=>{ rateBy[l.worker_id]={ rate:Number(l.bill_rate_usd)||0, role:l.role||"" }; });
     const agg={};   // worked seconds per worker (PTO already excluded — only tracked_seconds summed)
-    (te||[]).forEach(t=>{ if(!t.worker_id) return; const a=agg[t.worker_id]||(agg[t.worker_id]={sec:0,name:fullName(t.workers)}); a.sec+=Number(t.tracked_seconds)||0; });
-    const lines=Object.entries(agg).map(([wid,a])=>{ const r=rateBy[wid]||{rate:0,role:""};
-      const hours=Math.round(a.sec/3600*100)/100; return { worker_id:wid, worker_name:a.name, position:r.role, worked_hours:hours, bill_rate_usd:r.rate, amount_usd:Math.round(hours*r.rate*100)/100 }; })
+    (te||[]).forEach(t=>{ if(!t.worker_id) return; (agg[t.worker_id]=agg[t.worker_id]||{sec:0}).sec+=Number(t.tracked_seconds)||0; });
+    const lines=ids.map(wid=>{ const r=rateBy[wid]||{rate:0,role:""}; const sec=(agg[wid]||{}).sec||0;
+      const hours=Math.round(sec/3600*100)/100; return { worker_id:wid, worker_name:nameBy[wid], position:r.role, worked_hours:hours, bill_rate_usd:r.rate, amount_usd:Math.round(hours*r.rate*100)/100 }; })
       .filter(l=>l.worked_hours>0).sort((a,b)=>a.worker_name.localeCompare(b.worker_name));
     const subtotal=Math.round(lines.reduce((s,l)=>s+l.amount_usd,0)*100)/100;
     const total_hours=Math.round(lines.reduce((s,l)=>s+l.worked_hours,0)*100)/100;
     setPreview({lines,subtotal,total_hours}); setBusy(false);
-    if(!lines.length) setMsg("No worked hours for this client in the window.");
-    else if(lines.some(l=>!l.bill_rate_usd)) setMsg("Heads up: some contractors have no USD bill rate (their lines are $0). Set it in the contractor's Edit → Client engagements.");
+    if(!lines.length) setMsg("No worked hours for this client's contractors in the window.");
+    else if(lines.some(l=>!l.bill_rate_usd)) setMsg("Heads up: some contractors have no USD bill rate (their lines are $0). Set each one's rate in the contractor's Edit → Client engagements.");
   }
 
   async function generate(){
@@ -11836,15 +11851,17 @@ function Configuration({ client, companyId, consolidated, isOwner, setCompanyId,
       <div className="card">
         <h2 style={{marginTop:0}}>Configuration</h2>
         <p className="sub">Admin setup and global maintenance tools.</p>
-        <Row title="Companies" desc="Add a company, set its Hubstaff org link, or archive/remove one. Archiving keeps all payroll history." onClick={()=>setShow("companies")}/>
+        <Row title="Employer" desc="The payroll home — Aaron Anderson E.H.S. LLC. Every contractor is paid here regardless of which client they serve. Set its Hubstaff org link." onClick={()=>setShow("employer")}/>
+        <Row title="Clients" desc="Add/edit/archive the clients you invoice (Ability Builders, 123 Baby Talks, 1 World Realty). Assigning a contractor to a client is billing-only and never changes their pay." onClick={()=>setShow("clients")}/>
         <Row title="Hubstaff Projects → Clients" desc="Map each Hubstaff project to a client company so tracked time is attributed to the right client (per-client hours)." onClick={()=>setShow("projects")}/>
         <Row title="Portal Fields" desc="Choose which profile fields contractors can edit in the self-service portal." onClick={()=>setShow("portal")}/>
         <Row title="Agreement Templates" desc="Edit the wording of the onboarding agreements (IC, Non-Compete, NDA, BAA)." onClick={()=>setShow("tpl")}/>
         <Row title="Onboarding Configuration" desc="Turn onboarding on/off and set the required documents and agreements." onClick={()=>setShow("cfg")}/>
       </div>
       {/* Backfill all paid periods · Email cross-check · Cross-system drift */}
-      <WiseReconciliation client={client} companyId={companyId} consolidated={consolidated}/>
-      {show==="companies" && <CompaniesModal client={client} isOwner={isOwner} currentCompanyId={companyId} setCompanyId={setCompanyId} onChanged={onCompaniesChanged} onClose={()=>setShow("")}/>}
+      <WiseReconciliation client={client} companyId={employerId} consolidated={false}/>
+      {show==="employer" && <CompaniesModal client={client} isOwner={isOwner} kind="employer" currentCompanyId={companyId} setCompanyId={setCompanyId} onChanged={onCompaniesChanged} onClose={()=>setShow("")}/>}
+      {show==="clients" && <CompaniesModal client={client} isOwner={isOwner} kind="client" currentCompanyId={companyId} setCompanyId={setCompanyId} onChanged={onCompaniesChanged} onClose={()=>setShow("")}/>}
       {show==="projects" && <HubstaffProjectsModal client={client} onClose={()=>setShow("")}/>}
       {show==="portal" && <PortalSettingsModal client={client} onClose={()=>setShow("")}/>}
       {show==="tpl" && <AgreementTemplatesModal client={client} onClose={()=>setShow("")}/>}
@@ -11886,9 +11903,29 @@ function App() {
     set(); window.addEventListener("resize",set);
     return ()=>window.removeEventListener("resize",set);
   },[sb.session]);
+  // The top toggle now selects a CLIENT (billing/display). Default to All-clients
+  // when nothing is cached so the roster isn't hidden behind a single client.
   const [companyId, setCompanyId] = useState(localStorage.getItem("sel_company")||"");
-  const [consolidated, setConsolidated] = useState(false);
+  const [consolidated, setConsolidated] = useState(!localStorage.getItem("sel_company"));
   useEffect(()=>{ if(companyId) localStorage.setItem("sel_company",companyId); else localStorage.removeItem("sel_company"); },[companyId]);
+  // EMPLOYER (Aaron Anderson) = the payroll home for EVERY contractor. Resolved
+  // from companies.kind='employer'. Payroll/ops tabs are PINNED to this id for
+  // BOTH reads and writes so payroll never follows the client toggle (and reads
+  // can't fork from writes). Default to the known employer id to avoid a null
+  // flash; self-corrects from the DB on mount.
+  const [employerId,setEmployerId]=useState("11111111-1111-1111-1111-111111111111");
+  useEffect(()=>{ if(!sb.client) return; let live=true;
+    sb.client.from("companies").select("id").eq("kind","employer").maybeSingle()
+      .then(({data})=>{ if(live&&data&&data.id) setEmployerId(data.id); }).catch(()=>{});
+    return ()=>{live=false;}; },[sb.client]);
+  // Toggle is CLIENT-only now: migrate a stale cached selection (e.g. the old
+  // employer id, or an archived company) so it can't leak into the client tabs —
+  // if the cached companyId isn't an active CLIENT, drop it and show All clients.
+  useEffect(()=>{ if(!sb.client) return; let live=true;
+    sb.client.from("companies").select("id").eq("kind","client").eq("status","active")
+      .then(({data})=>{ if(!live||!data) return; const ids=new Set(data.map(c=>c.id));
+        setCompanyId(cur=>{ if(cur && !ids.has(cur)){ try{localStorage.removeItem("sel_company");}catch{/*noop*/} setConsolidated(true); return ""; } return cur; }); });
+    return ()=>{live=false;}; },[sb.client]);
   // Bumped when companies are added/archived/deleted (Configuration → CompaniesModal)
   // so the CompanySwitcher re-fetches its list without a full reload.
   const [companiesNonce,setCompaniesNonce]=useState(0);
@@ -12027,7 +12064,7 @@ function App() {
     <div>
       <a href="#main" className="skip-link">Skip to content</a>
       <DangerConfirm/>
-      {paletteOpen && <CommandPalette {...{client:sb.client,companyId,consolidated,tabGroups,navIcon:NAV_ICON,go,openContractor,openPeriodForEdit,onClose:()=>setPaletteOpen(false)}} />}
+      {paletteOpen && <CommandPalette {...{client:sb.client,companyId:employerId,consolidated:false,tabGroups,navIcon:NAV_ICON,go,openContractor,openPeriodForEdit,onClose:()=>setPaletteOpen(false)}} />}
       {isOwner && showAdmins && <AdminsModal client={sb.client} meId={sb.session.user.id} onClose={()=>setShowAdmins(false)}/>}
       <header className="topbar">
         <h1 className="brand">
@@ -12064,25 +12101,30 @@ function App() {
         </nav>
         <main className="wrap" id="main">
         <DstNudge/>
-        <Alert show={!companyId && !consolidated} type="info">Pick a company in the switcher (top right) to begin.</Alert>
+        <Alert show={!companyId && !consolidated} type="info">Pick a client (top right) to view its billing — payroll &amp; contractors are employer-wide.</Alert>
         {/* Overview (Phase 5): conditional render so its queries fire only when
             viewed; wrapped in its own ErrorBoundary for per-tab isolation. */}
-        {tab==="overview" && <ErrorBoundary><Overview {...{client:sb.client,companyId,consolidated,goTab:go}} /></ErrorBoundary>}
+        {/* Payroll/ops tabs are PINNED to the employer (payroll home) — they ignore
+            the client toggle. Only Contractors + Invoicing follow the client picker. */}
+        {tab==="overview" && <ErrorBoundary><Overview {...{client:sb.client,companyId:employerId,consolidated:false,goTab:go}} /></ErrorBoundary>}
         {/* All tabs stay mounted; only the active one is shown. This preserves
             each tab's in-memory state (selected period, loaded rows, filters)
             across tab switches. */}
-        {seenTabs.has("contractors") && <div style={{display:tab==="contractors"?"block":"none"}}><Contractors {...{client:sb.client,companyId,consolidated,onBillingChange:recordBillingChange,pendingWorkerId,consumePendingWorker,rosterNonce}} /></div>}
-        {seenTabs.has("time") && <div style={{display:tab==="time"?"block":"none"}}><TimeImport {...{client:sb.client,companyId,consolidated,goTab:go,openPeriodForEdit}} /></div>}
-        {seenTabs.has("imports") && <div style={{display:tab==="imports"?"block":"none"}}><DeleteImports {...{client:sb.client,companyId,consolidated}} /></div>}
-        {seenTabs.has("payroll") && <div style={{display:tab==="payroll"?"block":"none"}}><Payroll {...{client:sb.client,companyId,consolidated,confirmBillingDirty,openContractor,goTab:go,pendingPeriod,consumePendingPeriod}} /></div>}
-        {seenTabs.has("process") && <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="process",confirmBillingDirty,openContractor,goTab:go,openPeriodForEdit}} /></div>}
-        {seenTabs.has("documents") && <div style={{display:tab==="documents"?"block":"none"}}><Documents {...{client:sb.client,companyId,consolidated}} /></div>}
-        {seenTabs.has("batches") && <div style={{display:tab==="batches"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId,consolidated,active:tab==="batches",confirmBillingDirty,openContractor,reconcileOnly:true}} /></div>}
-        {seenTabs.has("reports") && <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId,consolidated}} /></div>}
-        {seenTabs.has("invoicing") && <div style={{display:tab==="invoicing"?"block":"none"}}><Invoicing {...{client:sb.client,companyId,consolidated}} /></div>}
-        {seenTabs.has("audit") && <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId,consolidated}} /></div>}
-        {seenTabs.has("onboarding") && <div style={{display:tab==="onboarding"?"block":"none"}}><OnboardingAdmin {...{client:sb.client,companyId,consolidated,active:tab==="onboarding",onContractorChanged:bumpRoster}} /></div>}
-        {tab==="configuration" && <ErrorBoundary><Configuration {...{client:sb.client,companyId,consolidated,isOwner,setCompanyId,onCompaniesChanged:bumpCompanies}} /></ErrorBoundary>}
+        {/* Contractors is pinned to the EMPLOYER roster so rate reads/writes (which key
+            off r.company_id) always target the payroll home — never a client. Per-client
+            billing/bill-rates are edited in the contractor's "Client engagements". */}
+        {seenTabs.has("contractors") && <div style={{display:tab==="contractors"?"block":"none"}}><Contractors {...{client:sb.client,companyId:employerId,consolidated:false,onBillingChange:recordBillingChange,pendingWorkerId,consumePendingWorker,rosterNonce}} /></div>}
+        {seenTabs.has("time") && <div style={{display:tab==="time"?"block":"none"}}><TimeImport {...{client:sb.client,companyId:employerId,consolidated:false,goTab:go,openPeriodForEdit}} /></div>}
+        {seenTabs.has("imports") && <div style={{display:tab==="imports"?"block":"none"}}><DeleteImports {...{client:sb.client,companyId:employerId,consolidated:false}} /></div>}
+        {seenTabs.has("payroll") && <div style={{display:tab==="payroll"?"block":"none"}}><Payroll {...{client:sb.client,companyId:employerId,consolidated:false,confirmBillingDirty,openContractor,goTab:go,pendingPeriod,consumePendingPeriod}} /></div>}
+        {seenTabs.has("process") && <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId:employerId,consolidated:false,active:tab==="process",confirmBillingDirty,openContractor,goTab:go,openPeriodForEdit}} /></div>}
+        {seenTabs.has("documents") && <div style={{display:tab==="documents"?"block":"none"}}><Documents {...{client:sb.client,companyId:employerId,consolidated:false}} /></div>}
+        {seenTabs.has("batches") && <div style={{display:tab==="batches"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId:employerId,consolidated:false,active:tab==="batches",confirmBillingDirty,openContractor,reconcileOnly:true}} /></div>}
+        {seenTabs.has("reports") && <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId:employerId,consolidated:false}} /></div>}
+        {seenTabs.has("invoicing") && <div style={{display:tab==="invoicing"?"block":"none"}}><Invoicing {...{client:sb.client,companyId,consolidated,employerId}} /></div>}
+        {seenTabs.has("audit") && <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId:employerId,consolidated:false}} /></div>}
+        {seenTabs.has("onboarding") && <div style={{display:tab==="onboarding"?"block":"none"}}><OnboardingAdmin {...{client:sb.client,companyId:employerId,consolidated:false,active:tab==="onboarding",onContractorChanged:bumpRoster}} /></div>}
+        {tab==="configuration" && <ErrorBoundary><Configuration {...{client:sb.client,companyId,consolidated,isOwner,employerId,setCompanyId,onCompaniesChanged:bumpCompanies}} /></ErrorBoundary>}
         <div className="no-print" style={{textAlign:"center",color:"var(--muted)",fontSize:11,padding:"18px 0 32px",letterSpacing:".02em"}}>Build {BUILD}</div>
       </main>
       </div>{/* /shell */}
