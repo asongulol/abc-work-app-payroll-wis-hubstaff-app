@@ -2937,7 +2937,18 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     client.from("companies").select("id,name,status").eq("status","active").order("name").then(({data})=>setAllCompanies(data||[]));
   },[w.id]);  // eslint-disable-line
   async function addCompany(cid){
-    if(!cid) return; setCoBusy(true); setSavedMsg("");
+    if(!cid) return;
+    // GUARDRAIL: multi-client payroll isn't automated yet (one Hubstaff org +
+    // one Wise payout; per-client hour attribution + consolidated payout are
+    // planned, not built). Warn before a contractor becomes active at 2+ clients
+    // so their pay/hours aren't silently double-counted — confirm to proceed.
+    const activeNow=(memberships||[]).filter(m=>m.status==="active").length;
+    if(activeNow>=1 && !window.confirm(
+      "This contractor will be active at "+(activeNow+1)+" clients.\n\n"+
+      "Multi-client payroll isn't automated yet: their Hubstaff hours aren't split per client, "+
+      "and one consolidated Wise payout isn't built — so this period's pay across clients must be "+
+      "reconciled MANUALLY to avoid double-paying.\n\nAssign anyway?")) return;
+    setCoBusy(true); setSavedMsg("");
     const {error}=await client.from("worker_companies")
       .insert({worker_id:w.id, company_id:cid, contract:"FT", status:"active", started_on:f.hire_date||todayISO});
     setCoBusy(false);
@@ -10083,6 +10094,7 @@ function monthlyFromPeriod(rate){
 function mergeAgreement(body, v){
   const s={ contractor_name:(v&&v.contractor_name)||"", rate:(v&&v.rate)||"________",
     monthly_rate:(v&&v.monthly_rate)||"________", company_name:(v&&v.company_name)||"________",
+    client_name:(v&&v.company_name)||"________", employer_name:(v&&v.employer_name)||"Aaron Anderson E.H.S. LLC",
     start_date:(v&&v.start_date)||"________", position:(v&&v.position)||"________",
     contractor_address:(v&&v.contractor_address)||"________",
     countersigner_name:(v&&v.countersigner_name)||"________", today:(v&&v.today)||"",
@@ -10551,7 +10563,9 @@ function AgreementTemplatesModal({ client, onClose }){
           <h2 id="at-title" style={{margin:0}}>Agreement templates</h2>
           <button className="btn ghost sm" onClick={close}>Close</button>
         </div>
-        <p className="sub">Paste the standard agreement text. Use <code>{"{{contractor_name}}"}</code>, <code>{"{{company_name}}"}</code>, <code>{"{{position}}"}</code>, <code>{"{{rate}}"}</code> (per period), <code>{"{{monthly_rate}}"}</code>, <code>{"{{start_date}}"}</code>, <code>{"{{countersigner_name}}"}</code>, <code>{"{{contractor_address}}"}</code>, <code>{"{{today}}"}</code> where the preparer's values should be filled in per contractor.</p>
+        <p className="sub">Paste the standard agreement text. Merge fields (filled per contractor when prepared):<br/>
+          <b>Parties:</b> <code>{"{{employer_name}}"}</code> = the contracting employer (Aaron Anderson E.H.S. LLC) · <code>{"{{client_name}}"}</code> (a.k.a. <code>{"{{company_name}}"}</code>) = the assigned client company · <code>{"{{contractor_name}}"}</code> · <code>{"{{countersigner_name}}"}</code><br/>
+          <b>Engagement:</b> <code>{"{{position}}"}</code> · <code>{"{{rate}}"}</code> (per period) · <code>{"{{monthly_rate}}"}</code> · <code>{"{{start_date}}"}</code> · <code>{"{{contractor_address}}"}</code> · <code>{"{{today}}"}</code> · <code>{"{{addendum}}"}</code></p>
         <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
           {rows.map(r=>(<button key={r.kind} className={"btn sm "+(sel===r.kind?"":"ghost")} onClick={()=>pick(r.kind)}>{ONB_AGR_LABEL[r.kind]||r.kind}</button>))}
         </div>
