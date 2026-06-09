@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-09 14:29 EDT · 59546cc";
+const BUILD = "2026-06-09 14:51 EDT · 445d996";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -6494,6 +6494,22 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
           </table></div>}
         </div>
         ); })()}
+      {/* Loaded, but this client has NO approved-time batches AND no draft periods.
+          Without this branch every block above is false and the tab renders an
+          empty <div> — the "blank Calculate tab" a half-set-up client (time but
+          not yet approved, or no time at all) would land on. Show a directive
+          empty-state instead of nothing. */}
+      {!consolidated && companyId && batches && batches.length===0 && emptyDrafts.length===0 && (
+        <div className="card">
+          <h2 style={{margin:"0 0 4px"}}>Pay periods ready for calculation</h2>
+          <div className="empty">
+            No approved time for this client yet. Import and approve time in <b>Time &amp; Approval</b> —
+            once a period is approved it shows up here to calculate.
+            {typeof goTab==="function" &&
+              <div style={{marginTop:10}}><button className="btn ghost sm" onClick={()=>goTab("time")}>Go to Time &amp; Approval</button></div>}
+          </div>
+        </div>
+      )}
       {/* The manual "Payroll run" entry card was removed — calculation is
           driven by the batch list above (click Calculate on a period) and the
           Pay batch card below. Calculation feedback still surfaces here. */}
