@@ -214,27 +214,41 @@ Deno.serve(async (req) => {
     // — the field the browser API-sync leaves null. The whole action is gated by
     // a shared secret stored in public.app_secrets (RLS-locked; readable only by
     // the service role this function runs as), so it is NOT publicly invocable.
-    if (body.action === "cron_ingest") {
-      const provided = req.headers.get("x-cron-secret") ?? body.secret ?? "";
-      const sRes = await fetch(`${SB_URL}/rest/v1/app_secrets?key=eq.cron_secret&select=value`, { headers: tokHdr });
-      const expected = sRes.ok ? (await sRes.json())?.[0]?.value : null;
-      if (!expected || provided !== expected) return json({ error: "unauthorized" }, 401);
+    // cron_ingest (secret-gated daily job, fixed company) and sync_ingest
+    // (admin-gated manual browser sync) share the per-client ingest below.
+    // sync_ingest supports CONSOLIDATED mode: omit company_id and only
+    // project-mapped time is attributed; unmapped project time + PTO are reported.
+    if (body.action === "cron_ingest" || body.action === "sync_ingest") {
+      const isSync = body.action === "sync_ingest";
+      if (!isSync) {
+        const provided = req.headers.get("x-cron-secret") ?? body.secret ?? "";
+        const sRes = await fetch(`${SB_URL}/rest/v1/app_secrets?key=eq.cron_secret&select=value`, { headers: tokHdr });
+        const expected = sRes.ok ? (await sRes.json())?.[0]?.value : null;
+        if (!expected || provided !== expected) return json({ error: "unauthorized" }, 401);
+      }
+      // (sync_ingest is gated by the admin-bearer check at the top of the handler.)
 
       const orgId = Number(body.org_id);
-      const companyId = String(body.company_id ?? "").trim();
-      if (!Number.isFinite(orgId) || orgId <= 0 || !companyId) {
-        return json({ error: "need org_id and company_id" }, 400);
+      const companyId = String(body.company_id ?? "").trim();   // "" allowed for sync_ingest (consolidated)
+      if (!Number.isFinite(orgId) || orgId <= 0) return json({ error: "need org_id" }, 400);
+      if (!isSync && !companyId) return json({ error: "need org_id and company_id" }, 400);
+
+      // Window: sync_ingest passes explicit start/stop; cron_ingest uses a lookback
+      // ending at `today` (deterministic — the cron passes the date).
+      let start: string, stop: string, startMs: number, stopMs: number;
+      if (isSync && /^\d{4}-\d{2}-\d{2}$/.test(String(body.start ?? "")) && /^\d{4}-\d{2}-\d{2}$/.test(String(body.stop ?? ""))) {
+        start = String(body.start); stop = String(body.stop);
+        startMs = new Date(`${start}T00:00:00Z`).getTime();
+        stopMs = new Date(`${stop}T23:59:59Z`).getTime();
+      } else {
+        const lookback = Math.max(0, Math.min(31, Number(body.lookback_days ?? 3)));
+        const today = /^\d{4}-\d{2}-\d{2}$/.test(String(body.today ?? ""))
+          ? String(body.today) : new Date().toISOString().slice(0, 10);
+        startMs = new Date(`${today}T00:00:00Z`).getTime() - lookback * 86400000;
+        stopMs = new Date(`${today}T23:59:59Z`).getTime();
+        start = new Date(startMs).toISOString().slice(0, 10);
+        stop = today;
       }
-      // Window = a small lookback ending at `today` (the cron passes the date so
-      // the function is deterministic; default to the server's UTC date). Re-
-      // pulling the last few days captures time edited/added late in Hubstaff.
-      const lookback = Math.max(0, Math.min(31, Number(body.lookback_days ?? 3)));
-      const today = /^\d{4}-\d{2}-\d{2}$/.test(String(body.today ?? ""))
-        ? String(body.today) : new Date().toISOString().slice(0, 10);
-      const startMs = new Date(`${today}T00:00:00Z`).getTime() - lookback * 86400000;
-      const stopMs = new Date(`${today}T23:59:59Z`).getTime();
-      const start = new Date(startMs).toISOString().slice(0, 10);
-      const stop = today;
 
       // name normalization — MIRRORS app/index.html nameTokens/nameKey/looseKey
       const nameTokens = (raw: any): string[] => {
@@ -275,7 +289,7 @@ Deno.serve(async (req) => {
         const pr = await fetch(`${SB_URL}/rest/v1/hubstaff_projects?select=hubstaff_project_id,company_id`, { headers: tokHdr });
         if (pr.ok) for (const r of (await pr.json() as any[])) projMap[r.hubstaff_project_id] = r.company_id;
       }
-      const coOf = (projectId: any): string => (projectId != null && projMap[projectId]) || companyId;
+      const coOf = (projectId: any): string | null => (projectId != null && projMap[projectId]) || (companyId || null);
 
       // daily activities: tracked + overall (active) seconds per user per CLIENT per day
       // (activities/daily returns one row per user per PROJECT per day, so we route
@@ -286,10 +300,12 @@ Deno.serve(async (req) => {
       );
       const trackedDay: Record<number, Record<string, Record<string, number>>> = {};
       const overallDay: Record<number, Record<string, Record<string, number>>> = {};
+      let unmappedSecs = 0;
       for (const a of acts) {
         const uid = a.user_id, day = a.date;
         if (!uid || !day) continue;
         const co = coOf(a.project_id);
+        if (!co) { unmappedSecs += (a.tracked ?? 0); continue; }   // consolidated + unmapped project: report, don't guess a client
         ((trackedDay[uid] ??= {})[co] ??= {})[day] = (trackedDay[uid][co][day] ?? 0) + (a.tracked ?? 0);
         ((overallDay[uid] ??= {})[co] ??= {})[day] = (overallDay[uid][co][day] ?? 0) + (a.overall ?? 0);
       }
@@ -310,7 +326,7 @@ Deno.serve(async (req) => {
             if (dMs < startMs || dMs > stopMs) continue;
             const secs = Number(d?.amount_used ?? 0);
             if (!Number.isFinite(secs) || secs <= 0) continue;
-            ((ptoDay[uid] ??= {})[companyId] ??= {})[date] = (ptoDay[uid][companyId][date] ?? 0) + secs;
+            if (companyId) ((ptoDay[uid] ??= {})[companyId] ??= {})[date] = (ptoDay[uid][companyId][date] ?? 0) + secs;
           }
         }
       } catch (_) { /* PTO optional — continue tracked-only */ }
@@ -318,7 +334,16 @@ Deno.serve(async (req) => {
       // Target client companies = the default + every client a mapped project routes
       // to. Worker matching, canonical labels, and the decided-row guard are all done
       // PER company (a worker is only attributed to a client they're linked to).
-      const targetCompanies = [...new Set([companyId, ...Object.values(projMap)])];
+      const targetCompanies = [...new Set([...(companyId ? [companyId] : []), ...Object.values(projMap)])];
+      if (targetCompanies.length === 0) {
+        // consolidated sync with no project→client mappings yet — nothing to attribute to
+        return json({
+          ok: true, window: { start, stop }, company_id: null, clients_attributed: 0, projects_mapped: 0,
+          members_seen: userIds.length, rows_written: 0, ids_persisted: 0, skipped_decided: 0,
+          unmatched: [], unmapped_seconds: unmappedSecs,
+          note: "No client companies to attribute to — map Hubstaff projects to clients first (Configuration → Hubstaff Projects → Clients).",
+        });
+      }
       const inCos = targetCompanies.map((c) => `"${c}"`).join(",");
 
       // worker links for all target companies -> per-company match index (id/strict/loose)
@@ -445,8 +470,9 @@ Deno.serve(async (req) => {
       }
 
       return json({
-        ok: true, window: { start, stop }, company_id: companyId,
+        ok: true, window: { start, stop }, company_id: companyId || null,
         clients_attributed: targetCompanies.length, projects_mapped: Object.keys(projMap).length,
+        unmapped_seconds: unmappedSecs,
         members_seen: userIds.length, rows_written: written,
         ids_persisted: persistIds.length, skipped_decided: skippedDecided,
         unmatched: [...unmatched],

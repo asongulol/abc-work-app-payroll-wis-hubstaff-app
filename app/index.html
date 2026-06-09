@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-09 11:09 EDT · 3fffddf";
+const BUILD = "2026-06-09 11:33 EDT · 34fba92";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -2415,7 +2415,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
       {rows.length===0 ? <div className="empty">No contractors match.</div> :
       <div className="table-scroll"><table>
         <thead><tr>
-          <Th k="name">Name</Th><Th k="company">Company</Th><Th k="role">Role</Th><Th k="contract">Contract</Th>
+          <Th k="name">Name</Th><Th k="company">Client</Th><Th k="role">Role</Th><Th k="contract">Contract</Th>
           <Th k="method">Payout</Th><Th k="status">Status</Th><th></th>
         </tr></thead>
         <tbody>
@@ -2429,7 +2429,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
                 <td className="clickable card-title" onClick={()=>setSelected({...r,w})}>
                   <span style={{display:"inline-flex",alignItems:"center",gap:8}}>
                     <Avatar src={w.photo_url} name={fullName(w)} size={28}/><b>{fullName(w)}</b></span></td>
-                <td data-label="Company">{r.companies?.name||"—"}</td>
+                <td data-label="Client">{r.companies?.name||"—"}</td>
                 <td data-label="Role">{r.role||<span className="muted">—</span>}</td>
                 <td data-label="Contract"><span className={"pill "+(r.contract==="PT"?"pt":"ft")} title={codeHint("contract",r.contract)}>{r.contract}</span></td>
                 <td data-label="Payout">{w.payout_method?<span title={codeHint("method",w.payout_method)}>{methodLabel(w.payout_method)}</span>:
@@ -4197,12 +4197,28 @@ function TimeImport({client,companyId,consolidated,goTab,openPeriodForEdit}){
     return out;
   }
   async function syncFromHubstaff(){
-    if(consolidated){setErr("Switch to a single company to sync.");return;}
     if(!orgId||!syncStart||!syncStop){setErr("Enter Hubstaff org id, start and stop dates.");return;}
     setErr("");setDone(null);setNotice(null);setSyncing(true);
     try{
       localStorage.setItem("hs_org",orgId);
-      // invoke the Edge Function; the refresh token stays server-side.
+      if(consolidated){
+        // Consolidated (all clients): one org-wide server sync that attributes each
+        // project's tracked time to its mapped client (Hubstaff Projects → Clients).
+        // The server writes directly (per-client) and protects human-approved rows.
+        const {data,error}=await client.functions.invoke("hubstaff-sync",{
+          body:{action:"sync_ingest",org_id:Number(orgId),start:syncStart,stop:syncStop}});
+        if(error)throw new Error(error.message||"Edge function error");
+        if(data&&data.error)throw new Error(data.error);
+        const um=(data.unmatched||[]).length, unmappedH=Math.round((data.unmapped_seconds||0)/3600);
+        setDone({people:data.members_seen||0, days:listDates(syncStart,syncStop).length, count:data.rows_written||0, mode:"insert"});
+        setNotice({ok:true, text:
+          (data.note ? data.note :
+            `Synced org-wide: ${data.rows_written} daily entr${data.rows_written===1?"y":"ies"} across ${data.clients_attributed} client(s).`)+
+          (um?` ${um} member(s) tracked time on a client they're not assigned to — assign them and re-sync.`:"")+
+          (unmappedH?` ${unmappedH}h on unmapped projects skipped — map them under Configuration → Hubstaff Projects → Clients.`:"")});
+        return;
+      }
+      // Single client: pull per-member daily totals and commit to this company.
       const {data,error}=await client.functions.invoke("hubstaff-sync",{
         body:{org_id:Number(orgId),start:syncStart,stop:syncStop}});
       if(error)throw new Error(error.message||"Edge function error");
@@ -4355,7 +4371,7 @@ function TimeImport({client,companyId,consolidated,goTab,openPeriodForEdit}){
         <h2>Hubstaff time import</h2>
         <p className="sub">Two ways to bring in time. Rows match contractors by their
           <b> Hubstaff name</b>; imported hours stage as <b>pending</b> until approved below.</p>
-        {consolidated && <div className="banner">Switch to a single company to import (imports are per-company).</div>}
+        {consolidated && <div className="banner">Consolidated view: <b>CSV upload</b> is per-client — switch to one client for that. The <b>Hubstaff API sync</b> (Option B) runs org-wide and attributes each project's time to its client (map them under Configuration → Hubstaff Projects → Clients).</div>}
 
         <div className="grid-2">
           <div>
@@ -4386,8 +4402,8 @@ function TimeImport({client,companyId,consolidated,goTab,openPeriodForEdit}){
                 }}/></div>
               <div><label style={{fontSize:10,color:"var(--muted)"}}>Stop <span style={{fontWeight:400}}>(auto)</span></label><br/>
                 <input type="date" value={syncStop} onChange={e=>setSyncStop(e.target.value)}/></div>
-              <button className="btn" disabled={syncing||consolidated} onClick={syncFromHubstaff}>
-                {syncing?"Importing…":"Import Time"}</button>
+              <button className="btn" disabled={syncing} onClick={syncFromHubstaff}>
+                {syncing?"Importing…":(consolidated?"Import Time (all clients)":"Import Time")}</button>
             </div>
           </div>
         </div>
