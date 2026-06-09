@@ -1,4 +1,4 @@
-// Supabase Edge Function: hubstaff-sync  (v9 — employer-wide match; each contractor attributed to their ACTIVE client; PTO follows the worker; per-project classify is a separate step)
+// Supabase Edge Function: hubstaff-sync  (v10 — employer-wide match; ALL time lands on the EMPLOYER (Aaron Anderson), NOT the client; client is a billing tag only; PTO follows the worker)
 // ---------------------------------------------------------------------------
 // Pulls Hubstaff daily activities for a date range and returns per-member daily
 // hours to the browser. The Hubstaff REFRESH TOKEN lives ONLY here (server-side
@@ -35,6 +35,14 @@ function json(body: unknown, status = 200) {
 // it gets automatically as an env var.
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+// MODEL: one EMPLOYER (Aaron Anderson E.H.S. LLC) is the payroll home for EVERY
+// contractor; companies like Ability Builders / 123 Baby Talks / 1 World Realty
+// are CLIENTS (billing tags). Synced time ALWAYS lands on the employer so payroll
+// (rates, history, pay periods) stays employer-level and never detaches when a
+// contractor is reassigned to a different client. Client attribution for
+// invoicing is derived separately from the worker→client link. Override the
+// employer entity id via the EMPLOYER_COMPANY_ID secret if it ever changes.
+const EMPLOYER = Deno.env.get("EMPLOYER_COMPANY_ID") || "11111111-1111-1111-1111-111111111111";
 const tokRow = `${SB_URL}/rest/v1/api_tokens?provider=eq.hubstaff`;
 const tokHdr = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json" };
 
@@ -343,26 +351,16 @@ Deno.serve(async (req) => {
       }
       const matchWorker = (uid: number, nm: string): string | null =>
         (uid != null && byId[uid]) || strict[nameKey(nm)] || loose[looseKey(nm)] || null;
-      // destination client = the worker's active link (most recent started_on, active
-      // link first), else their only link, else the cron's companyId fallback.
-      const clientOf = (wid: string): string | null => {
-        const wls = linksByWorker[wid] || [];
-        const active = wls.filter((l) => l.status === "active");
-        const pool = active.length ? active : wls;
-        if (!pool.length) return companyId || null;
-        const pick = pool.slice().sort((a, b) =>
-          String(b.started_on ?? "").localeCompare(String(a.started_on ?? "")) ||
-          ((a.ended_on ? 1 : 0) - (b.ended_on ? 1 : 0)) ||
-          String(a.id).localeCompare(String(b.id)))[0];
-        return pick.company_id;
-      };
+      // (Per-client attribution removed — all time lands on the EMPLOYER below.)
 
       const days: string[] = [];
       for (let t = new Date(`${start}T00:00:00Z`).getTime(); t <= stopMs; t += 86400000) {
         days.push(new Date(t).toISOString().slice(0, 10));
       }
 
-      // resolve each member with time → worker → destination client
+      // resolve each member with time → worker → EMPLOYER payroll company.
+      // Time lands on the employer regardless of which client the contractor
+      // currently serves; the client link drives invoicing only (derived later).
       const unmatched = new Set<string>();
       const workerCo: Record<string, string> = {};
       for (const uid of userIds) {
@@ -370,9 +368,7 @@ Deno.serve(async (req) => {
         const nm = nameById[uid] ?? `user ${uid}`;
         const wid = matchWorker(uid, nm);
         if (!wid) { unmatched.add(nm); continue; }
-        const co = clientOf(wid);
-        if (!co) { unmatched.add(`${nm} (no client assigned)`); continue; }
-        workerCo[wid] = co;
+        workerCo[wid] = EMPLOYER;
       }
       const targetCompanies = [...new Set(Object.values(workerCo))];
       if (!targetCompanies.length) {
