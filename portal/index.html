@@ -79,7 +79,7 @@
   .stickwrap{margin:20px 0 6px 4px;}
   .sticker{display:inline-flex; align-items:center; gap:6px; background:#fff; border:1px solid var(--line); border-radius:9px; padding:4px 10px; font-size:12px; font-weight:800; letter-spacing:.02em; color:var(--accent); box-shadow:0 2px 7px rgba(31,58,104,.14); transform:rotate(-2.5deg);}
   .nyhero{position:relative; overflow:hidden; color:#fff; border-radius:14px; padding:16px 16px 0; margin:12px 0; background:linear-gradient(180deg,#14213d,#1F3A68 62%,#24305a); transition:background 1.2s ease;}
-  .nyhero .eyebrow{font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:rgba(255,255,255,.72);}
+  .nyhero .eyebrow{font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:rgba(255,255,255,.72); position:relative; z-index:3;}
   .nyhero .zones{display:flex; gap:8px; margin-top:10px; position:relative; z-index:3;}
   .nyhero .z{flex:1;} .nyhero .z .lbl{font-size:12px; color:rgba(255,255,255,.8);}
   .nyhero .z .t{font-size:22px; font-weight:800; line-height:1.15;} .nyhero .z .d{font-size:11px; color:rgba(255,255,255,.72);}
@@ -91,6 +91,44 @@
   .nyhero .celestial{position:absolute; top:12px; right:14px; z-index:2;}
   .nyhero .win{animation:winOn .5s ease both;}
   @keyframes winOn{from{opacity:0} to{opacity:1}}
+  /* Weather FX: a pure-CSS animated layer over the sky that matches NYC's current
+     weather (set by NyPanel from open-meteo's weather_code). z-index 2 = behind the
+     text content (z-3), in front of the skyline (z-1). Pointer-events off. */
+  .nyhero .wxfx{position:absolute; inset:0; z-index:2; pointer-events:none; overflow:hidden; border-radius:14px;}
+  .nyhero .wxfx::before,.nyhero .wxfx::after{content:""; position:absolute; inset:-25%;}
+  /* clear — gentle warm sun glow, top-right (near the sun) */
+  .wxfx-clear{background:radial-gradient(130px 90px at 86% 10%, rgba(244,201,93,.22), transparent 70%); animation:wxGlow 5s ease-in-out infinite alternate;}
+  @keyframes wxGlow{from{opacity:.45} to{opacity:1}}
+  /* cloudy — soft drifting cloud blobs */
+  .wxfx-cloudy::before{background:
+      radial-gradient(60px 26px at 25% 28%, rgba(255,255,255,.22), transparent 70%),
+      radial-gradient(80px 30px at 65% 20%, rgba(255,255,255,.16), transparent 70%),
+      radial-gradient(50px 22px at 88% 34%, rgba(255,255,255,.18), transparent 70%);
+    animation:wxDrift 26s linear infinite;}
+  @keyframes wxDrift{from{transform:translateX(-8%)} to{transform:translateX(8%)}}
+  /* fog — soft haze that gently breathes + drifts */
+  .wxfx-fog{background:linear-gradient(180deg, rgba(220,225,235,.05), rgba(220,225,235,.20) 55%, rgba(220,225,235,.30)); animation:wxFog 9s ease-in-out infinite alternate;}
+  @keyframes wxFog{from{opacity:.5; transform:translateX(-10px)} to{opacity:.95; transform:translateX(10px)}}
+  /* rain — diagonal falling streaks (shared by storm) */
+  .wxfx-rain::before,.wxfx-storm::before{background-image:repeating-linear-gradient(110deg, transparent 0 7px, rgba(255,255,255,.20) 7px 8px); animation:wxRain .55s linear infinite;}
+  @keyframes wxRain{from{transform:translate(0,0)} to{transform:translate(-16px,44px)}}
+  /* snow — two layers of drifting dots at different speeds */
+  .wxfx-snow::before{background-image:
+      radial-gradient(2px 2px at 12% 18%, rgba(255,255,255,.95), transparent),
+      radial-gradient(2px 2px at 42% 38%, rgba(255,255,255,.8), transparent),
+      radial-gradient(1.5px 1.5px at 70% 12%, rgba(255,255,255,.9), transparent),
+      radial-gradient(2px 2px at 88% 46%, rgba(255,255,255,.75), transparent);
+    background-size:160px 160px; animation:wxSnow 7s linear infinite;}
+  .wxfx-snow::after{background-image:
+      radial-gradient(1.5px 1.5px at 28% 60%, rgba(255,255,255,.7), transparent),
+      radial-gradient(1.5px 1.5px at 60% 80%, rgba(255,255,255,.6), transparent),
+      radial-gradient(2px 2px at 80% 66%, rgba(255,255,255,.7), transparent);
+    background-size:200px 200px; animation:wxSnow 11s linear infinite;}
+  @keyframes wxSnow{from{transform:translateY(-20%)} to{transform:translateY(20%)}}
+  /* storm — rain (::before) + periodic lightning flash (::after) */
+  .wxfx-storm::after{inset:0; background:rgba(255,255,255,.7); opacity:0; animation:wxFlash 8s linear infinite;}
+  @keyframes wxFlash{0%,90%,100%{opacity:0} 91%{opacity:.55} 92%{opacity:.08} 93.5%{opacity:.5} 95%{opacity:0}}
+  @media (prefers-reduced-motion: reduce){ .nyhero .wxfx, .nyhero .wxfx::before, .nyhero .wxfx::after{animation:none !important;} }
   .paycard{background:#fff; border:1px solid var(--line); border-radius:var(--radius); padding:16px; margin:4px 0 12px; box-shadow:0 6px 20px rgba(31,58,104,.10);}
   .bigpay{font-size:27px; font-weight:800; color:var(--accent); line-height:1.1;}
   .obar{position:relative; height:8px; background:linear-gradient(90deg,#f0e6d2,#f6efe0); border-radius:999px; margin:10px 0 4px;}
@@ -957,6 +995,17 @@ function skyPhase(h){
   if(h>=19&&h<21) return {grad:"linear-gradient(180deg,#21305c,#3d3566 55%,#8a4a52)", night:true,  sign:"New York is settling into the evening."};
   return                  {grad:"linear-gradient(180deg,#14213d,#1F3A68 62%,#24305a)", night:true,  sign:"New York is winding down for the night."};
 }
+// Map open-meteo weather_code → the CSS weather-FX class suffix (.wxfx-<cat>).
+function wxCategory(code){
+  if(code==null) return null;
+  if([45,48].includes(code)) return "fog";
+  if([71,73,75,77,85,86].includes(code)) return "snow";
+  if([95,96,99].includes(code)) return "storm";
+  if([51,53,55,61,63,65,66,67,80,81,82].includes(code)) return "rain";
+  if([2,3].includes(code)) return "cloudy";
+  if([0,1].includes(code)) return "clear";
+  return null;
+}
 // Fused "From New York" hero: live two-zone clocks (PHT + NYT, re-rendered every
 // 20s) + NY weather + the rotating NYC fact, over a sky that matches New York's
 // real time of day. At dusk/night the skyline windows light up; Milo the bodega
@@ -978,9 +1027,11 @@ function NyPanel(){
   const fact=NYC_TRIVIA[doy%NYC_TRIVIA.length];
   const [wdesc,wicon]=(wx&&WCODE[wx.weather_code])||["",""];
   const wxStr=wx?` · ${wicon||"🌡️"} ${Math.round(wx.temperature_2m)}°F`:"";
+  const wxcat=wx?wxCategory(wx.weather_code):null;   // drives the animated weather backdrop
   const WIN=[[38,46,.1],[90,40,.25],[90,48,.4],[112,52,.55],[138,32,.7],[138,42,.85],[210,38,1],[232,50,1.15],[255,28,1.3],[255,38,1.45],[272,44,1.6],[324,40,1.75],[344,52,1.9]];
   return (
     <div className="nyhero" style={{background:ph.grad}}>
+      {wxcat && <div className={"wxfx wxfx-"+wxcat} aria-hidden="true"></div>}
       <div className="eyebrow">🗽 From New York</div>
       <svg className="celestial" width="30" height="30" viewBox="0 0 30 30" aria-hidden="true">
         {ph.night
