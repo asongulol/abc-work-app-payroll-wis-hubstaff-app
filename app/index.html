@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-09 11:33 EDT · 34fba92";
+const BUILD = "2026-06-09 12:00 EDT · 9c11992";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -1268,7 +1268,7 @@ function CompanySwitcher({ client, companyId, setCompanyId, consolidated, setCon
   const companies = data || [];
   return (
     <div style={{display:"flex",alignItems:"center",gap:8,marginLeft:"auto"}}>
-      <span className="muted" style={{fontSize:12}}>Company</span>
+      <span className="muted" style={{fontSize:12}}>Client</span>
       <select value={consolidated ? "__all__" : (companyId||"")}
         onChange={e=>{
           if(e.target.value==="__all__"){setConsolidated(true);}
@@ -1276,7 +1276,7 @@ function CompanySwitcher({ client, companyId, setCompanyId, consolidated, setCon
         }}>
         <option value="" disabled>Select…</option>
         {companies.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
-        <option value="__all__">— All companies (consolidated) —</option>
+        <option value="__all__">— All clients (consolidated) —</option>
       </select>
     </div>
   );
