@@ -1,4 +1,4 @@
-// Supabase Edge Function: hubstaff-sync  (v8 — ingest frozen to single company; per-client routing moved to a separate classify step; access token cached)
+// Supabase Edge Function: hubstaff-sync  (v9 — employer-wide match; each contractor attributed to their ACTIVE client; PTO follows the worker; per-project classify is a separate step)
 // ---------------------------------------------------------------------------
 // Pulls Hubstaff daily activities for a date range and returns per-member daily
 // hours to the browser. The Hubstaff REFRESH TOKEN lives ONLY here (server-side
@@ -281,38 +281,31 @@ Deno.serve(async (req) => {
         nameById[id] = u?.name ?? `user ${id}`;
       }
 
-      // Per-client attribution by Hubstaff project has MOVED OUT of the sync into a
-      // separate "classify_to_clients" step (per the owner model: import all of the
-      // org's time first, classify to clients after). The ingest MUST NOT route by
-      // project here — the daily cron imports the whole org to its single company_id,
-      // and the consolidated sync imports to each worker's primary client. Frozen to
-      // empty so a project mapped to another client can never divert the daily cron.
-      const projMap: Record<number, string> = {};   // intentionally empty in ingest; classification is a separate step
-      const coOf = (projectId: any): string | null => (projectId != null && projMap[projectId]) || (companyId || null);
+      // ATTRIBUTION MODEL: each contractor's time goes to their CURRENT ACTIVE client
+      // (their active worker_companies link). Worker matching is EMPLOYER-WIDE — all of
+      // Aaron Anderson's contractors — so nobody is dropped for being on a different
+      // client. Per-project splitting across MULTIPLE clients is the separate
+      // classify_to_clients step. PTO follows the worker (employer pays it; clients are
+      // not billed for it — pto_seconds stays separate from tracked_seconds).
 
-      // daily activities: tracked + overall (active) seconds per user per CLIENT per day
-      // (activities/daily returns one row per user per PROJECT per day, so we route
-      // each project's seconds to the client it maps to).
+      // daily activities: tracked + overall (active) seconds per user per day, SUMMED
+      // across projects (activities/daily returns one row per user/project/day).
       const acts = await pageAll(
         `${API}/organizations/${orgId}/activities/daily?date%5Bstart%5D=${start}&date%5Bstop%5D=${stop}`,
         token, "daily_activities",
       );
-      const trackedDay: Record<number, Record<string, Record<string, number>>> = {};
-      const overallDay: Record<number, Record<string, Record<string, number>>> = {};
-      let unmappedSecs = 0;
+      const trackedDay: Record<number, Record<string, number>> = {};
+      const overallDay: Record<number, Record<string, number>> = {};
       for (const a of acts) {
         const uid = a.user_id, day = a.date;
         if (!uid || !day) continue;
-        const co = coOf(a.project_id);
-        if (!co) { unmappedSecs += (a.tracked ?? 0); continue; }   // consolidated + unmapped project: report, don't guess a client
-        ((trackedDay[uid] ??= {})[co] ??= {})[day] = (trackedDay[uid][co][day] ?? 0) + (a.tracked ?? 0);
-        ((overallDay[uid] ??= {})[co] ??= {})[day] = (overallDay[uid][co][day] ?? 0) + (a.overall ?? 0);
+        (trackedDay[uid] ??= {})[day] = (trackedDay[uid][day] ?? 0) + (a.tracked ?? 0);
+        (overallDay[uid] ??= {})[day] = (overallDay[uid][day] ?? 0) + (a.overall ?? 0);
       }
 
-      // PTO per user per CLIENT per day (approved; per-day amounts inside the window).
-      // PTO is org-level leave with no project, so it is attributed to the default
-      // company_id passed by the cron (the contractor's primary client).
-      const ptoDay: Record<number, Record<string, Record<string, number>>> = {};
+      // PTO per user per day (approved; within window) — always accumulated, then
+      // bucketed to the worker's client at write time (fixes the consolidated PTO-drop).
+      const ptoDay: Record<number, Record<string, number>> = {};
       try {
         const ptoReqs = await pageAll(`${API}/organizations/${orgId}/time_off_requests`, token, "time_off_requests");
         for (const r2 of (ptoReqs as any[])) {
@@ -325,56 +318,77 @@ Deno.serve(async (req) => {
             if (dMs < startMs || dMs > stopMs) continue;
             const secs = Number(d?.amount_used ?? 0);
             if (!Number.isFinite(secs) || secs <= 0) continue;
-            if (companyId) ((ptoDay[uid] ??= {})[companyId] ??= {})[date] = (ptoDay[uid][companyId][date] ?? 0) + secs;
+            (ptoDay[uid] ??= {})[date] = (ptoDay[uid][date] ?? 0) + secs;
           }
         }
       } catch (_) { /* PTO optional — continue tracked-only */ }
 
-      // Target client companies = the default + every client a mapped project routes
-      // to. Worker matching, canonical labels, and the decided-row guard are all done
-      // PER company (a worker is only attributed to a client they're linked to).
-      const targetCompanies = [...new Set([...(companyId ? [companyId] : []), ...Object.values(projMap)])];
-      if (targetCompanies.length === 0) {
-        // consolidated sync with no project→client mappings yet — nothing to attribute to
+      // ALL worker_companies (EMPLOYER-WIDE) → flat match index + active-client picker.
+      const wcRes = await fetch(
+        `${SB_URL}/rest/v1/worker_companies` +
+        `?select=company_id,worker_id,hubstaff_name,hubstaff_user_id,status,started_on,ended_on,id,workers(first_name,last_name,status)`,
+        { headers: tokHdr });
+      const links: any[] = wcRes.ok ? await wcRes.json() : [];
+      const byId: Record<number, string> = {}, strict: Record<string, string> = {}, loose: Record<string, string> = {};
+      const linksByWorker: Record<string, any[]> = {};
+      for (const l of links) {
+        (linksByWorker[l.worker_id] ??= []).push(l);
+        if (l.hubstaff_user_id != null && !(l.hubstaff_user_id in byId)) byId[l.hubstaff_user_id] = l.worker_id;
+        const realName = `${l.workers?.first_name ?? ""} ${l.workers?.last_name ?? ""}`;
+        for (const src of [l.hubstaff_name, realName].filter(Boolean)) {
+          const sk = nameKey(src), lk = looseKey(src);
+          if (sk && !(sk in strict)) strict[sk] = l.worker_id;
+          if (lk && !(lk in loose)) loose[lk] = l.worker_id;
+        }
+      }
+      const matchWorker = (uid: number, nm: string): string | null =>
+        (uid != null && byId[uid]) || strict[nameKey(nm)] || loose[looseKey(nm)] || null;
+      // destination client = the worker's active link (most recent started_on, active
+      // link first), else their only link, else the cron's companyId fallback.
+      const clientOf = (wid: string): string | null => {
+        const wls = linksByWorker[wid] || [];
+        const active = wls.filter((l) => l.status === "active");
+        const pool = active.length ? active : wls;
+        if (!pool.length) return companyId || null;
+        const pick = pool.slice().sort((a, b) =>
+          String(b.started_on ?? "").localeCompare(String(a.started_on ?? "")) ||
+          ((a.ended_on ? 1 : 0) - (b.ended_on ? 1 : 0)) ||
+          String(a.id).localeCompare(String(b.id)))[0];
+        return pick.company_id;
+      };
+
+      const days: string[] = [];
+      for (let t = new Date(`${start}T00:00:00Z`).getTime(); t <= stopMs; t += 86400000) {
+        days.push(new Date(t).toISOString().slice(0, 10));
+      }
+
+      // resolve each member with time → worker → destination client
+      const unmatched = new Set<string>();
+      const workerCo: Record<string, string> = {};
+      for (const uid of userIds) {
+        if (!(trackedDay[uid] || ptoDay[uid])) continue;   // only members with time
+        const nm = nameById[uid] ?? `user ${uid}`;
+        const wid = matchWorker(uid, nm);
+        if (!wid) { unmatched.add(nm); continue; }
+        const co = clientOf(wid);
+        if (!co) { unmatched.add(`${nm} (no client assigned)`); continue; }
+        workerCo[wid] = co;
+      }
+      const targetCompanies = [...new Set(Object.values(workerCo))];
+      if (!targetCompanies.length) {
         return json({
-          ok: true, window: { start, stop }, company_id: null, clients_attributed: 0, projects_mapped: 0,
+          ok: true, window: { start, stop }, company_id: companyId || null,
+          clients_attributed: 0, projects_mapped: 0, unmapped_seconds: 0,
           members_seen: userIds.length, rows_written: 0, ids_persisted: 0, skipped_decided: 0,
-          unmatched: [], unmapped_seconds: unmappedSecs,
-          note: "No client companies to attribute to — map Hubstaff projects to clients first (Configuration → Hubstaff Projects → Clients).",
+          unmatched: [...unmatched], note: "No matched contractors with time in this window.",
         });
       }
       const inCos = targetCompanies.map((c) => `"${c}"`).join(",");
 
-      // worker links for all target companies -> per-company match index (id/strict/loose)
-      const wcRes = await fetch(
-        `${SB_URL}/rest/v1/worker_companies?company_id=in.(${inCos})` +
-        `&select=company_id,worker_id,hubstaff_name,hubstaff_user_id,status,workers(first_name,last_name,status)`,
-        { headers: tokHdr });
-      const links: any[] = wcRes.ok ? await wcRes.json() : [];
-      type Idx = { byId: Record<number, any>; strict: Record<string, any>; loose: Record<string, any> };
-      const idx: Record<string, Idx> = {};
-      for (const co of targetCompanies) idx[co] = { byId: {}, strict: {}, loose: {} };
-      for (const l of links) {
-        const ix = idx[l.company_id]; if (!ix) continue;
-        const val = { worker_id: l.worker_id };
-        if (l.hubstaff_user_id != null && !(l.hubstaff_user_id in ix.byId)) ix.byId[l.hubstaff_user_id] = val;
-        const realName = `${l.workers?.first_name ?? ""} ${l.workers?.last_name ?? ""}`;
-        for (const src of [l.hubstaff_name, realName].filter(Boolean)) {
-          const sk = nameKey(src), lk = looseKey(src);
-          if (sk && !(sk in ix.strict)) ix.strict[sk] = val;
-          if (lk && !(lk in ix.loose)) ix.loose[lk] = val;
-        }
-      }
-      const matchIn = (co: string, uid: number, nm: string) => {
-        const ix = idx[co]; if (!ix) return null;
-        return (uid != null && ix.byId[uid]) || ix.strict[nameKey(nm)] || ix.loose[looseKey(nm)] || null;
-      };
-
-      // canonical source_name per (company, worker): reuse the label already on their
-      // rows so we UPDATE the same row instead of inserting a second under a new
-      // spelling (unique key is company_id+source_name+work_date).
-      const allWorkerIds = [...new Set(links.map((l: any) => l.worker_id).filter(Boolean))];
-      const canonical: Record<string, string> = {};   // "company_id|worker_id" -> source_name
+      // canonical source_name per (company, worker) — reuse the existing label so the
+      // UPSERT hits the same (company_id, source_name, work_date) unique key.
+      const allWorkerIds = Object.keys(workerCo);
+      const canonical: Record<string, string> = {};
       if (allWorkerIds.length) {
         const inList = allWorkerIds.map((w) => `"${w}"`).join(",");
         const cRes = await fetch(
@@ -387,8 +401,7 @@ Deno.serve(async (req) => {
         }
       }
 
-      // human-DECIDED rows (approval != 'pending') are protected — keyed by
-      // company|source|day AND company|worker|day so a relabeled row stays shielded.
+      // human-DECIDED rows (approval != 'pending') are protected.
       const exRes = await fetch(
         `${SB_URL}/rest/v1/time_entries?company_id=in.(${inCos})` +
         `&work_date=gte.${start}&work_date=lte.${stop}&select=company_id,worker_id,source_name,work_date,approval`,
@@ -401,48 +414,28 @@ Deno.serve(async (req) => {
         }
       }
 
-      const days: string[] = [];
-      for (let t = new Date(`${start}T00:00:00Z`).getTime(); t <= stopMs; t += 86400000) {
-        days.push(new Date(t).toISOString().slice(0, 10));
-      }
-
       const rows: any[] = [];
-      const unmatched = new Set<string>();
       const persistIds: Array<{ company_id: string; worker_id: string; uid: number }> = [];
       let skippedDecided = 0;
-
       for (const uid of userIds) {
         const nm = nameById[uid] ?? `user ${uid}`;
-        // every client this member logged tracked time / PTO against
-        const cos = new Set<string>([
-          ...Object.keys(trackedDay[uid] ?? {}),
-          ...Object.keys(ptoDay[uid] ?? {}),
-        ]);
-        for (const co of cos) {
-          const hit = matchIn(co, uid, nm);
-          if (!hit) {
-            // member logged time on a client they're not assigned to — report it
-            // (assign them to that client to capture the hours) rather than mis-attribute.
-            unmatched.add(targetCompanies.length > 1 ? `${nm} (not assigned to the client for some tracked time)` : nm);
-            continue;
-          }
-          const wId = hit.worker_id;
-          const src = canonical[`${co}|${wId}`] ?? nm;
-          const link = links.find((l: any) => l.company_id === co && l.worker_id === wId);
-          if (uid != null && link && link.hubstaff_user_id == null) persistIds.push({ company_id: co, worker_id: wId, uid });
-          for (const day of days) {
-            const tracked = trackedDay[uid]?.[co]?.[day] ?? 0;
-            const pto = ptoDay[uid]?.[co]?.[day] ?? 0;
-            if (tracked === 0 && pto === 0) continue;   // don't write empty days
-            if (decidedSrc.has(`${co}|${src}|${day}`) || decidedWrk.has(`${co}|${wId}|${day}`)) { skippedDecided++; continue; }
-            const ov = overallDay[uid]?.[co]?.[day] ?? 0;
-            const activity = tracked > 0 ? Math.round((ov / tracked) * 100) : null;
-            rows.push({
-              company_id: co, worker_id: wId, source_name: src, work_date: day,
-              tracked_seconds: tracked, pto_seconds: pto,
-              activity_pct: activity, approval: "pending",
-            });
-          }
+        const wId = matchWorker(uid, nm); if (!wId) continue;
+        const co = workerCo[wId]; if (!co) continue;
+        const src = canonical[`${co}|${wId}`] ?? nm;
+        const link = (linksByWorker[wId] || []).find((l: any) => l.company_id === co);
+        if (uid != null && link && link.hubstaff_user_id == null) persistIds.push({ company_id: co, worker_id: wId, uid });
+        for (const day of days) {
+          const tracked = trackedDay[uid]?.[day] ?? 0;
+          const pto = ptoDay[uid]?.[day] ?? 0;
+          if (tracked === 0 && pto === 0) continue;
+          if (decidedSrc.has(`${co}|${src}|${day}`) || decidedWrk.has(`${co}|${wId}|${day}`)) { skippedDecided++; continue; }
+          const ov = overallDay[uid]?.[day] ?? 0;
+          const activity = tracked > 0 ? Math.round((ov / tracked) * 100) : null;
+          rows.push({
+            company_id: co, worker_id: wId, source_name: src, work_date: day,
+            tracked_seconds: tracked, pto_seconds: pto,
+            activity_pct: activity, approval: "pending",
+          });
         }
       }
 
@@ -470,8 +463,7 @@ Deno.serve(async (req) => {
 
       return json({
         ok: true, window: { start, stop }, company_id: companyId || null,
-        clients_attributed: targetCompanies.length, projects_mapped: Object.keys(projMap).length,
-        unmapped_seconds: unmappedSecs,
+        clients_attributed: targetCompanies.length, projects_mapped: 0, unmapped_seconds: 0,
         members_seen: userIds.length, rows_written: written,
         ids_persisted: persistIds.length, skipped_decided: skippedDecided,
         unmatched: [...unmatched],
