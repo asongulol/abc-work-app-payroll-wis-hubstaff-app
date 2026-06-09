@@ -2919,6 +2919,48 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   }
   const inp={width:"100%"};
   const [ptab,setPtab]=useState("profile");
+
+  // --- Company assignments (worker_companies many-to-many) ---
+  // A contractor can belong to multiple companies. Manage their memberships here:
+  // assign to another company, or deactivate/reactivate an existing one. The add
+  // dropdown + companies list are RLS-scoped to the companies this admin manages
+  // (owner sees all); inserts are likewise gated by worker_companies_admin_all.
+  const [memberships,setMemberships]=useState(null);
+  const [allCompanies,setAllCompanies]=useState([]);
+  const [coBusy,setCoBusy]=useState(false); const [addCoId,setAddCoId]=useState("");
+  const todayISO=new Date().toISOString().slice(0,10);
+  function loadMemberships(){
+    client.from("worker_companies").select("company_id,status,role,contract,companies(name)").eq("worker_id",w.id)
+      .then(({data})=>setMemberships(data||[]));
+  }
+  useEffect(()=>{ loadMemberships();
+    client.from("companies").select("id,name,status").eq("status","active").order("name").then(({data})=>setAllCompanies(data||[]));
+  },[w.id]);  // eslint-disable-line
+  async function addCompany(cid){
+    if(!cid) return; setCoBusy(true); setSavedMsg("");
+    const {error}=await client.from("worker_companies")
+      .insert({worker_id:w.id, company_id:cid, contract:"FT", status:"active", started_on:f.hire_date||todayISO});
+    setCoBusy(false);
+    if(error){ setSavedMsg("Couldn't assign company: "+error.message); return; }
+    const nm=(allCompanies.find(c=>c.id===cid)||{}).name||"company";
+    logEvent(client,{company_id:cid,action:"edit_contractor",entity:fullName(f),detail:{assigned_company:nm}});
+    setSavedMsg("Assigned to "+nm+".");
+    setAddCoId(""); loadMemberships(); onSaved&&onSaved();
+  }
+  async function toggleMembership(cid, makeActive){
+    setCoBusy(true); setSavedMsg("");
+    const {error}=await client.from("worker_companies")
+      .update(makeActive?{status:"active",ended_on:null}:{status:"ended",ended_on:todayISO})
+      .eq("worker_id",w.id).eq("company_id",cid);
+    setCoBusy(false);
+    if(error){ setSavedMsg("Couldn't update company: "+error.message); return; }
+    const nm=(memberships||[]).find(m=>m.company_id===cid)?.companies?.name||"company";
+    logEvent(client,{company_id:cid,action:"edit_contractor",entity:fullName(f),detail:{company:nm,status:makeActive?"active":"ended"}});
+    loadMemberships(); onSaved&&onSaved();
+  }
+  const linkedIds=new Set((memberships||[]).map(m=>m.company_id));
+  const assignable=allCompanies.filter(c=>!linkedIds.has(c.id));
+
   return (
     <div className="modal-bg" onClick={close}>
       <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="pm-title" onClick={e=>e.stopPropagation()}>
@@ -2985,6 +3027,34 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
           <label style={{fontSize:13,display:"flex",alignItems:"center",gap:6}}><input type="checkbox" checked={f.thirteenth_month_eligible} onChange={e=>set("thirteenth_month_eligible",e.target.checked)}/> 13th-month</label>
         </div>
         <div style={{marginBottom:4}}><button className="btn" onClick={saveDetails}>Save details</button></div>
+
+        {/* --- Company assignments (multi-company) --- */}
+        <div style={{borderTop:"1px solid var(--border)",paddingTop:12,marginTop:12}}>
+          <label style={{fontWeight:600,fontSize:14}}>Companies</label>
+          <p className="sub" style={{margin:"2px 0 8px"}}>Which companies this contractor is engaged with. Assign them to one or more; deactivate a company to end that engagement (history is kept).</p>
+          {memberships===null ? <span className="muted" style={{fontSize:12}}>Loading…</span> : (
+            memberships.length===0
+              ? <div className="muted" style={{fontSize:12,marginBottom:8}}>Not assigned to any company yet.</div>
+              : <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:8}}>
+                  {memberships.map(m=>{ const act=m.status==="active"; return (
+                    <div key={m.company_id} style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                      <span style={{fontWeight:600}}>{m.companies?.name||m.company_id}</span>
+                      <span className={"pill "+(act?"active":"inactive")} style={{fontSize:11}}>{act?"active":"ended"}</span>
+                      {m.role && <span className="muted" style={{fontSize:11}}>· {m.role}</span>}
+                      <button className="btn ghost sm" style={{marginLeft:"auto"}} disabled={coBusy}
+                        onClick={()=>toggleMembership(m.company_id,!act)}>{act?"Deactivate":"Reactivate"}</button>
+                    </div>
+                  );})}
+                </div>
+          )}
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+            <select style={{minWidth:180}} value={addCoId} disabled={coBusy||assignable.length===0} onChange={e=>setAddCoId(e.target.value)}>
+              <option value="">{assignable.length===0?"— no other companies —":"— assign to company —"}</option>
+              {assignable.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            <button className="btn sm" disabled={coBusy||!addCoId} onClick={()=>addCompany(addCoId)}>{coBusy?"…":"Add company"}</button>
+          </div>
+        </div>
 
         </>}
         {ptab==="portal" && <>
