@@ -1,5 +1,4 @@
-// Supabase Edge Function: hubstaff-sync  (v7 — per-client attribution by project (hubstaff_projects);
-// list_projects + admin-gated sync_ingest (supports consolidated); access token cached)
+// Supabase Edge Function: hubstaff-sync  (v8 — ingest frozen to single company; per-client routing moved to a separate classify step; access token cached)
 // ---------------------------------------------------------------------------
 // Pulls Hubstaff daily activities for a date range and returns per-member daily
 // hours to the browser. The Hubstaff REFRESH TOKEN lives ONLY here (server-side
@@ -282,14 +281,13 @@ Deno.serve(async (req) => {
         nameById[id] = u?.name ?? `user ${id}`;
       }
 
-      // Phase B — per-client attribution: map each Hubstaff project to a client
-      // company. EMPTY map (or unmapped project) => time falls to the passed
-      // company_id, i.e. byte-identical to the previous single-company behavior.
-      const projMap: Record<number, string> = {};
-      {
-        const pr = await fetch(`${SB_URL}/rest/v1/hubstaff_projects?select=hubstaff_project_id,company_id`, { headers: tokHdr });
-        if (pr.ok) for (const r of (await pr.json() as any[])) projMap[r.hubstaff_project_id] = r.company_id;
-      }
+      // Per-client attribution by Hubstaff project has MOVED OUT of the sync into a
+      // separate "classify_to_clients" step (per the owner model: import all of the
+      // org's time first, classify to clients after). The ingest MUST NOT route by
+      // project here — the daily cron imports the whole org to its single company_id,
+      // and the consolidated sync imports to each worker's primary client. Frozen to
+      // empty so a project mapped to another client can never divert the daily cron.
+      const projMap: Record<number, string> = {};   // intentionally empty in ingest; classification is a separate step
       const coOf = (projectId: any): string | null => (projectId != null && projMap[projectId]) || (companyId || null);
 
       // daily activities: tracked + overall (active) seconds per user per CLIENT per day
