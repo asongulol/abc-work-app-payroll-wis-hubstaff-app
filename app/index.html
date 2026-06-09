@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-09 13:45 EDT · ebd9b86";
+const BUILD = "2026-06-09 14:23 EDT · ff37607";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -4238,13 +4238,15 @@ function TimeImport({client,companyId,consolidated,goTab,openPeriodForEdit}){
           body:{action:"sync_ingest",org_id:Number(orgId),start:syncStart,stop:syncStop}});
         if(error)throw new Error(error.message||"Edge function error");
         if(data&&data.error)throw new Error(data.error);
-        const um=(data.unmatched||[]).length, unmappedH=Math.round((data.unmapped_seconds||0)/3600);
-        setDone({people:data.members_seen||0, days:listDates(syncStart,syncStop).length, count:data.rows_written||0, mode:"insert"});
-        setNotice({ok:true, text:
-          (data.note ? data.note :
-            `Synced org-wide: ${data.rows_written} daily entr${data.rows_written===1?"y":"ies"} across ${data.clients_attributed} client(s).`)+
-          (um?` ${um} member(s) tracked time on a client they're not assigned to — assign them and re-sync.`:"")+
-          (unmappedH?` ${unmappedH}h on unmapped projects skipped — map them under Configuration → Hubstaff Projects → Clients.`:"")});
+        const um=(data.unmatched||[]).length;
+        // ONE banner for the org-wide server sync (no import-batch → no "Delete this
+        // import"); `consolidated` flag tells the done banner to render this text and
+        // the count drives the approval-table refresh.
+        setDone({ consolidated:true, count:data.rows_written||0, days:listDates(syncStart,syncStop).length,
+          text:(data.note ? data.note
+            : `Synced org-wide: ${data.rows_written} daily entr${data.rows_written===1?"y":"ies"} imported across ${data.clients_attributed} client(s), to each contractor's current client.`)
+            +(um?` ${um} member(s) couldn't be matched to a contractor (or have no client assigned) and were skipped.`:""),
+          unmatched:data.unmatched||[] });
         return;
       }
       // Single client: pull per-member daily totals and commit to this company.
@@ -4450,16 +4452,20 @@ function TimeImport({client,companyId,consolidated,goTab,openPeriodForEdit}){
           <div style={{marginTop:6,fontSize:12}}>Overlapping: {overlap.ppl.slice(0,8).join(", ")}{overlap.ppl.length>8?"…":""}</div>
         </div>}
 
-        {done && <div className="banner success" style={{display:"block",marginTop:12}}>
-          Imported <b>{done.people} contractor(s)</b> × {done.days||parsed?.dates?.length||"?"} days
-          {" "}= {done.count} daily entries
-          {done.mode==="skip"?" (new rows only)":done.mode==="overwrite"?" (overwrote existing)":""}.
-          {done.unmatched>0 && ` ${done.unmatched} unmatched member(s) skipped.`} Review &amp; approve below.
-          <div style={{marginTop:8}}>
-            <button className="btn ghost sm" style={{borderColor:"var(--bad)",color:"var(--bad)"}}
-              disabled={committing} onClick={deleteCurrentImport}>Delete this import</button>
-          </div>
-        </div>}
+        {done && (done.consolidated
+          ? <div className="banner success" style={{display:"block",marginTop:12}}>
+              {done.text} Review &amp; approve below.
+            </div>
+          : <div className="banner success" style={{display:"block",marginTop:12}}>
+              Imported <b>{done.people} contractor(s)</b> × {done.days||parsed?.dates?.length||"?"} days
+              {" "}= {done.count} daily entries
+              {done.mode==="skip"?" (new rows only)":done.mode==="overwrite"?" (overwrote existing)":""}.
+              {done.unmatched>0 && ` ${done.unmatched} unmatched member(s) skipped.`} Review &amp; approve below.
+              <div style={{marginTop:8}}>
+                <button className="btn ghost sm" style={{borderColor:"var(--bad)",color:"var(--bad)"}}
+                  disabled={committing} onClick={deleteCurrentImport}>Delete this import</button>
+              </div>
+            </div>)}
 
         {/* Hubstaff sync notification — success (with any unmatched names to set up)
             or failure. Dismissible. CSV import uses the preview + done banner above. */}
