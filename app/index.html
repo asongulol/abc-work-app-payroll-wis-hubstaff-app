@@ -11553,6 +11553,84 @@ function CompaniesModal({ client, isOwner, currentCompanyId, setCompanyId, onCha
 // Portal Fields / Agreement Templates / Onboarding Configuration open the same
 // modals used elsewhere; the Wise admin tools (Backfill all paid periods, Email
 // cross-check, Cross-system drift) live in WiseReconciliation.
+// Map Hubstaff projects → client companies (Phase A of multi-client attribution).
+// Lists the employer org's projects via hubstaff-sync(list_projects) and lets the
+// owner assign each to a client; saved to hubstaff_projects. cron_ingest then
+// attributes each project's tracked time to that client.
+function HubstaffProjectsModal({ client, onClose }){
+  const mref=useModalA11y(onClose,{escClose:true});
+  const [companies,setCompanies]=useState([]);
+  const [orgOptions,setOrgOptions]=useState([]); const [orgId,setOrgId]=useState("");
+  const [projects,setProjects]=useState(null);   // null = not loaded yet
+  const [map,setMap]=useState({});                // project_id -> company_id ("" = unassigned)
+  const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [err,setErr]=useState("");
+  useEffect(()=>{
+    client.from("companies").select("id,name,status,hubstaff_org_id").eq("status","active").order("name").then(({data})=>{
+      const cs=data||[]; setCompanies(cs);
+      const orgs=[...new Set(cs.map(c=>c.hubstaff_org_id).filter(x=>x!=null).map(Number))];
+      setOrgOptions(orgs); if(orgs.length) setOrgId(String(orgs[0]));
+    });
+    client.from("hubstaff_projects").select("hubstaff_project_id,company_id").then(({data})=>{
+      const m={}; (data||[]).forEach(r=>{ m[r.hubstaff_project_id]=r.company_id; }); setMap(m);
+    });
+  },[]);  // eslint-disable-line
+  async function loadProjects(){
+    if(!orgId){ setErr("No Hubstaff org is linked to a company yet — set one under Companies."); return; }
+    setBusy(true); setErr(""); setMsg("");
+    const {data,error}=await client.functions.invoke("hubstaff-sync",{body:{action:"list_projects",org_id:Number(orgId)}});
+    setBusy(false);
+    if(error||(data&&data.error)){ setErr((data&&data.error)||"Couldn't load projects — is hubstaff-sync deployed with the list_projects action?"); return; }
+    setProjects((data.projects||[]).slice().sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""))));
+  }
+  async function save(){
+    setBusy(true); setErr(""); setMsg("");
+    const rows=Object.entries(map).filter(([,cid])=>cid).map(([pid,cid])=>{
+      const p=(projects||[]).find(x=>String(x.id)===String(pid));
+      return { hubstaff_project_id:Number(pid), company_id:cid, name:p?p.name:null, org_id:Number(orgId)||null, updated_at:new Date().toISOString() };
+    });
+    if(rows.length){ const {error}=await client.from("hubstaff_projects").upsert(rows,{onConflict:"hubstaff_project_id"}); if(error){ setErr("Save failed: "+error.message); setBusy(false); return; } }
+    const unassigned=Object.entries(map).filter(([,cid])=>!cid).map(([pid])=>Number(pid));
+    if(unassigned.length){ await client.from("hubstaff_projects").delete().in("hubstaff_project_id",unassigned); }
+    setBusy(false); setMsg(`Saved — ${rows.length} project${rows.length===1?"":"s"} mapped.`);
+    logEvent(client,{action:"hubstaff_projects_mapped",entity:"Hubstaff project map",detail:{mapped:rows.length,org_id:Number(orgId)||null}});
+  }
+  const inp={width:"100%"};
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="hp-title" onClick={e=>e.stopPropagation()} style={{maxWidth:680,maxHeight:"86vh",overflowY:"auto"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <h2 id="hp-title" style={{margin:0}}>Hubstaff projects → clients</h2>
+          <button className="btn ghost sm" onClick={onClose}>Close</button>
+        </div>
+        <p className="sub">Assign each Hubstaff project to the client company it bills to. Tracked time on that project is then attributed to that client. Unassigned projects fall back to the company the daily sync runs for.</p>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",margin:"8px 0"}}>
+          {orgOptions.length>1
+            ? <select value={orgId} onChange={e=>setOrgId(e.target.value)}>{orgOptions.map(o=><option key={o} value={o}>Hubstaff org {o}</option>)}</select>
+            : <span className="muted" style={{fontSize:12}}>{orgId?`Hubstaff org ${orgId}`:"No Hubstaff org linked (set under Companies)"}</span>}
+          <button className="btn sm" disabled={busy||!orgId} onClick={loadProjects}>{busy?"Loading…":(projects?"Reload projects":"Load projects")}</button>
+        </div>
+        {err && <div className="err" style={{marginTop:4}}>{err}</div>}
+        {projects!==null && (projects.length===0
+          ? <div className="muted" style={{fontSize:13}}>No projects returned for this org.</div>
+          : <div style={{marginTop:6}}>
+              {projects.map(p=>(
+                <div key={p.id} style={{display:"flex",gap:8,alignItems:"center",justifyContent:"space-between",borderTop:"1px solid var(--border)",padding:"8px 0",flexWrap:"wrap"}}>
+                  <div><b>{p.name||("Project "+p.id)}</b> <span className="muted" style={{fontSize:11}}>· id {p.id}{p.status&&p.status!=="active"?` · ${p.status}`:""}</span></div>
+                  <select style={{minWidth:220}} value={map[p.id]||""} onChange={e=>setMap(m=>({...m,[p.id]:e.target.value}))}>
+                    <option value="">— unassigned —</option>
+                    {companies.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+              ))}
+              <div style={{display:"flex",gap:8,alignItems:"center",marginTop:10}}>
+                <button className="btn" disabled={busy} onClick={save}>{busy?"Saving…":"Save mappings"}</button>
+                {msg && <span className="muted" style={{fontSize:13}}>{msg}</span>}
+              </div>
+            </div>)}
+      </div>
+    </div>
+  );
+}
 function Configuration({ client, companyId, consolidated, isOwner, setCompanyId, onCompaniesChanged }){
   const [show,setShow]=useState("");   // "" | "companies" | "portal" | "tpl" | "cfg"
   const Row=({title,desc,onClick})=>(
@@ -11567,6 +11645,7 @@ function Configuration({ client, companyId, consolidated, isOwner, setCompanyId,
         <h2 style={{marginTop:0}}>Configuration</h2>
         <p className="sub">Admin setup and global maintenance tools.</p>
         <Row title="Companies" desc="Add a company, set its Hubstaff org link, or archive/remove one. Archiving keeps all payroll history." onClick={()=>setShow("companies")}/>
+        <Row title="Hubstaff Projects → Clients" desc="Map each Hubstaff project to a client company so tracked time is attributed to the right client (per-client hours)." onClick={()=>setShow("projects")}/>
         <Row title="Portal Fields" desc="Choose which profile fields contractors can edit in the self-service portal." onClick={()=>setShow("portal")}/>
         <Row title="Agreement Templates" desc="Edit the wording of the onboarding agreements (IC, Non-Compete, NDA, BAA)." onClick={()=>setShow("tpl")}/>
         <Row title="Onboarding Configuration" desc="Turn onboarding on/off and set the required documents and agreements." onClick={()=>setShow("cfg")}/>
@@ -11574,6 +11653,7 @@ function Configuration({ client, companyId, consolidated, isOwner, setCompanyId,
       {/* Backfill all paid periods · Email cross-check · Cross-system drift */}
       <WiseReconciliation client={client} companyId={companyId} consolidated={consolidated}/>
       {show==="companies" && <CompaniesModal client={client} isOwner={isOwner} currentCompanyId={companyId} setCompanyId={setCompanyId} onChanged={onCompaniesChanged} onClose={()=>setShow("")}/>}
+      {show==="projects" && <HubstaffProjectsModal client={client} onClose={()=>setShow("")}/>}
       {show==="portal" && <PortalSettingsModal client={client} onClose={()=>setShow("")}/>}
       {show==="tpl" && <AgreementTemplatesModal client={client} onClose={()=>setShow("")}/>}
       {show==="cfg" && <OnboardingConfigModal client={client} onClose={()=>setShow("")}/>}

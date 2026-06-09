@@ -145,6 +145,15 @@ Deno.serve(async (req) => {
       return json({ organizations: orgs.map((o: any) => ({ id: o.id, name: o.name })) });
     }
 
+    // action: list an org's projects — used to map Hubstaff projects → client
+    // companies for per-client hour attribution. READ ONLY.
+    if (body.action === "list_projects") {
+      const orgId = Number(body.org_id);
+      if (!Number.isFinite(orgId) || orgId <= 0) return json({ error: "need org_id (positive integer)" }, 400);
+      const projects = await pageAll(`${API}/organizations/${orgId}/projects`, token, "projects");
+      return json({ projects: projects.map((p: any) => ({ id: p.id, name: p.name, status: p.status ?? null })) });
+    }
+
     // NOTE: a `debug_role_sources` diagnostic action lived here briefly on
     // 2026-05-28. The probe found Hubstaff's /v2/organizations/{org}/members
     // endpoint returns `membership_role` and `effective_role` fields, but
