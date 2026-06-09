@@ -33,6 +33,7 @@ create table if not exists public.invoice_lines (
   invoice_id    uuid not null references public.invoices(id) on delete cascade,
   worker_id     uuid references public.workers(id) on delete set null,
   worker_name   text,
+  position      text,                                   -- the engagement role at invoice time
   worked_hours  numeric(10,2) not null default 0,
   bill_rate_usd numeric(12,2) not null default 0,
   amount_usd    numeric(14,2) not null default 0
