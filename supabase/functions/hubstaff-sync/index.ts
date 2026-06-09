@@ -1,4 +1,5 @@
-// Supabase Edge Function: hubstaff-sync  (v6 — caches access token; refresh only when expired)
+// Supabase Edge Function: hubstaff-sync  (v7 — per-client attribution by project (hubstaff_projects);
+// list_projects + admin-gated sync_ingest (supports consolidated); access token cached)
 // ---------------------------------------------------------------------------
 // Pulls Hubstaff daily activities for a date range and returns per-member daily
 // hours to the browser. The Hubstaff REFRESH TOKEN lives ONLY here (server-side
