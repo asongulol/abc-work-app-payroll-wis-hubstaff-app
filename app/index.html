@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-10 08:28 EDT · 9a45565";
+const BUILD = "2026-06-10 08:43 EDT · 7e9cb0d";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -11600,58 +11600,62 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
   const badge=s=> s==="active" ? <span className="pill good">Active</span> : <span className="pill">Archived</span>;
   const orgTxt=c=> c.hubstaff_org_id!=null ? ("Hubstaff org "+c.hubstaff_org_id) : "no Hubstaff link";
 
-  const rowView=(c)=>(
-    <div key={c.id} className="row" style={{justifyContent:"space-between",alignItems:"center",gap:10,borderTop:"1px solid var(--border)",padding:"10px 0",flexWrap:"wrap"}}>
-      {editId===c.id ? (
-        <div style={{flex:1,display:"flex",flexDirection:"column",gap:10}}>
-          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <label style={{flex:"1 1 200px",fontSize:12,fontWeight:600}}>Company name
-              <input value={eName} onChange={e=>setEName(e.target.value)} placeholder="Company name" style={{width:"100%",marginTop:3}} aria-label="Company name"/></label>
-            <label style={{flex:"1 1 150px",fontSize:12,fontWeight:600}}>Hubstaff org ID <span className="muted" style={{fontWeight:400}}>(optional)</span>
-              <input value={eOrg} onChange={e=>setEOrg(e.target.value)} placeholder="e.g. 258598" inputMode="numeric" style={{width:"100%",marginTop:3}} aria-label="Hubstaff org ID"/></label>
+  const rowView=(c)=>{
+   const editing=editId===c.id;
+   return (
+    <div key={c.id} className={editing?"":"row"} style={editing
+      ? {borderTop:"1px solid var(--border)",padding:"12px 0"}
+      : {justifyContent:"space-between",alignItems:"center",gap:10,borderTop:"1px solid var(--border)",padding:"10px 0",flexWrap:"wrap"}}>
+      {editing ? (
+        <div style={{width:"100%"}}>
+          <div className="row">
+            <div className="field" style={{minWidth:0}}><label>Company name</label>
+              <input value={eName} onChange={e=>setEName(e.target.value)} placeholder="Company name" style={{width:"100%"}} aria-label="Company name"/></div>
+            <div className="field" style={{minWidth:0}}><label>Hubstaff org ID (optional)</label>
+              <input value={eOrg} onChange={e=>setEOrg(e.target.value)} placeholder="e.g. 258598" inputMode="numeric" style={{width:"100%"}} aria-label="Hubstaff org ID"/></div>
           </div>
-          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <label style={{flex:"2 1 240px",fontSize:12,fontWeight:600}}>Address
-              <input value={eAddr} onChange={e=>setEAddr(e.target.value)} placeholder="Street, city, state ZIP" style={{width:"100%",marginTop:3}}/></label>
-            <label style={{flex:"1 1 140px",fontSize:12,fontWeight:600}}>Phone
-              <input value={ePhone} onChange={e=>setEPhone(e.target.value)} placeholder="(212) 555-0100" style={{width:"100%",marginTop:3}}/></label>
-            <label style={{flex:"1 1 170px",fontSize:12,fontWeight:600}}>Website
-              <input value={eWeb} onChange={e=>setEWeb(e.target.value)} placeholder="https://…" style={{width:"100%",marginTop:3}}/></label>
+          <div className="row">
+            <div className="field" style={{minWidth:0,flex:"2 1 0"}}><label>Address</label>
+              <input value={eAddr} onChange={e=>setEAddr(e.target.value)} placeholder="Street, city, state ZIP" style={{width:"100%"}}/></div>
+            <div className="field" style={{minWidth:0}}><label>Phone</label>
+              <input value={ePhone} onChange={e=>setEPhone(e.target.value)} placeholder="(212) 555-0100" style={{width:"100%"}}/></div>
+            <div className="field" style={{minWidth:0}}><label>Website</label>
+              <input value={eWeb} onChange={e=>setEWeb(e.target.value)} placeholder="https://…" style={{width:"100%"}}/></div>
           </div>
-          <div>
+          <div style={{marginTop:2}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
               <b style={{fontSize:13}}>Contacts</b>
               <button className="btn ghost sm" disabled={busy} onClick={addContact}>+ Add contact</button>
             </div>
             {eContacts.length===0 && <div className="sub" style={{fontSize:12,marginBottom:4}}>No contacts yet — add one.</div>}
             {eContacts.map((k,i)=>(
-              <div key={i} className="card" style={{padding:10,marginBottom:8}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+              <div key={i} className="card" style={{marginBottom:8}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
                   <span className="sub" style={{fontSize:11}}>Contact {i+1}</span>
                   <button className="btn ghost sm" disabled={busy} onClick={()=>removeContact(i)} style={{color:"#b91c1c",borderColor:"#fca5a5"}}>Remove</button>
                 </div>
-                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                  <label style={{flex:"1 1 120px",fontSize:11.5}}>First name
-                    <input value={k.first_name} onChange={e=>setContact(i,"first_name",e.target.value)} style={{width:"100%",marginTop:2}}/></label>
-                  <label style={{flex:"1 1 120px",fontSize:11.5}}>Last name
-                    <input value={k.last_name} onChange={e=>setContact(i,"last_name",e.target.value)} style={{width:"100%",marginTop:2}}/></label>
-                  <label style={{flex:"1 1 150px",fontSize:11.5}}>Title
-                    <input value={k.title} onChange={e=>setContact(i,"title",e.target.value)} placeholder="e.g. Billing Manager" style={{width:"100%",marginTop:2}}/></label>
+                <div className="row">
+                  <div className="field" style={{minWidth:0}}><label>First name</label>
+                    <input value={k.first_name} onChange={e=>setContact(i,"first_name",e.target.value)} style={{width:"100%"}}/></div>
+                  <div className="field" style={{minWidth:0}}><label>Last name</label>
+                    <input value={k.last_name} onChange={e=>setContact(i,"last_name",e.target.value)} style={{width:"100%"}}/></div>
+                  <div className="field" style={{minWidth:0}}><label>Title</label>
+                    <input value={k.title} onChange={e=>setContact(i,"title",e.target.value)} placeholder="e.g. Billing Manager" style={{width:"100%"}}/></div>
                 </div>
-                <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:6}}>
-                  <label style={{flex:"2 1 170px",fontSize:11.5}}>Email
-                    <input type="email" value={k.email} onChange={e=>setContact(i,"email",e.target.value)} style={{width:"100%",marginTop:2}}/></label>
-                  <label style={{flex:"1 1 130px",fontSize:11.5}}>Mobile
-                    <input value={k.mobile} onChange={e=>setContact(i,"mobile",e.target.value)} style={{width:"100%",marginTop:2}}/></label>
-                  <label style={{flex:"1 1 80px",fontSize:11.5}}>Extension
-                    <input value={k.extension} onChange={e=>setContact(i,"extension",e.target.value)} style={{width:"100%",marginTop:2}}/></label>
-                  <label style={{flex:"1 1 120px",fontSize:11.5}}>Fax
-                    <input value={k.fax} onChange={e=>setContact(i,"fax",e.target.value)} style={{width:"100%",marginTop:2}}/></label>
+                <div className="row">
+                  <div className="field" style={{minWidth:0,flex:"2 1 0"}}><label>Email</label>
+                    <input type="email" value={k.email} onChange={e=>setContact(i,"email",e.target.value)} style={{width:"100%"}}/></div>
+                  <div className="field" style={{minWidth:0}}><label>Mobile</label>
+                    <input value={k.mobile} onChange={e=>setContact(i,"mobile",e.target.value)} style={{width:"100%"}}/></div>
+                  <div className="field" style={{minWidth:0}}><label>Extension</label>
+                    <input value={k.extension} onChange={e=>setContact(i,"extension",e.target.value)} style={{width:"100%"}}/></div>
+                  <div className="field" style={{minWidth:0}}><label>Fax</label>
+                    <input value={k.fax} onChange={e=>setContact(i,"fax",e.target.value)} style={{width:"100%"}}/></div>
                 </div>
               </div>
             ))}
           </div>
-          <div style={{display:"flex",gap:8}}>
+          <div style={{display:"flex",gap:8,marginTop:8}}>
             <button className="btn sm" disabled={busy} onClick={()=>saveEdit(c)}>{busy?"Saving…":"Save"}</button>
             <button className="btn ghost sm" disabled={busy} onClick={cancelEdit}>Cancel</button>
           </div>
@@ -11680,7 +11684,8 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
         </React.Fragment>
       )}
     </div>
-  );
+   );
+  };
 
   return (
     <div className="modal-bg" onClick={onClose}>
