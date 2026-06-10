@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-10 08:43 EDT · 7e9cb0d";
+const BUILD = "2026-06-10 08:49 EDT · e8968d6";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -808,6 +808,30 @@ function fullName(w){
   if(!w) return "";
   const parts=[w.first_name, w.middle_name, w.last_name].filter(x=>x && String(x).trim());
   return parts.join(" ").trim();
+}
+
+// Pretty-print a phone number. US 10-digit → "+1 (AAA) BBB-CCCC"; Philippine
+// numbers (leading +63 / "63"+10, or national "0"+10 mobile) → "+63 AAA-BBB-CCCC".
+// Bare 10-digit input defaults to US (the companies are US-based — enter a PH
+// number with a leading 0 or +63). Anything we don't confidently recognize is
+// returned unchanged so a half-typed or unusual value is never mangled.
+function formatPhone(raw){
+  const s=(raw==null?"":String(raw)).trim();
+  if(!s) return "";
+  const digits=s.replace(/\D/g,"");
+  if(!digits) return s;
+  if(digits.startsWith("63") && digits.length===12){           // +63 + 10
+    const n=digits.slice(2);
+    return `+63 ${n.slice(0,3)}-${n.slice(3,6)}-${n.slice(6)}`;
+  }
+  if(digits.startsWith("0") && digits.length===11){            // national mobile 09XXXXXXXXX
+    const n=digits.slice(1);
+    return `+63 ${n.slice(0,3)}-${n.slice(3,6)}-${n.slice(6)}`;
+  }
+  let n=digits;
+  if(n.length===11 && n.startsWith("1")) n=n.slice(1);         // strip US country code
+  if(n.length===10) return `+1 (${n.slice(0,3)}) ${n.slice(3,6)}-${n.slice(6)}`;
+  return s;   // incomplete / unrecognized — leave as typed
 }
 
 // Round contractor photo, or an initials circle when there's no photo.
@@ -11479,6 +11503,7 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
   const [editId,setEditId]=useState("");
   const [eName,setEName]=useState(""); const [eOrg,setEOrg]=useState("");
   const [eAddr,setEAddr]=useState(""); const [ePhone,setEPhone]=useState(""); const [eWeb,setEWeb]=useState("");
+  const [eTax,setETax]=useState("");
   const [eContacts,setEContacts]=useState([]);   // [{first_name,last_name,title,email,mobile,extension,fax}]
   const [nName,setNName]=useState(""); const [nOrg,setNOrg]=useState("");
   const BLANK_CONTACT={first_name:"",last_name:"",title:"",email:"",mobile:"",extension:"",fax:""};
@@ -11487,7 +11512,7 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
   const addContact=()=>setEContacts(cs=>[...cs,{...BLANK_CONTACT}]);
   const removeContact=(i)=>setEContacts(cs=>cs.filter((_,idx)=>idx!==i));
   async function load(){
-    let q=client.from("companies").select("id,name,status,hubstaff_org_id,kind,address,phone,website,contacts").order("name");
+    let q=client.from("companies").select("id,name,status,hubstaff_org_id,kind,address,phone,website,tax_id,contacts").order("name");
     if(kind) q=q.eq("kind",kind);   // 'employer' (payroll home) vs 'client' (billed)
     const {data,error}=await q;
     if(error){ setMsg("Couldn't load companies: "+error.message); setRows([]); return; }
@@ -11515,9 +11540,9 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
   }
 
   function startEdit(c){ setEditId(c.id); setEName(c.name); setEOrg(c.hubstaff_org_id!=null?String(c.hubstaff_org_id):"");
-    setEAddr(c.address||""); setEPhone(c.phone||""); setEWeb(c.website||"");
-    setEContacts(Array.isArray(c.contacts)?c.contacts.map(normContact):[]); setMsg(""); }
-  function cancelEdit(){ setEditId(""); setEName(""); setEOrg(""); setEAddr(""); setEPhone(""); setEWeb(""); setEContacts([]); }
+    setEAddr(c.address||""); setEPhone(formatPhone(c.phone)); setEWeb(c.website||""); setETax(c.tax_id||"");
+    setEContacts(Array.isArray(c.contacts)?c.contacts.map(k=>{ const n=normContact(k); return {...n, mobile:formatPhone(n.mobile), fax:formatPhone(n.fax)}; }):[]); setMsg(""); }
+  function cancelEdit(){ setEditId(""); setEName(""); setEOrg(""); setEAddr(""); setEPhone(""); setEWeb(""); setETax(""); setEContacts([]); }
   async function saveEdit(c){
     const name=(eName||"").trim();
     if(!name){ setMsg("Name can't be empty."); return; }
@@ -11526,16 +11551,16 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
     const others=(rows||[]).filter(x=>x.id!==c.id);
     if(others.some(x=>norm(x.name)===norm(name))){ setMsg(`Another company is already named "${name}".`); return; }
     if(org!=null){ const clash=others.find(x=>Number(x.hubstaff_org_id)===org); if(clash){ setMsg(`Hubstaff org ${org} is linked to "${clash.name}".`); return; } }
-    // Trim each contact; drop rows the admin left entirely blank so we don't persist empties.
+    // Trim each contact; auto-format phone/fax; drop rows the admin left entirely blank.
     const contacts=(eContacts||[])
       .map(k=>({ first_name:(k.first_name||"").trim(), last_name:(k.last_name||"").trim(), title:(k.title||"").trim(),
-                 email:(k.email||"").trim(), mobile:(k.mobile||"").trim(), extension:(k.extension||"").trim(), fax:(k.fax||"").trim() }))
+                 email:(k.email||"").trim(), mobile:formatPhone(k.mobile), extension:(k.extension||"").trim(), fax:formatPhone(k.fax) }))
       .filter(k=>k.first_name||k.last_name||k.title||k.email||k.mobile||k.extension||k.fax);
     setBusy(true);
     const {error}=await client.from("companies").update({
       name, hubstaff_org_id:org,
-      address:(eAddr||"").trim()||null, phone:(ePhone||"").trim()||null, website:(eWeb||"").trim()||null,
-      contacts,
+      address:(eAddr||"").trim()||null, phone:formatPhone(ePhone)||null, website:(eWeb||"").trim()||null,
+      tax_id:(eTax||"").trim()||null, contacts,
     }).eq("id",c.id);
     setBusy(false);
     if(error){ setMsg("Save failed: "+error.message); return; }
@@ -11611,6 +11636,8 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
           <div className="row">
             <div className="field" style={{minWidth:0}}><label>Company name</label>
               <input value={eName} onChange={e=>setEName(e.target.value)} placeholder="Company name" style={{width:"100%"}} aria-label="Company name"/></div>
+            <div className="field" style={{minWidth:0}}><label>Tax ID (EIN / TIN)</label>
+              <input value={eTax} onChange={e=>setETax(e.target.value)} placeholder="e.g. 12-3456789" style={{width:"100%"}} aria-label="Tax ID"/></div>
             <div className="field" style={{minWidth:0}}><label>Hubstaff org ID (optional)</label>
               <input value={eOrg} onChange={e=>setEOrg(e.target.value)} placeholder="e.g. 258598" inputMode="numeric" style={{width:"100%"}} aria-label="Hubstaff org ID"/></div>
           </div>
@@ -11618,7 +11645,7 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
             <div className="field" style={{minWidth:0,flex:"2 1 0"}}><label>Address</label>
               <input value={eAddr} onChange={e=>setEAddr(e.target.value)} placeholder="Street, city, state ZIP" style={{width:"100%"}}/></div>
             <div className="field" style={{minWidth:0}}><label>Phone</label>
-              <input value={ePhone} onChange={e=>setEPhone(e.target.value)} placeholder="(212) 555-0100" style={{width:"100%"}}/></div>
+              <input value={ePhone} onChange={e=>setEPhone(e.target.value)} onBlur={e=>setEPhone(formatPhone(e.target.value))} placeholder="+1 (212) 555-0100" inputMode="tel" style={{width:"100%"}}/></div>
             <div className="field" style={{minWidth:0}}><label>Website</label>
               <input value={eWeb} onChange={e=>setEWeb(e.target.value)} placeholder="https://…" style={{width:"100%"}}/></div>
           </div>
@@ -11646,11 +11673,11 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
                   <div className="field" style={{minWidth:0,flex:"2 1 0"}}><label>Email</label>
                     <input type="email" value={k.email} onChange={e=>setContact(i,"email",e.target.value)} style={{width:"100%"}}/></div>
                   <div className="field" style={{minWidth:0}}><label>Mobile</label>
-                    <input value={k.mobile} onChange={e=>setContact(i,"mobile",e.target.value)} style={{width:"100%"}}/></div>
+                    <input value={k.mobile} onChange={e=>setContact(i,"mobile",e.target.value)} onBlur={e=>setContact(i,"mobile",formatPhone(e.target.value))} inputMode="tel" style={{width:"100%"}}/></div>
                   <div className="field" style={{minWidth:0}}><label>Extension</label>
-                    <input value={k.extension} onChange={e=>setContact(i,"extension",e.target.value)} style={{width:"100%"}}/></div>
+                    <input value={k.extension} onChange={e=>setContact(i,"extension",e.target.value)} inputMode="numeric" style={{width:"100%"}}/></div>
                   <div className="field" style={{minWidth:0}}><label>Fax</label>
-                    <input value={k.fax} onChange={e=>setContact(i,"fax",e.target.value)} style={{width:"100%"}}/></div>
+                    <input value={k.fax} onChange={e=>setContact(i,"fax",e.target.value)} onBlur={e=>setContact(i,"fax",formatPhone(e.target.value))} inputMode="tel" style={{width:"100%"}}/></div>
                 </div>
               </div>
             ))}
@@ -11665,11 +11692,11 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
           <div style={{minWidth:200}}>
             <div style={{fontWeight:600,display:"flex",alignItems:"center",gap:8}}>{c.name} {badge(c.status)}</div>
             <div className="sub" style={{fontSize:12}}>{orgTxt(c)}{currentCompanyId===c.id?" · currently selected":""}</div>
-            {(c.phone||c.website||c.address||(Array.isArray(c.contacts)&&c.contacts.length>0)) &&
+            {(c.tax_id||c.phone||c.website||c.address||(Array.isArray(c.contacts)&&c.contacts.length>0)) &&
               <div className="sub" style={{fontSize:11.5,marginTop:2}}>
-                {[c.phone,c.website,c.address].filter(Boolean).join(" · ")}
+                {[c.tax_id&&("Tax ID "+c.tax_id),c.phone,c.website,c.address].filter(Boolean).join(" · ")}
                 {Array.isArray(c.contacts)&&c.contacts.length>0
-                  ? ((c.phone||c.website||c.address?" · ":"")+c.contacts.length+" contact"+(c.contacts.length===1?"":"s"))
+                  ? ((c.tax_id||c.phone||c.website||c.address?" · ":"")+c.contacts.length+" contact"+(c.contacts.length===1?"":"s"))
                   : ""}
               </div>}
           </div>
@@ -11696,8 +11723,8 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
           <button className="btn ghost sm" onClick={onClose}>Close</button>
         </div>
         <p className="sub" style={{marginTop:6}}>{kind==="employer"
-          ? "The payroll home for every contractor (Aaron Anderson E.H.S. LLC). Edit it to set its Hubstaff org link, address, phone, website and contacts. It is never billed and can't be archived/deleted."
-          : "Add/edit/archive the clients you invoice. Edit a client to set its address, phone, website and contacts. Assigning a contractor to a client is billing-only and never changes their pay."}{isOwner&&kind!=="employer"?" Permanent delete is only for empty clients.":""}</p>
+          ? "The payroll home for every contractor (Aaron Anderson E.H.S. LLC). Edit it to set its Hubstaff org link, tax ID, address, phone, website and contacts. It is never billed and can't be archived/deleted."
+          : "Add/edit/archive the clients you invoice. Edit a client to set its tax ID, address, phone, website and contacts. Assigning a contractor to a client is billing-only and never changes their pay."}{isOwner&&kind!=="employer"?" Permanent delete is only for empty clients.":""}</p>
         {msg && <div className="banner info" style={{margin:"10px 0"}}>{msg}</div>}
 
         <div className="card" style={{marginTop:6}}>
