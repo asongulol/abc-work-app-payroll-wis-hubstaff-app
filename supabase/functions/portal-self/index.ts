@@ -45,7 +45,18 @@ const EXTRA_KEYS = new Set(["nickname", "favorite_color", "favorite_food", "tshi
 // ---- Stage-2 onboarding: tab -> fields, and server-side validation ----
 const STAGE2_SELECT = "first_name,middle_name,last_name,mobile,ph_address,permanent_address,address_landmark,postal_code,date_of_birth,emergency_name,emergency_relationship,emergency_mobile,marital_status,education_level,course,year_graduated,school,gcash,paymaya,paypal,wise_tag,profile_extras";
 const TAB_FIELDS: Record<string, true> = { contact: true, personal: true, payout: true, about: true };
-const PH_MOBILE = /^(\+63|0)9\d{9}$/;
+// Accept any complete phone the portal's country-code picker can produce:
+// a 10-digit national number, optionally prefixed with a country code
+// (+63 / national 0 for PH, +1 / leading 1 for US). Digit-based so the
+// formatted strings ("+63 917-123-4567", "+1 (212) 555-0100") and the legacy
+// "09XXXXXXXXX" / "+639XXXXXXXXX" all pass. Mirrors the client's phoneComplete().
+function validPhone(raw: unknown): boolean {
+  const d = String(raw ?? "").replace(/\D/g, "");
+  if (d.length === 10) return true;                                   // bare national
+  if (d.length === 11 && (d.startsWith("0") || d.startsWith("1"))) return true; // PH 0-national / US +1
+  if (d.length === 12 && d.startsWith("63")) return true;            // PH +63
+  return false;
+}
 const nonEmpty = (v: unknown) => v != null && String(v).trim() !== "";
 
 // Age as of "today" in Asia/Manila (TZ-independent; client mirrors this exactly
@@ -68,7 +79,7 @@ function validateTab(tab: string, w: Record<string, any>): Array<{ field: string
   const req = (f: string, msg: string) => { if (!nonEmpty(w[f])) e.push({ field: f, msg }); };
   const mobile = (f: string, msg: string) => {
     if (!nonEmpty(w[f])) { e.push({ field: f, msg: msg + " is required" }); return; }
-    if (!PH_MOBILE.test(String(w[f]).replace(/\s/g, ""))) e.push({ field: f, msg: "Use 09XXXXXXXXX or +639XXXXXXXXX" });
+    if (!validPhone(w[f])) e.push({ field: f, msg: "Enter a complete mobile number" });
   };
   if (tab === "contact") {
     req("first_name", "First name is required");

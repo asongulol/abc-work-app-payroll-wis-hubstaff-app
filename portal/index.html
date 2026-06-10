@@ -227,8 +227,81 @@
 <div id="root"></div>
 <script type="text/babel" data-type="module">
 const { useState, useEffect } = React;
+
+// ---- Phone numbers: shared convention + country-code picker ----------------
+// Supported countries for the picker. Extend by adding {code,cc,flag,name,ex}.
+const PHONE_COUNTRIES = [
+  { code:"PH", cc:"+63", flag:"🇵🇭", name:"Philippines",  ex:"917-123-4567"   },
+  { code:"US", cc:"+1",  flag:"🇺🇸", name:"US / Canada",  ex:"(212) 555-0100" },
+];
+function phoneCountry(code){ return PHONE_COUNTRIES.find(c=>c.code===code) || PHONE_COUNTRIES[0]; }
+// Group up to 10 national digits per country style (progressive, for live typing).
+function groupNational(code, raw){
+  const d=String(raw||"").replace(/\D/g,"").slice(0,10);
+  if(!d) return "";
+  const a=d.slice(0,3), b=d.slice(3,6), c=d.slice(6,10);
+  if(code==="PH") return [a,b,c].filter(Boolean).join("-");   // AAA-BBB-CCCC
+  let out="("+a;                                              // US: (AAA) BBB-CCCC
+  if(d.length>3) out+=") "+b;
+  if(d.length>6) out+="-"+c;
+  return out;
+}
+function buildPhone(code, national){
+  const g=groupNational(code, national);
+  return g ? `${phoneCountry(code).cc} ${g}` : "";
+}
+// Parse a stored phone string into {code, national(10 digits)}. Detects an explicit
+// +63/+1 (or 63+10 / national 0+10 / 1+10); otherwise falls back to `def`.
+function parsePhone(value, def){
+  const s=String(value==null?"":value).trim();
+  const digits=s.replace(/\D/g,"");
+  if(!digits) return { code: def||"PH", national:"" };
+  if(s.startsWith("+63") || (digits.startsWith("63") && digits.length===12)) return { code:"PH", national:digits.replace(/^63/,"").slice(0,10) };
+  if(digits.startsWith("0") && digits.length===11)                           return { code:"PH", national:digits.slice(1,11) };
+  if(s.startsWith("+1")  || (digits.startsWith("1") && digits.length===11))  return { code:"US", national:digits.replace(/^1/,"").slice(0,10) };
+  return { code: def||"PH", national: digits.slice(-10) };
+}
+// Pretty-print any stored phone value (read-only display + on-save normalization).
+function formatPhone(raw){
+  const s=(raw==null?"":String(raw)).trim();
+  if(!s) return "";
+  const { code, national }=parsePhone(s, null);
+  if(national.length!==10) return s;   // incomplete — leave as typed
+  return buildPhone(code, national);
+}
+// True when `v` carries a complete (10 national digit) number — used by validation.
+function phoneComplete(v){ return parsePhone(v, "PH").national.length===10; }
+
+// Phone field with a country-code picker. Controlled by `value` (the full stored
+// string e.g. "+63 917-123-4567"); emits the same canonical string via onChange.
+// Live edits stay raw (no cursor jank); formats on blur and on country switch.
+function PhoneInput({ value, onChange, defaultCountry="PH", style, inputStyle, placeholder, ...rest }){
+  const p0=parsePhone(value, defaultCountry);
+  const [country,setCountry]=useState(p0.code);
+  const [nat,setNat]=useState(()=>groupNational(p0.code, p0.national));
+  useEffect(()=>{
+    const emitted=buildPhone(country, nat);
+    if(String(value||"")!==emitted){ const p=parsePhone(value, defaultCountry); setCountry(p.code); setNat(groupNational(p.code, p.national)); }
+  // eslint-disable-next-line
+  },[value]);
+  const emit=(code,text)=>onChange(buildPhone(code, text));
+  return (
+    <div style={{display:"flex",gap:6,width:"100%",...style}}>
+      <select value={country} aria-label="Country code" style={{flex:"0 0 auto",width:78,padding:"0 4px"}}
+        onChange={e=>{ const c=e.target.value; setCountry(c); setNat(n=>groupNational(c,n)); emit(c,nat); }}>
+        {PHONE_COUNTRIES.map(c=><option key={c.code} value={c.code} title={c.name}>{c.flag} {c.cc}</option>)}
+      </select>
+      <input type="tel" inputMode="tel" value={nat}
+        placeholder={placeholder||phoneCountry(country).ex} style={{flex:1,minWidth:0,...inputStyle}}
+        onChange={e=>{ setNat(e.target.value); emit(country, e.target.value); }}
+        onBlur ={e=>{ const g=groupNational(country, e.target.value); setNat(g); emit(country, g); }}
+        {...rest}/>
+    </div>
+  );
+}
+
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-10 11:23 EDT · 8dec42d";
+const BUILD = "2026-06-10 11:46 EDT · 516a87e";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -796,7 +869,7 @@ function ProfileView({ client, session, onSignOut }){
         </div>
         <div className="row"><span className="k">Personal email</span><span>{w.email||session?.user?.email||"—"}</span></div>
         {w.work_email && <div className="row"><span className="k">Work email</span><span>{w.work_email}</span></div>}
-        {w.work_number && <div className="row"><span className="k">Work number</span><span>{w.work_number}{w.work_extension?` ext. ${w.work_extension}`:""}</span></div>}
+        {w.work_number && <div className="row"><span className="k">Work number</span><span>{formatPhone(w.work_number)}{w.work_extension?` ext. ${w.work_extension}`:""}</span></div>}
         <div className="row"><span className="k">Paid via</span><span>{w.payout_method||"—"}</span></div>
       </div>
       <div className="ptabs">
@@ -818,8 +891,10 @@ function ProfileView({ client, session, onSignOut }){
             {isEditable(f.k)
               ? (f.opts
                   ? <select value={form[f.k]||""} onChange={e=>set(f.k,e.target.value)}><option value="">Select…</option>{f.opts.map(o=><option key={o} value={o}>{o}</option>)}{form[f.k]&&!f.opts.includes(form[f.k])&&<option value={form[f.k]}>{form[f.k]}</option>}</select>
-                  : <input type={f.type||"text"} value={form[f.k]||""} disabled={f.sameAs&&sameAddr} onChange={e=>set(f.k,e.target.value)} placeholder={f.wise?"@yourtag":""}/>)
-              : <div style={{padding:"6px 0",fontSize:15}}>{curVal(f)||<span className="sub">—</span>}</div>}
+                  : f.type==="tel"
+                      ? <PhoneInput value={form[f.k]||""} onChange={v=>set(f.k,v)} defaultCountry="PH"/>
+                      : <input type={f.type||"text"} value={form[f.k]||""} disabled={f.sameAs&&sameAddr} onChange={e=>set(f.k,e.target.value)} placeholder={f.wise?"@yourtag":""}/>)
+              : <div style={{padding:"6px 0",fontSize:15}}>{(f.type==="tel"?formatPhone(curVal(f)):curVal(f))||<span className="sub">—</span>}</div>}
             {f.wise && isEditable("wise_tag") &&
               <a href="https://wise.com/invite/dic/olivert410" target="_blank" rel="noreferrer"
                  style={{fontSize:13,color:"var(--accent)",fontWeight:600,display:"inline-block",marginTop:2}}>Don't have a Wise account? Set one up →</a>}
@@ -1606,19 +1681,19 @@ function OnboardingFlow({ client, session, cfg, prog:prog0, onDone }){
 const STAGE2_SECTIONS = [["contact","Contact"],["personal","Personal"],["payout","Payout"],["about","About you"]];
 const REQUIRED_S2 = { first_name:1,last_name:1,mobile:1,ph_address:1,date_of_birth:1,emergency_name:1,emergency_relationship:1,emergency_mobile:1,marital_status:1 };
 function validateTabClient(tab, f){
-  const e={}; const ne=v=>v!=null&&String(v).trim()!==""; const PHM=/^(\+63|0)9\d{9}$/;
+  const e={}; const ne=v=>v!=null&&String(v).trim()!=="";
   if(tab==="contact"){
     if(!ne(f.first_name)) e.first_name="Required";
     if(!ne(f.last_name)) e.last_name="Required";
     if(!ne(f.ph_address)) e.ph_address="Required";
-    if(!ne(f.mobile)) e.mobile="Required"; else if(!PHM.test(String(f.mobile).replace(/\s/g,""))) e.mobile="Use 09XXXXXXXXX or +639XXXXXXXXX";
+    if(!ne(f.mobile)) e.mobile="Required"; else if(!phoneComplete(f.mobile)) e.mobile="Enter a complete mobile number";
     if(ne(f.postal_code)&&!/^\d{4}$/.test(String(f.postal_code).trim())) e.postal_code="PH postal code is 4 digits";
     if(!ne(f.date_of_birth)) e.date_of_birth="Required";
     else { const a=ageManila(f.date_of_birth); if(a==null) e.date_of_birth="Invalid date"; else if(a<18) e.date_of_birth="You must be at least 18"; }
   } else if(tab==="personal"){
     if(!ne(f.emergency_name)) e.emergency_name="Required";
     if(!ne(f.emergency_relationship)) e.emergency_relationship="Required";
-    if(!ne(f.emergency_mobile)) e.emergency_mobile="Required"; else if(!PHM.test(String(f.emergency_mobile).replace(/\s/g,""))) e.emergency_mobile="Use 09XXXXXXXXX or +639XXXXXXXXX";
+    if(!ne(f.emergency_mobile)) e.emergency_mobile="Required"; else if(!phoneComplete(f.emergency_mobile)) e.emergency_mobile="Enter a complete mobile number";
     if(!ne(f.marital_status)) e.marital_status="Required";
   } else if(tab==="payout"){
     if(!["gcash","paymaya","paypal","wise_tag"].some(k=>ne(f[k]))) e._="Add at least one payout method";
@@ -1688,7 +1763,9 @@ function Stage2Profile({ client, onAdvance }){
           <label className="sub" style={{display:"block"}}>{d.label}{REQUIRED_S2[d.k]?" *":""}</label>
           {d.opts
             ? <select value={form[d.k]||""} onChange={e=>set(d.k,e.target.value)} aria-invalid={errs[d.k]?"true":"false"}><option value="">Select…</option>{d.opts.map(o=><option key={o} value={o}>{o}</option>)}{form[d.k]&&!d.opts.includes(form[d.k])&&<option value={form[d.k]}>{form[d.k]}</option>}</select>
-            : <input type={d.type||"text"} value={form[d.k]||""} onChange={e=>set(d.k,e.target.value)}
+            : d.type==="tel"
+              ? <PhoneInput value={form[d.k]||""} onChange={v=>set(d.k,v)} defaultCountry="PH"/>
+              : <input type={d.type||"text"} value={form[d.k]||""} onChange={e=>set(d.k,e.target.value)}
                 aria-invalid={errs[d.k]?"true":"false"} placeholder={d.wise?"@yourtag":""}/>}
           {d.wise &&
             <a href="https://wise.com/invite/dic/olivert410" target="_blank" rel="noreferrer"
