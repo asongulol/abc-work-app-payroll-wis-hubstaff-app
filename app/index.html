@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-10 09:02 EDT · d469fe3";
+const BUILD = "2026-06-10 11:23 EDT · 8dec42d";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -810,28 +810,80 @@ function fullName(w){
   return parts.join(" ").trim();
 }
 
-// Pretty-print a phone number. US 10-digit → "+1 (AAA) BBB-CCCC"; Philippine
-// numbers (leading +63 / "63"+10, or national "0"+10 mobile) → "+63 AAA-BBB-CCCC".
-// Bare 10-digit input defaults to US (the companies are US-based — enter a PH
-// number with a leading 0 or +63). Anything we don't confidently recognize is
-// returned unchanged so a half-typed or unusual value is never mangled.
+// ---- Phone numbers: shared convention + country-code picker ----------------
+// Supported countries for the picker. Extend by adding {code,cc,flag,name,ex}.
+const PHONE_COUNTRIES = [
+  { code:"US", cc:"+1",  flag:"🇺🇸", name:"US / Canada",  ex:"(212) 555-0100" },
+  { code:"PH", cc:"+63", flag:"🇵🇭", name:"Philippines",  ex:"917-123-4567"   },
+];
+function phoneCountry(code){ return PHONE_COUNTRIES.find(c=>c.code===code) || PHONE_COUNTRIES[0]; }
+// Group up to 10 national digits per country style (progressive, for live typing).
+function groupNational(code, raw){
+  const d=String(raw||"").replace(/\D/g,"").slice(0,10);
+  if(!d) return "";
+  const a=d.slice(0,3), b=d.slice(3,6), c=d.slice(6,10);
+  if(code==="PH") return [a,b,c].filter(Boolean).join("-");   // AAA-BBB-CCCC
+  let out="("+a;                                              // US: (AAA) BBB-CCCC
+  if(d.length>3) out+=") "+b;
+  if(d.length>6) out+="-"+c;
+  return out;
+}
+// Combine a country + national number into the stored/displayed string.
+function buildPhone(code, national){
+  const g=groupNational(code, national);
+  return g ? `${phoneCountry(code).cc} ${g}` : "";
+}
+// Parse a stored phone string into {code, national(10 digits)}. Detects an explicit
+// +63/+1 (or 63+10 / national 0+10 / 1+10); otherwise falls back to `def` (US).
+function parsePhone(value, def){
+  const s=String(value==null?"":value).trim();
+  const digits=s.replace(/\D/g,"");
+  if(!digits) return { code: def||"US", national:"" };
+  if(s.startsWith("+63") || (digits.startsWith("63") && digits.length===12)) return { code:"PH", national:digits.replace(/^63/,"").slice(0,10) };
+  if(digits.startsWith("0") && digits.length===11)                           return { code:"PH", national:digits.slice(1,11) };
+  if(s.startsWith("+1")  || (digits.startsWith("1") && digits.length===11))  return { code:"US", national:digits.replace(/^1/,"").slice(0,10) };
+  return { code: def||"US", national: digits.slice(-10) };
+}
+// Pretty-print any stored phone value (read-only display + on-save normalization).
+// US 10-digit → "+1 (AAA) BBB-CCCC", PH → "+63 AAA-BBB-CCCC"; incomplete/unknown
+// values are returned unchanged so a half-typed or unusual value is never mangled.
 function formatPhone(raw){
   const s=(raw==null?"":String(raw)).trim();
   if(!s) return "";
-  const digits=s.replace(/\D/g,"");
-  if(!digits) return s;
-  if(digits.startsWith("63") && digits.length===12){           // +63 + 10
-    const n=digits.slice(2);
-    return `+63 ${n.slice(0,3)}-${n.slice(3,6)}-${n.slice(6)}`;
-  }
-  if(digits.startsWith("0") && digits.length===11){            // national mobile 09XXXXXXXXX
-    const n=digits.slice(1);
-    return `+63 ${n.slice(0,3)}-${n.slice(3,6)}-${n.slice(6)}`;
-  }
-  let n=digits;
-  if(n.length===11 && n.startsWith("1")) n=n.slice(1);         // strip US country code
-  if(n.length===10) return `+1 (${n.slice(0,3)}) ${n.slice(3,6)}-${n.slice(6)}`;
-  return s;   // incomplete / unrecognized — leave as typed
+  const { code, national }=parsePhone(s, null);
+  if(national.length!==10) return s;   // incomplete — leave as typed
+  return buildPhone(code, national);
+}
+
+// Phone field with a country-code picker. Controlled by `value` (the full stored
+// string e.g. "+1 (212) 555-0100"); emits the same canonical string via onChange.
+// Live edits stay raw (no cursor jank); formats on blur. `defaultCountry` is used
+// only when the stored value has no explicit country code.
+function PhoneInput({ value, onChange, defaultCountry="US", style, inputStyle, placeholder, ...rest }){
+  const p0=parsePhone(value, defaultCountry);
+  const [country,setCountry]=useState(p0.code);
+  const [nat,setNat]=useState(()=>groupNational(p0.code, p0.national));
+  // Re-sync if the value prop changes from outside (record load, pull-from-Wise)
+  // and differs from what we'd emit — without clobbering in-progress typing.
+  useEffect(()=>{
+    const emitted=buildPhone(country, nat);
+    if(String(value||"")!==emitted){ const p=parsePhone(value, defaultCountry); setCountry(p.code); setNat(groupNational(p.code, p.national)); }
+  // eslint-disable-next-line
+  },[value]);
+  const emit=(code,text)=>onChange(buildPhone(code, text));
+  return (
+    <div style={{display:"flex",gap:6,width:"100%",...style}}>
+      <select value={country} aria-label="Country code" style={{flex:"0 0 auto",width:74,padding:"0 4px"}}
+        onChange={e=>{ const c=e.target.value; setCountry(c); setNat(n=>groupNational(c,n)); emit(c,nat); }}>
+        {PHONE_COUNTRIES.map(c=><option key={c.code} value={c.code} title={c.name}>{c.flag} {c.cc}</option>)}
+      </select>
+      <input type="tel" inputMode="tel" value={nat}
+        placeholder={placeholder||phoneCountry(country).ex} style={{flex:1,minWidth:0,...inputStyle}}
+        onChange={e=>{ setNat(e.target.value); emit(country, e.target.value); }}
+        onBlur ={e=>{ const g=groupNational(country, e.target.value); setNat(g); emit(country, g); }}
+        {...rest}/>
+    </div>
+  );
 }
 
 // Round contractor photo, or an initials circle when there's no photo.
@@ -3090,8 +3142,8 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
         <div className="row">
           <div className="field"><label>Personal email</label><input style={inp} type="email" value={f.email} onChange={e=>set("email",e.target.value)}/></div>
           <div className="field"><label>Work email <span className="muted" style={{fontWeight:400}}>(@abckidsny.com)</span></label><input style={inp} type="email" value={f.work_email} onChange={e=>set("work_email",e.target.value)} placeholder="name@abckidsny.com"/></div>
-          <div className="field"><label>Mobile <span className="muted" style={{fontWeight:400}}>(personal)</span></label><input style={inp} type="tel" value={f.mobile} onChange={e=>set("mobile",e.target.value)}/></div>
-          <div className="field"><label>Work number</label><input style={inp} type="tel" value={f.work_number} onChange={e=>set("work_number",e.target.value)}/></div>
+          <div className="field"><label>Mobile <span className="muted" style={{fontWeight:400}}>(personal)</span></label><PhoneInput value={f.mobile} onChange={v=>set("mobile",v)} defaultCountry="PH"/></div>
+          <div className="field"><label>Work number</label><PhoneInput value={f.work_number} onChange={v=>set("work_number",v)} defaultCountry="PH"/></div>
           <div className="field"><label>Ext.</label><input style={inp} value={f.work_extension} onChange={e=>set("work_extension",e.target.value)} placeholder="x123"/></div>
         </div>
         <div className="row">
@@ -3196,7 +3248,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
           <div className="row" style={{marginTop:8}}>
             <div className="field"><label>Emergency contact</label><input style={inp} value={f.emergency_name} onChange={e=>set("emergency_name",e.target.value)}/></div>
             <div className="field"><label>Relationship</label><select style={inp} value={f.emergency_relationship} onChange={e=>set("emergency_relationship",e.target.value)}><option value="">Select…</option>{REL_OPTS.map(o=><option key={o} value={o}>{o}</option>)}{f.emergency_relationship&&!REL_OPTS.includes(f.emergency_relationship)&&<option value={f.emergency_relationship}>{f.emergency_relationship}</option>}</select></div>
-            <div className="field"><label>Emergency mobile</label><input style={inp} type="tel" value={f.emergency_mobile} onChange={e=>set("emergency_mobile",e.target.value)}/></div>
+            <div className="field"><label>Emergency mobile</label><PhoneInput value={f.emergency_mobile} onChange={v=>set("emergency_mobile",v)} defaultCountry="PH"/></div>
           </div>
           <div className="field"><label>Permanent address</label>
             <label className="muted" style={{fontSize:12,display:"flex",gap:6,alignItems:"center",margin:"2px 0 4px"}}>
@@ -11643,8 +11695,8 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
           <div className="row">
             <div className="field" style={{minWidth:0,flex:"2 1 0"}}><label>Address</label>
               <input value={eAddr} onChange={e=>setEAddr(e.target.value)} placeholder="Street, city, state ZIP" style={{width:"100%"}}/></div>
-            <div className="field" style={{minWidth:0}}><label>Phone</label>
-              <input value={ePhone} onChange={e=>setEPhone(e.target.value)} onBlur={e=>setEPhone(formatPhone(e.target.value))} placeholder="+1 (212) 555-0100" inputMode="tel" style={{width:"100%"}}/></div>
+            <div className="field" style={{minWidth:0,flex:"2 1 0"}}><label>Phone</label>
+              <PhoneInput value={ePhone} onChange={setEPhone} defaultCountry="US"/></div>
             <div className="field" style={{minWidth:0}}><label>Website</label>
               <input value={eWeb} onChange={e=>setEWeb(e.target.value)} placeholder="https://…" style={{width:"100%"}}/></div>
           </div>
@@ -11671,12 +11723,14 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
                 <div className="row">
                   <div className="field" style={{minWidth:0,flex:"2 1 0"}}><label>Email</label>
                     <input type="email" value={k.email} onChange={e=>setContact(i,"email",e.target.value)} style={{width:"100%"}}/></div>
-                  <div className="field" style={{minWidth:0}}><label>Mobile</label>
-                    <input value={k.mobile} onChange={e=>setContact(i,"mobile",e.target.value)} onBlur={e=>setContact(i,"mobile",formatPhone(e.target.value))} inputMode="tel" style={{width:"100%"}}/></div>
-                  <div className="field" style={{minWidth:0}}><label>Extension</label>
+                  <div className="field" style={{minWidth:0,flex:"2 1 0"}}><label>Mobile</label>
+                    <PhoneInput value={k.mobile} onChange={v=>setContact(i,"mobile",v)} defaultCountry="US"/></div>
+                </div>
+                <div className="row">
+                  <div className="field" style={{minWidth:0,flex:"1 1 0"}}><label>Extension</label>
                     <input value={k.extension} onChange={e=>setContact(i,"extension",e.target.value)} inputMode="numeric" style={{width:"100%"}}/></div>
-                  <div className="field" style={{minWidth:0}}><label>Fax</label>
-                    <input value={k.fax} onChange={e=>setContact(i,"fax",e.target.value)} onBlur={e=>setContact(i,"fax",formatPhone(e.target.value))} inputMode="tel" style={{width:"100%"}}/></div>
+                  <div className="field" style={{minWidth:0,flex:"2 1 0"}}><label>Fax</label>
+                    <PhoneInput value={k.fax} onChange={v=>setContact(i,"fax",v)} defaultCountry="US"/></div>
                 </div>
               </div>
             ))}
