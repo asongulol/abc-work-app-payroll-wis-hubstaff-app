@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-10 11:46 EDT · 516a87e";
+const BUILD = "2026-06-10 12:14 EDT · 920d2cc";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -613,9 +613,14 @@ const BUILD = "2026-06-10 11:46 EDT · 516a87e";
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
 function ShiftEditor({ client, workerId }){
   const [s,setS]=useState(null); const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
+  // The standard schedule is 8am–5pm US Eastern (stored in PHT). Used to default
+  // an unset shift and to power the "Reset to 8–5 ET" button.
+  const def=()=>({start:etToPhtHHMM("08:00"),end:etToPhtHHMM("17:00")});
   useEffect(()=>{ let alive=true;
     client.from("workers").select("shift_start,shift_end").eq("id",workerId).maybeSingle()
-      .then(({data})=>{ if(alive) setS({start:(data&&data.shift_start||"").slice(0,5),end:(data&&data.shift_end||"").slice(0,5)}); });
+      .then(({data})=>{ if(!alive) return;
+        const st=(data&&data.shift_start||"").slice(0,5), en=(data&&data.shift_end||"").slice(0,5);
+        setS((st||en)?{start:st,end:en}:def()); });   // default an unset shift to 8–5 ET
     return ()=>{alive=false;}; },[workerId]);
   if(!s) return null;
   async function save(){ setBusy(true); setMsg("");
@@ -624,14 +629,16 @@ function ShiftEditor({ client, workerId }){
   const sinp={padding:"7px 10px",border:"1px solid var(--border-strong)",borderRadius:"var(--radius-sm)",width:"auto"};
   return (
     <div style={{margin:"8px 0"}}>
-      <label style={{display:"block",fontSize:11,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".03em",marginBottom:4}}>Shift schedule (PHT) — drives start/end mood check-ins</label>
+      <label style={{display:"block",fontSize:11,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".03em",marginBottom:4}}>Shift schedule (PHT) — drives start/end mood check-ins · default 8am–5pm US Eastern</label>
       <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
         <input type="time" style={sinp} value={s.start} onChange={e=>setS(x=>({...x,start:e.target.value}))}/>
         <span className="muted">to</span>
         <input type="time" style={sinp} value={s.end} onChange={e=>setS(x=>({...x,end:e.target.value}))}/>
         <button className="btn sm" disabled={busy} onClick={save}>{busy?"Saving…":"Save shift"}</button>
+        <button className="btn ghost sm" type="button" disabled={busy} onClick={()=>setS(def())}>Reset to 8–5 ET</button>
         {msg && <span className="muted" style={{fontSize:12}}>{msg}</span>}
       </div>
+      <div className="muted" style={{fontSize:11,marginTop:2}}>= 8:00 AM – 5:00 PM US Eastern, converted to Philippine time.</div>
     </div>
   );
 }
@@ -2448,7 +2455,8 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
     setAdding(true);setAddErr("");
     try{
       const base={first_name:"New", last_name:"Contractor", status:"active",
-        health_allowance_eligible:true, thirteenth_month_eligible:true};
+        health_allowance_eligible:true, thirteenth_month_eligible:true,
+        shift_start:etToPhtHHMM("08:00"), shift_end:etToPhtHHMM("17:00")};   // default 8–5 ET
       let {data:w,error:e1}=await client.from("workers").insert(base).select().single();
       // fallback if DB still has payout_method NOT NULL (pre-migration)
       if(e1 && /payout_method/i.test(e1.message)){
@@ -11557,7 +11565,7 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
   const [eTax,setETax]=useState("");
   const [eContacts,setEContacts]=useState([]);   // [{first_name,last_name,title,email,mobile,extension,fax}]
   const [nName,setNName]=useState(""); const [nOrg,setNOrg]=useState("");
-  const BLANK_CONTACT={first_name:"",last_name:"",title:"",email:"",mobile:"",extension:"",fax:""};
+  const BLANK_CONTACT={first_name:"",last_name:"",title:"",email:"",mobile:"",office:"",extension:"",fax:""};
   const normContact=k=>({...BLANK_CONTACT,...(k||{})});
   const setContact=(i,key,val)=>setEContacts(cs=>cs.map((c,idx)=>idx===i?{...c,[key]:val}:c));
   const addContact=()=>setEContacts(cs=>[...cs,{...BLANK_CONTACT}]);
@@ -11592,7 +11600,7 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
 
   function startEdit(c){ setEditId(c.id); setEName(c.name); setEOrg(c.hubstaff_org_id!=null?String(c.hubstaff_org_id):"");
     setEAddr(c.address||""); setEPhone(formatPhone(c.phone)); setEWeb(c.website||""); setETax(c.tax_id||"");
-    setEContacts(Array.isArray(c.contacts)?c.contacts.map(k=>{ const n=normContact(k); return {...n, mobile:formatPhone(n.mobile), fax:formatPhone(n.fax)}; }):[]); setMsg(""); }
+    setEContacts(Array.isArray(c.contacts)?c.contacts.map(k=>{ const n=normContact(k); return {...n, mobile:formatPhone(n.mobile), office:formatPhone(n.office), fax:formatPhone(n.fax)}; }):[]); setMsg(""); }
   function cancelEdit(){ setEditId(""); setEName(""); setEOrg(""); setEAddr(""); setEPhone(""); setEWeb(""); setETax(""); setEContacts([]); }
   async function saveEdit(c){
     const name=(eName||"").trim();
@@ -11605,8 +11613,8 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
     // Trim each contact; auto-format phone/fax; drop rows the admin left entirely blank.
     const contacts=(eContacts||[])
       .map(k=>({ first_name:(k.first_name||"").trim(), last_name:(k.last_name||"").trim(), title:(k.title||"").trim(),
-                 email:(k.email||"").trim(), mobile:formatPhone(k.mobile), extension:(k.extension||"").trim(), fax:formatPhone(k.fax) }))
-      .filter(k=>k.first_name||k.last_name||k.title||k.email||k.mobile||k.extension||k.fax);
+                 email:(k.email||"").trim(), mobile:formatPhone(k.mobile), office:formatPhone(k.office), extension:(k.extension||"").trim(), fax:formatPhone(k.fax) }))
+      .filter(k=>k.first_name||k.last_name||k.title||k.email||k.mobile||k.office||k.extension||k.fax);
     setBusy(true);
     const {error}=await client.from("companies").update({
       name, hubstaff_org_id:org,
@@ -11727,8 +11735,12 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
                     <PhoneInput value={k.mobile} onChange={v=>setContact(i,"mobile",v)} defaultCountry="US"/></div>
                 </div>
                 <div className="row">
+                  <div className="field" style={{minWidth:0,flex:"2 1 0"}}><label>Office number <span className="muted" style={{fontWeight:400}}>(trunk line)</span></label>
+                    <PhoneInput value={k.office} onChange={v=>setContact(i,"office",v)} defaultCountry="US"/></div>
                   <div className="field" style={{minWidth:0,flex:"1 1 0"}}><label>Extension</label>
-                    <input value={k.extension} onChange={e=>setContact(i,"extension",e.target.value)} inputMode="numeric" style={{width:"100%"}}/></div>
+                    <input value={k.extension} onChange={e=>setContact(i,"extension",e.target.value)} inputMode="numeric" placeholder="x123" style={{width:"100%"}}/></div>
+                </div>
+                <div className="row">
                   <div className="field" style={{minWidth:0,flex:"2 1 0"}}><label>Fax</label>
                     <PhoneInput value={k.fax} onChange={v=>setContact(i,"fax",v)} defaultCountry="US"/></div>
                 </div>
