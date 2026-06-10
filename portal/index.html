@@ -97,37 +97,39 @@
   .nyhero .wxfx{position:absolute; inset:0; z-index:2; pointer-events:none; overflow:hidden; border-radius:14px;}
   .nyhero .wxfx::before,.nyhero .wxfx::after{content:""; position:absolute; inset:-25%;}
   /* clear — gentle warm sun glow, top-right (near the sun) */
-  .wxfx-clear{background:radial-gradient(130px 90px at 86% 10%, rgba(244,201,93,.22), transparent 70%); animation:wxGlow 5s ease-in-out infinite alternate;}
-  @keyframes wxGlow{from{opacity:.45} to{opacity:1}}
+  .wxfx-clear{background:radial-gradient(210px 155px at 86% 6%, rgba(244,201,93,.52), rgba(244,201,93,.16) 46%, transparent 72%); animation:wxGlow 3.6s ease-in-out infinite alternate;}
+  @keyframes wxGlow{from{opacity:.55; transform:scale(1)} to{opacity:1; transform:scale(1.08)}}
   /* cloudy — soft drifting cloud blobs */
   .wxfx-cloudy::before{background:
-      radial-gradient(60px 26px at 25% 28%, rgba(255,255,255,.22), transparent 70%),
-      radial-gradient(80px 30px at 65% 20%, rgba(255,255,255,.16), transparent 70%),
-      radial-gradient(50px 22px at 88% 34%, rgba(255,255,255,.18), transparent 70%);
-    animation:wxDrift 26s linear infinite;}
-  @keyframes wxDrift{from{transform:translateX(-8%)} to{transform:translateX(8%)}}
+      radial-gradient(88px 36px at 22% 26%, rgba(255,255,255,.44), transparent 70%),
+      radial-gradient(112px 42px at 62% 16%, rgba(255,255,255,.34), transparent 70%),
+      radial-gradient(72px 32px at 90% 32%, rgba(255,255,255,.36), transparent 70%);
+    animation:wxDrift 16s linear infinite;}
+  @keyframes wxDrift{from{transform:translateX(-14%)} to{transform:translateX(14%)}}
   /* fog — soft haze that gently breathes + drifts */
-  .wxfx-fog{background:linear-gradient(180deg, rgba(220,225,235,.05), rgba(220,225,235,.20) 55%, rgba(220,225,235,.30)); animation:wxFog 9s ease-in-out infinite alternate;}
-  @keyframes wxFog{from{opacity:.5; transform:translateX(-10px)} to{opacity:.95; transform:translateX(10px)}}
+  .wxfx-fog{background:linear-gradient(180deg, rgba(220,225,235,.12), rgba(220,225,235,.38) 55%, rgba(220,225,235,.48)); animation:wxFog 6s ease-in-out infinite alternate;}
+  @keyframes wxFog{from{opacity:.6; transform:translateX(-18px)} to{opacity:1; transform:translateX(18px)}}
   /* rain — diagonal falling streaks (shared by storm) */
-  .wxfx-rain::before,.wxfx-storm::before{background-image:repeating-linear-gradient(110deg, transparent 0 7px, rgba(255,255,255,.20) 7px 8px); animation:wxRain .55s linear infinite;}
-  @keyframes wxRain{from{transform:translate(0,0)} to{transform:translate(-16px,44px)}}
+  .wxfx-rain::before,.wxfx-storm::before{background-image:repeating-linear-gradient(108deg, transparent 0 5px, rgba(255,255,255,.4) 5px 7px); animation:wxRain .5s linear infinite;}
+  @keyframes wxRain{from{transform:translate(0,0)} to{transform:translate(-20px,56px)}}
   /* snow — two layers of drifting dots at different speeds */
   .wxfx-snow::before{background-image:
-      radial-gradient(2px 2px at 12% 18%, rgba(255,255,255,.95), transparent),
-      radial-gradient(2px 2px at 42% 38%, rgba(255,255,255,.8), transparent),
-      radial-gradient(1.5px 1.5px at 70% 12%, rgba(255,255,255,.9), transparent),
-      radial-gradient(2px 2px at 88% 46%, rgba(255,255,255,.75), transparent);
-    background-size:160px 160px; animation:wxSnow 7s linear infinite;}
+      radial-gradient(3px 3px at 12% 18%, rgba(255,255,255,1), transparent),
+      radial-gradient(2.5px 2.5px at 38% 38%, rgba(255,255,255,.9), transparent),
+      radial-gradient(2.5px 2.5px at 58% 8%, rgba(255,255,255,.95), transparent),
+      radial-gradient(3px 3px at 70% 12%, rgba(255,255,255,.95), transparent),
+      radial-gradient(2.5px 2.5px at 88% 46%, rgba(255,255,255,.85), transparent);
+    background-size:120px 120px; animation:wxSnow 5.5s linear infinite;}
   .wxfx-snow::after{background-image:
-      radial-gradient(1.5px 1.5px at 28% 60%, rgba(255,255,255,.7), transparent),
-      radial-gradient(1.5px 1.5px at 60% 80%, rgba(255,255,255,.6), transparent),
-      radial-gradient(2px 2px at 80% 66%, rgba(255,255,255,.7), transparent);
-    background-size:200px 200px; animation:wxSnow 11s linear infinite;}
-  @keyframes wxSnow{from{transform:translateY(-20%)} to{transform:translateY(20%)}}
+      radial-gradient(2px 2px at 28% 60%, rgba(255,255,255,.8), transparent),
+      radial-gradient(2px 2px at 50% 86%, rgba(255,255,255,.72), transparent),
+      radial-gradient(2.5px 2.5px at 60% 80%, rgba(255,255,255,.75), transparent),
+      radial-gradient(2.5px 2.5px at 80% 66%, rgba(255,255,255,.8), transparent);
+    background-size:160px 160px; animation:wxSnow 8.5s linear infinite;}
+  @keyframes wxSnow{from{transform:translateY(-26%)} to{transform:translateY(30%)}}
   /* storm — rain (::before) + periodic lightning flash (::after) */
-  .wxfx-storm::after{inset:0; background:rgba(255,255,255,.7); opacity:0; animation:wxFlash 8s linear infinite;}
-  @keyframes wxFlash{0%,90%,100%{opacity:0} 91%{opacity:.55} 92%{opacity:.08} 93.5%{opacity:.5} 95%{opacity:0}}
+  .wxfx-storm::after{inset:0; background:rgba(255,255,255,.85); opacity:0; animation:wxFlash 5s linear infinite;}
+  @keyframes wxFlash{0%,86%,100%{opacity:0} 87%{opacity:.78} 88.5%{opacity:.12} 90%{opacity:.7} 92%{opacity:0}}
   @media (prefers-reduced-motion: reduce){ .nyhero .wxfx, .nyhero .wxfx::before, .nyhero .wxfx::after{animation:none !important;} }
   .paycard{background:#fff; border:1px solid var(--line); border-radius:var(--radius); padding:16px; margin:4px 0 12px; box-shadow:0 6px 20px rgba(31,58,104,.10);}
   .bigpay{font-size:27px; font-weight:800; color:var(--accent); line-height:1.1;}
@@ -301,7 +303,7 @@ function PhoneInput({ value, onChange, defaultCountry="PH", style, inputStyle, p
 }
 
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-10 12:14 EDT · 920d2cc";
+const BUILD = "2026-06-10 13:02 EDT · 5bc73b3";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
