@@ -446,7 +446,7 @@ alter table workers add column if not exists created_by uuid default auth.uid();
 do $$
 declare t text;
 begin
-  foreach t in array array['companies','audit_log','documents','pay_periods',
+  foreach t in array array['companies','audit_log','pay_periods',
                            'payments','rates','time_entries','worker_companies']
   loop
     execute format('drop policy if exists %I_admin_all on %I;', t, t);
@@ -458,6 +458,15 @@ begin
     end if;
   end loop;
 end$$;
+
+-- documents: worker-scoped, NOT pure company-scoped. Onboarding uploads are
+-- inserted by the contractor with a NULL company_id, so a company-only gate hides
+-- them from assigned (non-owner) admins ("No document uploaded"). Gate on whether
+-- the admin can see the WORKER; keep the company path for any company-tagged rows.
+drop policy if exists documents_admin_all on documents;
+create policy documents_admin_all on documents for all to authenticated
+  using (admin_can_see_worker(worker_id) or is_company_admin(company_id))
+  with check (admin_can_see_worker(worker_id) or is_company_admin(company_id));
 
 -- workers: split so any admin may INSERT (they link to their company next), and
 -- the creator can read/update the row they just inserted (created_by).
