@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-12 15:34 EDT · 82492ec";
+const BUILD = "2026-06-12 15:39 EDT · b4fccef";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -11187,7 +11187,8 @@ function AgreementTemplatesModal({ client, onClose }){
         </div>
         <p className="sub">Paste the standard agreement text. Merge fields (filled per contractor when prepared):<br/>
           <b>Parties:</b> <code>{"{{employer_name}}"}</code> = the contracting employer (Aaron Anderson E.H.S. LLC) · <code>{"{{client_name}}"}</code> (a.k.a. <code>{"{{company_name}}"}</code>) = the assigned client company · <code>{"{{contractor_name}}"}</code> · <code>{"{{countersigner_name}}"}</code><br/>
-          <b>Engagement:</b> <code>{"{{position}}"}</code> · <code>{"{{rate}}"}</code> (per period) · <code>{"{{monthly_rate}}"}</code> · <code>{"{{start_date}}"}</code> · <code>{"{{contractor_address}}"}</code> · <code>{"{{today}}"}</code> · <code>{"{{addendum}}"}</code></p>
+          <b>Engagement:</b> <code>{"{{position}}"}</code> · <code>{"{{rate}}"}</code> (per period) · <code>{"{{monthly_rate}}"}</code> · <code>{"{{start_date}}"}</code> · <code>{"{{contractor_address}}"}</code> · <code>{"{{employment_type}}"}</code> (e.g. “Full-time (40 hours/week)”) · <code>{"{{hours_per_week}}"}</code> · <code>{"{{schedule}}"}</code> (shift) · <code>{"{{today}}"}</code> · <code>{"{{addendum}}"}</code><br/>
+          <span className="muted" style={{fontSize:12}}>If you don’t place <code>{"{{employment_type}}"}</code>/<code>{"{{schedule}}"}</code> in the text, an “Engagement: … Work schedule: …” line is appended automatically.</span></p>
         <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
           {rows.map(r=>(<button key={r.kind} className={"btn sm "+(sel===r.kind?"":"ghost")} onClick={()=>pick(r.kind)}>{ONB_AGR_LABEL[r.kind]||r.kind}</button>))}
         </div>
