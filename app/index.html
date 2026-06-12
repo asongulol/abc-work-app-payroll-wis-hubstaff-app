@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-11 10:59 EDT · 751faed";
+const BUILD = "2026-06-11 21:45 EDT · 81bb6a0";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -818,30 +818,92 @@ function fullName(w){
 }
 
 // ---- Phone numbers: shared convention + country-code picker ----------------
-// Supported countries for the picker. Extend by adding {code,cc,flag,name,ex}.
-const PHONE_COUNTRIES = [
-  { code:"US", cc:"+1",  flag:"🇺🇸", name:"US / Canada",  ex:"(212) 555-0100" },
-  { code:"PH", cc:"+63", flag:"🇵🇭", name:"Philippines",  ex:"917-123-4567"   },
-];
+// Country list for the picker: US & Philippines are pinned at the top (the two we
+// use daily); every other country follows A–Z. Flags are derived from the ISO-3166
+// code so the data stays compact. Extend REST by adding [ISO2, dialCode, name].
+const PHONE_COUNTRIES = (() => {
+  const flagOf = iso => iso.toUpperCase().replace(/./g, c => String.fromCodePoint(0x1F1A5 + c.charCodeAt(0)));
+  const PINNED = [
+    { code:"US", cc:"+1",  name:"US / Canada", ex:"(212) 555-0100" },
+    { code:"PH", cc:"+63", name:"Philippines", ex:"917-123-4567"   },
+  ];
+  const REST = [
+    ["AF","+93","Afghanistan"],["AL","+355","Albania"],["DZ","+213","Algeria"],["AD","+376","Andorra"],
+    ["AO","+244","Angola"],["AG","+1","Antigua & Barbuda"],["AR","+54","Argentina"],["AM","+374","Armenia"],
+    ["AW","+297","Aruba"],["AU","+61","Australia"],["AT","+43","Austria"],["AZ","+994","Azerbaijan"],
+    ["BS","+1","Bahamas"],["BH","+973","Bahrain"],["BD","+880","Bangladesh"],["BB","+1","Barbados"],
+    ["BY","+375","Belarus"],["BE","+32","Belgium"],["BZ","+501","Belize"],["BJ","+229","Benin"],
+    ["BT","+975","Bhutan"],["BO","+591","Bolivia"],["BA","+387","Bosnia & Herzegovina"],["BW","+267","Botswana"],
+    ["BR","+55","Brazil"],["BN","+673","Brunei"],["BG","+359","Bulgaria"],["BF","+226","Burkina Faso"],
+    ["BI","+257","Burundi"],["KH","+855","Cambodia"],["CM","+237","Cameroon"],["CV","+238","Cape Verde"],
+    ["CF","+236","Central African Republic"],["TD","+235","Chad"],["CL","+56","Chile"],["CN","+86","China"],
+    ["CO","+57","Colombia"],["KM","+269","Comoros"],["CG","+242","Congo - Brazzaville"],["CD","+243","Congo - Kinshasa"],
+    ["CR","+506","Costa Rica"],["CI","+225","Côte d'Ivoire"],["HR","+385","Croatia"],["CU","+53","Cuba"],
+    ["CY","+357","Cyprus"],["CZ","+420","Czechia"],["DK","+45","Denmark"],["DJ","+253","Djibouti"],
+    ["DM","+1","Dominica"],["DO","+1","Dominican Republic"],["EC","+593","Ecuador"],["EG","+20","Egypt"],
+    ["SV","+503","El Salvador"],["GQ","+240","Equatorial Guinea"],["ER","+291","Eritrea"],["EE","+372","Estonia"],
+    ["SZ","+268","Eswatini"],["ET","+251","Ethiopia"],["FJ","+679","Fiji"],["FI","+358","Finland"],
+    ["FR","+33","France"],["GA","+241","Gabon"],["GM","+220","Gambia"],["GE","+995","Georgia"],
+    ["DE","+49","Germany"],["GH","+233","Ghana"],["GR","+30","Greece"],["GD","+1","Grenada"],
+    ["GT","+502","Guatemala"],["GN","+224","Guinea"],["GW","+245","Guinea-Bissau"],["GY","+592","Guyana"],
+    ["HT","+509","Haiti"],["HN","+504","Honduras"],["HK","+852","Hong Kong"],["HU","+36","Hungary"],
+    ["IS","+354","Iceland"],["IN","+91","India"],["ID","+62","Indonesia"],["IR","+98","Iran"],
+    ["IQ","+964","Iraq"],["IE","+353","Ireland"],["IL","+972","Israel"],["IT","+39","Italy"],
+    ["JM","+1","Jamaica"],["JP","+81","Japan"],["JO","+962","Jordan"],["KZ","+7","Kazakhstan"],
+    ["KE","+254","Kenya"],["KI","+686","Kiribati"],["KW","+965","Kuwait"],["KG","+996","Kyrgyzstan"],
+    ["LA","+856","Laos"],["LV","+371","Latvia"],["LB","+961","Lebanon"],["LS","+266","Lesotho"],
+    ["LR","+231","Liberia"],["LY","+218","Libya"],["LI","+423","Liechtenstein"],["LT","+370","Lithuania"],
+    ["LU","+352","Luxembourg"],["MO","+853","Macau"],["MG","+261","Madagascar"],["MW","+265","Malawi"],
+    ["MY","+60","Malaysia"],["MV","+960","Maldives"],["ML","+223","Mali"],["MT","+356","Malta"],
+    ["MH","+692","Marshall Islands"],["MR","+222","Mauritania"],["MU","+230","Mauritius"],["MX","+52","Mexico"],
+    ["FM","+691","Micronesia"],["MD","+373","Moldova"],["MC","+377","Monaco"],["MN","+976","Mongolia"],
+    ["ME","+382","Montenegro"],["MA","+212","Morocco"],["MZ","+258","Mozambique"],["MM","+95","Myanmar (Burma)"],
+    ["NA","+264","Namibia"],["NR","+674","Nauru"],["NP","+977","Nepal"],["NL","+31","Netherlands"],
+    ["NZ","+64","New Zealand"],["NI","+505","Nicaragua"],["NE","+227","Niger"],["NG","+234","Nigeria"],
+    ["KP","+850","North Korea"],["MK","+389","North Macedonia"],["NO","+47","Norway"],["OM","+968","Oman"],
+    ["PK","+92","Pakistan"],["PW","+680","Palau"],["PS","+970","Palestine"],["PA","+507","Panama"],
+    ["PG","+675","Papua New Guinea"],["PY","+595","Paraguay"],["PE","+51","Peru"],["PL","+48","Poland"],
+    ["PT","+351","Portugal"],["QA","+974","Qatar"],["RO","+40","Romania"],["RU","+7","Russia"],
+    ["RW","+250","Rwanda"],["KN","+1","St. Kitts & Nevis"],["LC","+1","St. Lucia"],["VC","+1","St. Vincent & Grenadines"],
+    ["WS","+685","Samoa"],["SM","+378","San Marino"],["ST","+239","São Tomé & Príncipe"],["SA","+966","Saudi Arabia"],
+    ["SN","+221","Senegal"],["RS","+381","Serbia"],["SC","+248","Seychelles"],["SL","+232","Sierra Leone"],
+    ["SG","+65","Singapore"],["SK","+421","Slovakia"],["SI","+386","Slovenia"],["SB","+677","Solomon Islands"],
+    ["SO","+252","Somalia"],["ZA","+27","South Africa"],["KR","+82","South Korea"],["SS","+211","South Sudan"],
+    ["ES","+34","Spain"],["LK","+94","Sri Lanka"],["SD","+249","Sudan"],["SR","+597","Suriname"],
+    ["SE","+46","Sweden"],["CH","+41","Switzerland"],["SY","+963","Syria"],["TW","+886","Taiwan"],
+    ["TJ","+992","Tajikistan"],["TZ","+255","Tanzania"],["TH","+66","Thailand"],["TL","+670","Timor-Leste"],
+    ["TG","+228","Togo"],["TO","+676","Tonga"],["TT","+1","Trinidad & Tobago"],["TN","+216","Tunisia"],
+    ["TR","+90","Turkey"],["TM","+993","Turkmenistan"],["TV","+688","Tuvalu"],["UG","+256","Uganda"],
+    ["UA","+380","Ukraine"],["AE","+971","United Arab Emirates"],["GB","+44","United Kingdom"],["UY","+598","Uruguay"],
+    ["UZ","+998","Uzbekistan"],["VU","+678","Vanuatu"],["VA","+379","Vatican City"],["VE","+58","Venezuela"],
+    ["VN","+84","Vietnam"],["YE","+967","Yemen"],["ZM","+260","Zambia"],["ZW","+263","Zimbabwe"],
+  ].map(([code,cc,name]) => ({ code, cc, name, ex:"" })).sort((a,b) => a.name.localeCompare(b.name));
+  return [...PINNED, ...REST].map(c => ({ ...c, flag: flagOf(c.code) }));
+})();
 function phoneCountry(code){ return PHONE_COUNTRIES.find(c=>c.code===code) || PHONE_COUNTRIES[0]; }
-// Group up to 10 national digits per country style (progressive, for live typing).
+// Group national digits per country style (progressive, for live typing). US & PH
+// use local grouping; every other country keeps raw digits (E.164 caps total at 15).
 function groupNational(code, raw){
-  const d=String(raw||"").replace(/\D/g,"").slice(0,10);
-  if(!d) return "";
-  const a=d.slice(0,3), b=d.slice(3,6), c=d.slice(6,10);
-  if(code==="PH") return [a,b,c].filter(Boolean).join("-");   // AAA-BBB-CCCC
-  let out="("+a;                                              // US: (AAA) BBB-CCCC
-  if(d.length>3) out+=") "+b;
-  if(d.length>6) out+="-"+c;
-  return out;
+  if(code==="US" || code==="PH"){
+    const d=String(raw||"").replace(/\D/g,"").slice(0,10);
+    if(!d) return "";
+    const a=d.slice(0,3), b=d.slice(3,6), c=d.slice(6,10);
+    if(code==="PH") return [a,b,c].filter(Boolean).join("-");   // AAA-BBB-CCCC
+    let out="("+a;                                              // US: (AAA) BBB-CCCC
+    if(d.length>3) out+=") "+b;
+    if(d.length>6) out+="-"+c;
+    return out;
+  }
+  return String(raw||"").replace(/\D/g,"").slice(0,15);
 }
 // Combine a country + national number into the stored/displayed string.
 function buildPhone(code, national){
   const g=groupNational(code, national);
   return g ? `${phoneCountry(code).cc} ${g}` : "";
 }
-// Parse a stored phone string into {code, national(10 digits)}. Detects an explicit
-// +63/+1 (or 63+10 / national 0+10 / 1+10); otherwise falls back to `def` (US).
+// Parse a stored phone string into {code, national}. Detects PH/US local forms
+// first (+63/+1, 63+10, 0+10, 1+10), then matches the longest dial-code prefix of
+// any picker country; otherwise falls back to `def` (US).
 function parsePhone(value, def){
   const s=String(value==null?"":value).trim();
   const digits=s.replace(/\D/g,"");
@@ -849,16 +911,25 @@ function parsePhone(value, def){
   if(s.startsWith("+63") || (digits.startsWith("63") && digits.length===12)) return { code:"PH", national:digits.replace(/^63/,"").slice(0,10) };
   if(digits.startsWith("0") && digits.length===11)                           return { code:"PH", national:digits.slice(1,11) };
   if(s.startsWith("+1")  || (digits.startsWith("1") && digits.length===11))  return { code:"US", national:digits.replace(/^1/,"").slice(0,10) };
+  if(s.startsWith("+")){                                       // any other "+CC …" value
+    let best=null;
+    for(const c of PHONE_COUNTRIES){
+      const d=c.cc.replace(/\D/g,"");
+      if(d && digits.startsWith(d) && (!best || d.length>best.len)) best={ code:c.code, len:d.length };
+    }
+    if(best) return { code:best.code, national: digits.slice(best.len).slice(0,15) };
+  }
   return { code: def||"US", national: digits.slice(-10) };
 }
 // Pretty-print any stored phone value (read-only display + on-save normalization).
-// US 10-digit → "+1 (AAA) BBB-CCCC", PH → "+63 AAA-BBB-CCCC"; incomplete/unknown
-// values are returned unchanged so a half-typed or unusual value is never mangled.
+// US → "+1 (AAA) BBB-CCCC", PH → "+63 AAA-BBB-CCCC", others → "+CC digits".
+// Incomplete US/PH numbers are returned unchanged so a half-typed value is never mangled.
 function formatPhone(raw){
   const s=(raw==null?"":String(raw)).trim();
   if(!s) return "";
   const { code, national }=parsePhone(s, null);
-  if(national.length!==10) return s;   // incomplete — leave as typed
+  if(!national) return s;
+  if((code==="US"||code==="PH") && national.length!==10) return s;   // incomplete — leave as typed
   return buildPhone(code, national);
 }
 
@@ -880,9 +951,9 @@ function PhoneInput({ value, onChange, defaultCountry="US", style, inputStyle, p
   const emit=(code,text)=>onChange(buildPhone(code, text));
   return (
     <div style={{display:"flex",gap:6,width:"100%",...style}}>
-      <select value={country} aria-label="Country code" style={{flex:"0 0 auto",width:74,padding:"0 4px"}}
+      <select value={country} aria-label="Country code" style={{flex:"0 0 auto",width:96,padding:"0 4px"}}
         onChange={e=>{ const c=e.target.value; setCountry(c); setNat(n=>groupNational(c,n)); emit(c,nat); }}>
-        {PHONE_COUNTRIES.map(c=><option key={c.code} value={c.code} title={c.name}>{c.flag} {c.cc}</option>)}
+        {PHONE_COUNTRIES.map(c=><option key={c.code} value={c.code} title={c.name}>{c.flag} {c.cc} {c.name}</option>)}
       </select>
       <input type="tel" inputMode="tel" value={nat}
         placeholder={placeholder||phoneCountry(country).ex} style={{flex:1,minWidth:0,...inputStyle}}
@@ -2035,6 +2106,7 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
     company_id:companyId||"", contract:"FT", role:"", rate:"", contract_date:today, hire_date:today,
     shift_start:etToPhtHHMM("08:00"), shift_end:etToPhtHHMM("17:00"),
     ic_addendum_type:"", ic_addendum_text:"", extra_docs:[],
+    tools:{gmail:false,providersoft:false,hubstaff:false,zoom:false,others:""},
     countersigner_user_id:"", countersigner_name:"",
     health_allowance_eligible:true, thirteenth_month_eligible:true, invite:true };
   // Per-company draft so a half-finished hire survives a refresh/close/navigation.
@@ -2159,6 +2231,11 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
         const xdocs=ocUniq((f.extra_docs||[]).filter(t=>(t||"").trim()).map(t=>({kind:ocSlug(t),title:t.trim(),required:true})));
         if(f.invite && xdocs.length){
           await client.from("onboarding_progress").upsert({worker_id:w.id, extra_documents:xdocs, updated_at:new Date().toISOString()},{onConflict:"worker_id"});
+        }
+        // Record which tools to provision; the logins are entered at completion.
+        const tr=f.tools||{};
+        if(f.invite && (tr.gmail||tr.providersoft||tr.hubstaff||tr.zoom||(tr.others||"").trim())){
+          await client.rpc("set_tools_requested",{ p_worker_id:w.id, p_requested:tr });
         }
       }catch(_e){ /* non-fatal */ }
       logEvent(client,{company_id:coId,action:"add_contractor",entity:`${f.first_name} ${f.last_name}`,detail:{from:"wizard",contract:f.contract,invited:!!f.invite,rate:parseFloat(f.rate)||null,addendum:f.ic_addendum_type||null,extra_docs:(f.extra_docs||[]).filter(t=>(t||"").trim()).length}});
@@ -2287,6 +2364,15 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
           <span><b>Invite to the contractor portal</b><br/><span className="muted" style={{fontSize:12}}>Creates a login and starts onboarding — the contractor signs the IC Agreement, Non-Compete, NDA and BAA, completes their profile, and uploads documents. You'll get a temp password to share.</span></span>
         </label>
         {f.invite && !ne(f.email) && <div style={{color:"#b91c1c",fontSize:12}}>Add a personal email in step 1 to invite.</div>}
+        {f.invite && <div className="card" style={{marginTop:8}}>
+          <div className="muted" style={{fontSize:12,marginBottom:6}}>Tools to provision <span style={{fontWeight:400}}>— you'll enter the logins when onboarding completes</span></div>
+          {[["gmail","Gmail address"],["providersoft","Providersoft access"],["hubstaff","Hubstaff access"],["zoom","Zoom number"]].map(([k,lbl])=>(
+            <label key={k} style={{display:"inline-flex",gap:6,alignItems:"center",fontSize:13,marginRight:16,marginBottom:4}}>
+              <input type="checkbox" checked={!!(f.tools&&f.tools[k])} onChange={e=>set("tools",{...(f.tools||{}),[k]:e.target.checked})}/>{lbl}
+            </label>
+          ))}
+          <input style={{...inp,marginTop:6}} placeholder="Other tools (optional)" value={(f.tools&&f.tools.others)||""} onChange={e=>set("tools",{...(f.tools||{}),others:e.target.value})}/>
+        </div>}
         <div className="card" style={{background:"#f8fafc",marginTop:8}}>
           <div className="muted" style={{fontSize:12,marginBottom:4}}>Summary</div>
           <div className="row"><span className="muted">Name</span><span>{[f.first_name,f.middle_name,f.last_name].filter(Boolean).join(" ")||"—"}</span></div>
@@ -10253,11 +10339,17 @@ const ONB_DEFAULT_REVIEW_NOTIFY = { enabled:true, frequency:"daily", include_def
 const ONB_DEFAULT_HIRE_EMAILS = {
   auto_send:true,
   portal_url:"https://portal.abbilabs.com",
+  wise_referral_url:"https://wise.com/invite/dic/olivert410",
   hubstaff_install_url:"https://hubstaff.com/download",
+  // Email 1 — sent at hire (thank-you + onboarding intro + Wise button + prepare docs + login).
+  welcome:{ subject:"Welcome to ABC Kids — let's get you onboarded",
+    html:`<p>Hi {{name}},</p><p>Thank you for joining ABC Kids NY — we're excited to have you on the team! Here's how to get started.</p><p><b>Your onboarding, in the portal:</b></p><ol><li>Sign your agreements (IC Agreement, Non-Compete, NDA, BAA)</li><li>Complete your profile and billing / payout details</li><li>Upload your documents</li></ol><p><b>First, set up Wise.</b> We pay in Philippine Pesos via Wise, so please create your Wise account now — you'll add your payout details during onboarding:</p><p><a href="{{wise_referral_url}}" style="display:inline-block;padding:11px 20px;background:#1F3A68;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600">Create your Wise account</a></p><p><b>Please prepare these documents</b> to upload in the portal: Resume / CV, Diploma / TOR, NBI Clearance, and a Gov ID / Passport (front &amp; back).</p><p><b>Your portal login</b><br>Portal: <a href="{{portal_url}}">{{portal_url}}</a><br>Username: {{email}}<br>Temporary password: {{password}}</p><p>You'll set your own password on first sign-in. Questions? Just reply to this email.</p><p>Welcome aboard!<br>— ABC Kids NY</p>` },
+  // Login-only — reused when an admin re-issues a temp password.
   credentials:{ subject:"Your ABC Kids contractor portal login",
-    html:`<p>Hi {{name}},</p><p>Welcome aboard! Your contractor portal account is ready. Sign in to review and sign your agreements, complete your profile, and upload your onboarding documents.</p><p><b>Portal:</b> <a href="{{portal_url}}">{{portal_url}}</a><br><b>Username:</b> {{email}}<br><b>Temporary password:</b> {{password}}</p><p>Please change your password right after your first sign-in.</p><p>— ABC Kids NY</p>` },
-  welcome:{ subject:"Welcome to ABC Kids — getting set up with Hubstaff",
-    html:`<p>Hi {{name}},</p><p>We're glad to have you on the team! We track work time with <b>Hubstaff</b>.</p><p><b>Your Hubstaff name:</b> {{hubstaff_name}}<br><b>Install Hubstaff:</b> <a href="{{hubstaff_install_url}}">{{hubstaff_install_url}}</a></p><p>Download and install Hubstaff, sign in with the invite you receive, and start your timer when you begin work.</p>{{work_email_block}}<p>— ABC Kids NY</p>` },
+    html:`<p>Hi {{name}},</p><p>Here are your contractor portal sign-in details.</p><p><b>Portal:</b> <a href="{{portal_url}}">{{portal_url}}</a><br><b>Username:</b> {{email}}<br><b>Temporary password:</b> {{password}}</p><p>You'll set your own password on first sign-in.</p><p>— ABC Kids NY</p>` },
+  // Email 2 — sent at completion ({{tools_block}} is rendered from the provisioned logins).
+  tools:{ subject:"Your ABC Kids tool access",
+    html:`<p>Hi {{name}},</p><p>Your onboarding is complete — here are the tool logins you'll need to get started:</p>{{tools_block}}<p>Please save these somewhere safe and, where possible, change any passwords on first sign-in.</p><p>— ABC Kids NY</p>` },
 };
 function onbPct(p){ return Math.round(((p.stage1_complete?1:0)+(p.stage2_complete?1:0)+(p.stage3_complete?1:0))/3*100); }
 function onbStatus(p, pending){
@@ -10543,6 +10635,76 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigC
 // (fnErrorMessage is defined once at module scope — see below — so create-login,
 //  the Wise panel, and onboarding review all share one edge-error extractor.)
 
+// Per-tool field schema for the provisioning modal.
+const TOOL_FIELDS = {
+  gmail:[["address","Email address"],["password","Password"]],
+  providersoft:[["username","Username"],["password","Password"]],
+  hubstaff:[["username","Username / email"],["password","Password / invite"]],
+  zoom:[["number","Zoom number / extension"]],
+};
+const TOOL_NAME = { gmail:"Company Gmail", providersoft:"Providersoft", hubstaff:"Hubstaff", zoom:"Zoom" };
+function toolsRequestedList(requested){
+  return Object.entries(requested||{}).filter(([k,v])=> k==="others" ? String(v||"").trim() : !!v).map(([k])=>k);
+}
+// Admin enters the tool logins at completion. They're encrypted (set_worker_tools),
+// emailed (send_tools_email) and shown in the contractor's portal pop-up.
+function ToolsProvisionModal({ client, worker_id, workerName, requested, onClose, onDone }){
+  const mref=useModalA11y(onClose,{escClose:false});
+  const tools=toolsRequestedList(requested);
+  const [vals,setVals]=useState({}); const [busy,setBusy]=useState(false); const [err,setErr]=useState("");
+  const setV=(t,fk,v)=>setVals(s=>({...s,[t]:{...(s[t]||{}),[fk]:v}}));
+  const inp={width:"100%",padding:8,border:"1px solid #d1d5db",borderRadius:8,margin:"2px 0",fontSize:14,boxSizing:"border-box"};
+  async function save(){
+    setBusy(true); setErr("");
+    const creds={};
+    for(const t of tools){
+      if(t==="others"){ const v=((vals.others&&vals.others.details)||"").trim(); if(v) creds.others={ [String(requested.others||"Other")]:v }; continue; }
+      const fields={}; for(const [fk] of (TOOL_FIELDS[t]||[])){ const v=((vals[t]&&vals[t][fk])||"").trim(); if(v) fields[fk]=v; }
+      if(Object.keys(fields).length) creds[t]=fields;
+    }
+    if(!Object.keys(creds).length){ setErr("Enter at least one tool's login."); setBusy(false); return; }
+    const { error:e1 } = await client.rpc("set_worker_tools",{ p_worker_id:worker_id, p_creds:creds });
+    if(e1){ setErr("Save failed: "+e1.message); setBusy(false); return; }
+    let note="";
+    try{ const { data } = await client.functions.invoke("portal-admin",{body:{action:"send_tools_email",worker_id}});
+      if(data&&data.emailed&&data.emailed.email_configured===false) note=" Email isn't configured yet — the contractor will still see them in the portal.";
+      else if(data&&data.emailed&&data.emailed.ok===false) note=" (email send failed — portal pop-up still set)";
+    }catch(_e){ note=" (email send failed — portal pop-up still set)"; }
+    setBusy(false);
+    logEvent(client,{action:"tools_provisioned",entity:workerName,detail:{worker_id,tools}});
+    onDone&&onDone(note); onClose();
+  }
+  return (
+    <div className="modal-bg" onClick={onClose} style={{zIndex:60}}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <h2 style={{margin:0,fontSize:17}}>Tool access — {workerName}</h2>
+          <button className="btn ghost sm" onClick={onClose}>Close</button>
+        </div>
+        <p className="sub" style={{marginTop:4}}>Enter the logins to hand off. They're <b>encrypted at rest</b>, emailed to the contractor, and shown in their portal.</p>
+        {tools.length===0 && <div className="empty">No tools were requested for this contractor.</div>}
+        {tools.map(t=> t==="others" ? (
+          <div key="others" style={{border:"1px solid #e5e7eb",borderRadius:8,padding:"10px 12px",marginBottom:8}}>
+            <b style={{fontSize:13}}>Other — {String(requested.others||"")}</b>
+            <textarea style={{...inp,minHeight:60}} placeholder="Details / logins" value={(vals.others&&vals.others.details)||""} onChange={e=>setV("others","details",e.target.value)}/>
+          </div>
+        ) : (
+          <div key={t} style={{border:"1px solid #e5e7eb",borderRadius:8,padding:"10px 12px",marginBottom:8}}>
+            <b style={{fontSize:13}}>{TOOL_NAME[t]||t}</b>
+            {(TOOL_FIELDS[t]||[]).map(([fk,lbl])=>(
+              <input key={fk} style={inp} placeholder={lbl} value={(vals[t]&&vals[t][fk])||""} onChange={e=>setV(t,fk,e.target.value)}/>
+            ))}
+          </div>
+        ))}
+        {err && <div className="err">{err}</div>}
+        <div style={{display:"flex",gap:8,marginTop:8}}>
+          <button className="btn" disabled={busy||!tools.length} onClick={save}>{busy?"Saving…":"Save & notify contractor"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
   const mref=useModalA11y(onClose,{escClose:true}); // read-only viewer: Escape-safe (stack handles nested ReasonPicker/Countersign)
   const { data:wRows } = useQuery(client, c=>c.from("workers")
@@ -10562,6 +10724,12 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
   const workerName=[w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ")||w.email||"Contractor";
   const ex=(w.profile_extras&&typeof w.profile_extras==="object")?w.profile_extras:{};
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [revDoc,setRevDoc]=useState(null); const [revErr,setRevErr]=useState(null);
+  const [toolsStatus,setToolsStatus]=useState(null); const [showTools,setShowTools]=useState(false);
+  const reloadTools=()=>client.rpc("get_tools_status",{p_worker_id:worker_id}).then(({data})=>setToolsStatus(data||null));
+  useEffect(()=>{ reloadTools(); },[worker_id]); // eslint-disable-line
+  const _toolsReq=(toolsStatus&&toolsStatus.requested)||{};
+  const _hasTools=toolsRequestedList(_toolsReq).length>0;
+  const _toolsProvisioned=!!(toolsStatus&&toolsStatus.provisioned_at);
   async function view(d){
     if(!d.storage_path) return;
     const win=window.open("about:blank","_blank");   // open synchronously (popup-blocker safe), then redirect
@@ -10585,7 +10753,7 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
     const e=new Date(dt); e.setUTCMonth(e.getUTCMonth()+6); return e.getTime()<Date.now();
   }
   // Admin onboarding overrides (is_admin() write policy on onboarding_progress).
-  async function applyProg(patch, label, warn){
+  async function applyProg(patch, label, warn, onOk){
     if(!window.confirm(`${label} for ${workerName}?`+(warn?`\n\n${warn}`:""))) return;
     setBusy(true); setMsg("");
     const { error } = await client.from("onboarding_progress")
@@ -10593,7 +10761,7 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
     setBusy(false);
     if(error){ setMsg("Failed: "+error.message); return; }
     logEvent(client,{action:"onboarding_override",entity:workerName,detail:{worker_id,label}});
-    reloadProg(); onChange&&onChange();
+    reloadProg(); onChange&&onChange(); if(onOk) onOk();
   }
   function reopenTo(stage){
     const p={ current_stage:stage, completed_at:null };
@@ -10603,7 +10771,8 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
     applyProg(p, "Reopen to "+(ONB_STAGE_LABEL[stage]||stage), prog&&prog.completed_at?"This re-locks their pay-data access until they finish again.":null);
   }
   function markComplete(){ applyProg({ stage1_complete:true,stage2_complete:true,stage3_complete:true,current_stage:"complete",completed_at:new Date().toISOString() },
-    "Mark onboarding COMPLETE", "This unlocks their pay-data access immediately."); }
+    "Mark onboarding COMPLETE", "This unlocks their pay-data access immediately.",
+    ()=>{ if(_hasTools && !_toolsProvisioned) setShowTools(true); }); }
   function revoke(){ applyProg({ current_stage:"stage1_sign",stage1_complete:false,stage2_complete:false,stage3_complete:false,completed_at:null },
     "Revoke / reset onboarding", "This sends them back to Stage 1 and re-locks their pay-data access."); }
   const byKey={}; (docs||[]).forEach(d=>{ const k=d.kind+"|"+(d.side||""); (byKey[k]=byKey[k]||[]).push(d); });
@@ -10628,10 +10797,15 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
               <button className="btn ghost sm" disabled={busy} title="Send back to profile" onClick={()=>reopenTo("stage2_profile")}>↺ Stage 2</button>
               <button className="btn ghost sm" disabled={busy} title="Send back to documents" onClick={()=>reopenTo("stage3_docs")}>↺ Stage 3</button>
               {!prog.completed_at && <button className="btn sm" disabled={busy} onClick={markComplete}>✓ Mark complete</button>}
+              {_hasTools && <button className="btn ghost sm" disabled={busy} title="Enter the tool logins to hand off" onClick={()=>setShowTools(true)}>🔑 Tool access{_toolsProvisioned?" ✓":""}</button>}
               <button className="btn ghost sm" disabled={busy} style={{color:"#b91c1c",borderColor:"#fca5a5"}} onClick={revoke}>Revoke</button>
             </div>
           </div>
+          {_hasTools && <div className="muted" style={{fontSize:11,marginTop:6}}>🔑 Tools to provision: {toolsRequestedList(_toolsReq).map(t=>TOOL_NAME[t]||"Other").join(", ")}{_toolsProvisioned?" — provisioned ✓":" — not yet provisioned"}</div>}
         </div>}
+
+        {showTools && <ToolsProvisionModal client={client} worker_id={worker_id} workerName={workerName} requested={_toolsReq}
+          onClose={()=>setShowTools(false)} onDone={()=>reloadTools()}/>}
 
         <h3 style={{marginBottom:4}}>1 · Agreements</h3>
         {(sigs||[]).length===0? <p className="sub">No signatures yet.</p> :
@@ -10808,9 +10982,11 @@ function OnboardingConfigModal({ client, onClose }){
     const he=c.hire_emails||{};
     setHireEmails({ auto_send:he.auto_send!==false,
       portal_url:he.portal_url||ONB_DEFAULT_HIRE_EMAILS.portal_url,
+      wise_referral_url:he.wise_referral_url||ONB_DEFAULT_HIRE_EMAILS.wise_referral_url,
       hubstaff_install_url:he.hubstaff_install_url||ONB_DEFAULT_HIRE_EMAILS.hubstaff_install_url,
+      welcome:{...ONB_DEFAULT_HIRE_EMAILS.welcome, ...(he.welcome||{})},
       credentials:{...ONB_DEFAULT_HIRE_EMAILS.credentials, ...(he.credentials||{})},
-      welcome:{...ONB_DEFAULT_HIRE_EMAILS.welcome, ...(he.welcome||{})} });
+      tools:{...ONB_DEFAULT_HIRE_EMAILS.tools, ...(he.tools||{})} });
     const rn=c.review_notify||{};
     setReviewNotify({ enabled:rn.enabled!==false, frequency:rn.frequency||"daily", include_deferred:rn.include_deferred!==false });
     setRecipientsRaw((Array.isArray(rn.recipients)?rn.recipients:[]).join(", "));
@@ -10837,9 +11013,11 @@ function OnboardingConfigModal({ client, onClose }){
       signature_methods:{contractor:sigMethods.contractor, countersigner:sigMethods.countersigner},
       hire_emails:{ auto_send:hireEmails.auto_send!==false,
         portal_url:(hireEmails.portal_url||"").trim(),
+        wise_referral_url:(hireEmails.wise_referral_url||"").trim(),
         hubstaff_install_url:(hireEmails.hubstaff_install_url||"").trim(),
+        welcome:{ subject:(hireEmails.welcome&&hireEmails.welcome.subject)||"", html:(hireEmails.welcome&&hireEmails.welcome.html)||"" },
         credentials:{ subject:(hireEmails.credentials&&hireEmails.credentials.subject)||"", html:(hireEmails.credentials&&hireEmails.credentials.html)||"" },
-        welcome:{ subject:(hireEmails.welcome&&hireEmails.welcome.subject)||"", html:(hireEmails.welcome&&hireEmails.welcome.html)||"" } },
+        tools:{ subject:(hireEmails.tools&&hireEmails.tools.subject)||"", html:(hireEmails.tools&&hireEmails.tools.html)||"" } },
       review_notify:{ enabled:reviewNotify.enabled!==false,
         frequency:["daily","weekdays","weekly"].indexOf(reviewNotify.frequency)>=0?reviewNotify.frequency:"daily",
         include_deferred:reviewNotify.include_deferred!==false,
@@ -10961,36 +11139,46 @@ function OnboardingConfigModal({ client, onClose }){
             </div>
 
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"18px 0 0"}}>
-              <h3 style={{margin:0,fontSize:15}}>📧 New-hire emails</h3>
+              <h3 style={{margin:0,fontSize:15}}>📧 Onboarding emails</h3>
             </div>
-            <p className="sub" style={{marginTop:2}}>Sent automatically when a contractor's portal login is created. <b>Needs the email provider (Resend) configured</b> — until then these are saved but not sent.</p>
+            <p className="sub" style={{marginTop:2}}>Sent from your Gmail / Workspace account. Edit the wording below — changes save with the rest of this config.</p>
             <div style={rowStyle}>
-              {chk(hireEmails.auto_send!==false,e=>setHireEmails(s=>({...s,auto_send:e.target.checked})),"Auto-send these on hire")}
+              {chk(hireEmails.auto_send!==false,e=>setHireEmails(s=>({...s,auto_send:e.target.checked})),"Auto-send the welcome on hire")}
               <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:8}}>
-                <label className="muted" style={{flex:1,minWidth:220,fontSize:12}}>Portal link
+                <label className="muted" style={{flex:1,minWidth:200,fontSize:12}}>Portal link
                   <input style={efInp} value={hireEmails.portal_url||""} placeholder="https://portal.abbilabs.com" onChange={e=>setHireEmails(s=>({...s,portal_url:e.target.value}))}/></label>
-                <label className="muted" style={{flex:1,minWidth:220,fontSize:12}}>Hubstaff install link
-                  <input style={efInp} value={hireEmails.hubstaff_install_url||""} placeholder="https://hubstaff.com/download" onChange={e=>setHireEmails(s=>({...s,hubstaff_install_url:e.target.value}))}/></label>
+                <label className="muted" style={{flex:1,minWidth:200,fontSize:12}}>Wise referral link
+                  <input style={efInp} value={hireEmails.wise_referral_url||""} placeholder="https://wise.com/invite/..." onChange={e=>setHireEmails(s=>({...s,wise_referral_url:e.target.value}))}/></label>
               </div>
             </div>
             <div style={rowStyle}>
-              <b style={{fontSize:13}}>1 · Login credentials email</b>
-              <label className="muted" style={{fontSize:12,display:"block",marginTop:6}}>Subject
-                <input style={efInp} value={(hireEmails.credentials&&hireEmails.credentials.subject)||""} onChange={e=>setHireEmails(s=>({...s,credentials:{...s.credentials,subject:e.target.value}}))}/></label>
-              <label className="muted" style={{fontSize:12,display:"block",marginTop:6}}>Body (HTML)
-                <textarea style={{...efInp,minHeight:120,fontFamily:"monospace",fontSize:12}} value={(hireEmails.credentials&&hireEmails.credentials.html)||""} onChange={e=>setHireEmails(s=>({...s,credentials:{...s.credentials,html:e.target.value}}))}/></label>
-              <p className="muted" style={{fontSize:11,margin:"2px 0 0"}}>Merge fields: {"{{name}} · {{email}} · {{password}} · {{portal_url}}"}</p>
-            </div>
-            <div style={rowStyle}>
-              <b style={{fontSize:13}}>2 · Hubstaff welcome email</b>
+              <b style={{fontSize:13}}>1 · Welcome email <span className="muted" style={{fontWeight:400}}>— sent at hire</span></b>
               <label className="muted" style={{fontSize:12,display:"block",marginTop:6}}>Subject
                 <input style={efInp} value={(hireEmails.welcome&&hireEmails.welcome.subject)||""} onChange={e=>setHireEmails(s=>({...s,welcome:{...s.welcome,subject:e.target.value}}))}/></label>
               <label className="muted" style={{fontSize:12,display:"block",marginTop:6}}>Body (HTML)
-                <textarea style={{...efInp,minHeight:120,fontFamily:"monospace",fontSize:12}} value={(hireEmails.welcome&&hireEmails.welcome.html)||""} onChange={e=>setHireEmails(s=>({...s,welcome:{...s.welcome,html:e.target.value}}))}/></label>
-              <p className="muted" style={{fontSize:11,margin:"2px 0 0"}}>Merge fields: {"{{name}} · {{hubstaff_name}} · {{hubstaff_install_url}} · {{work_email}} · {{work_email_block}}"} <span style={{fontStyle:"italic"}}>({"{{work_email_block}}"} = the company-email line, shown only when one is set).</span></p>
+                <textarea style={{...efInp,minHeight:130,fontFamily:"monospace",fontSize:12}} value={(hireEmails.welcome&&hireEmails.welcome.html)||""} onChange={e=>setHireEmails(s=>({...s,welcome:{...s.welcome,html:e.target.value}}))}/></label>
+              <p className="muted" style={{fontSize:11,margin:"2px 0 0"}}>Merge fields: {"{{name}} · {{wise_referral_url}} · {{portal_url}} · {{email}} · {{password}}"}</p>
             </div>
+            <div style={rowStyle}>
+              <b style={{fontSize:13}}>2 · Tool access email <span className="muted" style={{fontWeight:400}}>— sent when you provision tools at completion</span></b>
+              <label className="muted" style={{fontSize:12,display:"block",marginTop:6}}>Subject
+                <input style={efInp} value={(hireEmails.tools&&hireEmails.tools.subject)||""} onChange={e=>setHireEmails(s=>({...s,tools:{...s.tools,subject:e.target.value}}))}/></label>
+              <label className="muted" style={{fontSize:12,display:"block",marginTop:6}}>Body (HTML)
+                <textarea style={{...efInp,minHeight:110,fontFamily:"monospace",fontSize:12}} value={(hireEmails.tools&&hireEmails.tools.html)||""} onChange={e=>setHireEmails(s=>({...s,tools:{...s.tools,html:e.target.value}}))}/></label>
+              <p className="muted" style={{fontSize:11,margin:"2px 0 0"}}>Merge fields: {"{{name}} · {{tools_block}}"} <span style={{fontStyle:"italic"}}>({"{{tools_block}}"} = the tool logins, filled in automatically).</span></p>
+            </div>
+            <details style={{marginBottom:8}}>
+              <summary className="muted" style={{fontSize:12,cursor:"pointer"}}>Password-reset email (used when you re-issue a temp password)</summary>
+              <div style={{...rowStyle,marginTop:6}}>
+                <label className="muted" style={{fontSize:12,display:"block"}}>Subject
+                  <input style={efInp} value={(hireEmails.credentials&&hireEmails.credentials.subject)||""} onChange={e=>setHireEmails(s=>({...s,credentials:{...s.credentials,subject:e.target.value}}))}/></label>
+                <label className="muted" style={{fontSize:12,display:"block",marginTop:6}}>Body (HTML)
+                  <textarea style={{...efInp,minHeight:100,fontFamily:"monospace",fontSize:12}} value={(hireEmails.credentials&&hireEmails.credentials.html)||""} onChange={e=>setHireEmails(s=>({...s,credentials:{...s.credentials,html:e.target.value}}))}/></label>
+                <p className="muted" style={{fontSize:11,margin:"2px 0 0"}}>Merge fields: {"{{name}} · {{email}} · {{password}} · {{portal_url}}"}</p>
+              </div>
+            </details>
             <div style={{display:"flex",gap:8,marginBottom:8}}>
-              <button className="btn ghost sm" onClick={()=>setHireEmails(s=>({...ONB_DEFAULT_HIRE_EMAILS,auto_send:s.auto_send,portal_url:s.portal_url,hubstaff_install_url:s.hubstaff_install_url}))}>Reset email wording to defaults</button>
+              <button className="btn ghost sm" onClick={()=>setHireEmails(s=>({...ONB_DEFAULT_HIRE_EMAILS,auto_send:s.auto_send,portal_url:s.portal_url,wise_referral_url:s.wise_referral_url}))}>Reset email wording to defaults</button>
             </div>
 
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"18px 0 0"}}>
