@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-12 13:59 EDT · 2b74360";
+const BUILD = "2026-06-12 15:04 EDT · 7d99832";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -2222,6 +2222,27 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
           setErrs({email:"A contractor with this email already exists"}); setStep(1);
           setErr(`${[dupe[0].first_name,dupe[0].last_name].filter(Boolean).join(" ")||"Someone"} already uses ${f.email.trim()} — open their profile instead.`);
           setBusy(false); return;
+        }
+      }
+      // NAME-level guard: an active namesake is almost always the SAME person
+      // entered twice (the duplicate this prevents). Distinct people can share a
+      // name, so warn + require an explicit override rather than a hard block.
+      {
+        const fn=f.first_name.trim(), ln=f.last_name.trim();
+        if(fn && ln){
+          const norm=s=>String(s||"").trim().toLowerCase().replace(/\s+/g," ");
+          const {data:nameDupe}=await client.from("workers")
+            .select("id,first_name,middle_name,last_name,email,status")
+            .ilike("first_name",fn).ilike("last_name",ln).limit(5);
+          const hit=(nameDupe||[]).find(d=>norm(d.first_name)===norm(fn)&&norm(d.last_name)===norm(ln));
+          if(hit){
+            const who=[hit.first_name,hit.middle_name,hit.last_name].filter(Boolean).join(" ");
+            if(!(await confirmDanger({
+              title:"Possible duplicate contractor",
+              message:`A contractor named ${who}${hit.email?` (${hit.email})`:""} already exists${hit.status&&hit.status!=="active"?` — currently ${hit.status}`:""}.\n\nThis is usually the same person entered twice. Open their profile instead, or create a second, separate contractor with this name only if they're genuinely a different person.`,
+              confirmWord:"DUPLICATE", confirmLabel:"Create anyway",
+            }))){ setBusy(false); return; }
+          }
         }
       }
       const base={ first_name:f.first_name.trim(), middle_name:f.middle_name.trim()||null, last_name:f.last_name.trim(),
@@ -10821,9 +10842,14 @@ function ToolsProvisionModal({ client, worker_id, workerName, requested, onClose
 
 function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
   const mref=useModalA11y(onClose,{escClose:true}); // read-only viewer: Escape-safe (stack handles nested ReasonPicker/Countersign)
-  const { data:wRows } = useQuery(client, c=>c.from("workers")
+  const { data:wRows, reload:reloadW } = useQuery(client, c=>c.from("workers")
     .select("first_name,middle_name,last_name,email,work_email,mobile,ph_address,permanent_address,address_landmark,postal_code,date_of_birth,emergency_name,emergency_relationship,emergency_mobile,marital_status,education_level,course,year_graduated,school,gcash,paymaya,paypal,wise_tag,profile_extras")
     .eq("id",worker_id).limit(1), [client,worker_id]);
+  // Membership (company/contract/role) — used to build the ProfileModal row shape
+  // so "Edit details" can fix work info (FT/PT, role, company) on this hire.
+  const { data:wcRows, reload:reloadWc } = useQuery(client, c=>c.from("worker_companies")
+    .select("company_id,contract,role,hubstaff_name,status,companies(name)")
+    .eq("worker_id",worker_id).order("status",{ascending:true}).limit(1), [client,worker_id]);
   const { data:sigs, reload:reloadSigs } = useQuery(client, c=>c.from("onboarding_signatures")
     .select("agreement_kind,doc_version,doc_sha256,signed_legal_name,signature_method,signature_data,ip_address,user_agent,device_fingerprint,signed_at,signed_date,status")
     .eq("worker_id",worker_id).order("signed_at"), [client,worker_id]);
@@ -10839,6 +10865,57 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
   const ex=(w.profile_extras&&typeof w.profile_extras==="object")?w.profile_extras:{};
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [revDoc,setRevDoc]=useState(null); const [revErr,setRevErr]=useState(null);
   const [toolsStatus,setToolsStatus]=useState(null); const [showTools,setShowTools]=useState(false);
+  const [showEdit,setShowEdit]=useState(false);     // ProfileModal reuse — edit initial hire details
+  const [resend,setResend]=useState(null);          // null | {email,busy,err,done} — update login + resend
+  const wc=(wcRows||[])[0]||null;
+  // Withdraw the offer: revoke the login + deactivate + email the candidate. The
+  // record stays (use Delete hire to remove it entirely).
+  async function withdrawOffer(){
+    if(!(await confirmDanger({
+      title:`Withdraw ${workerName}'s offer?`,
+      message:"Their portal login is revoked, they're marked ended (removed from active rosters), and they receive a withdrawal email.",
+      consequence:"They can no longer sign in. This does NOT delete their record — use Delete hire for that.",
+      confirmWord:"WITHDRAW", confirmLabel:"Withdraw offer",
+    }))) return;
+    setBusy(true); setMsg("");
+    const {data,error}=await client.functions.invoke("portal-admin",{body:{action:"withdraw_offer",worker_id}});
+    setBusy(false);
+    if(error||(data&&data.error)){ setMsg("Couldn't withdraw: "+((data&&data.error)||await fnErrorMessage(error))); return; }
+    logEvent(client,{action:"withdraw_offer",entity:workerName,detail:{worker_id,emailed:!!(data&&data.emailed&&data.emailed.ok)}});
+    onChange&&onChange(); onClose&&onClose();
+  }
+  // Delete the whole hire (guarded server-side; force destroys signed/uploaded records).
+  async function deleteHire(){
+    setBusy(true);
+    const [sig,doc]=await Promise.all([
+      client.from("onboarding_signatures").select("id",{count:"exact",head:true}).eq("worker_id",worker_id),
+      client.from("documents").select("id",{count:"exact",head:true}).eq("worker_id",worker_id),
+    ]);
+    setBusy(false);
+    const records=(sig.count||0)+(doc.count||0);
+    if(!(await confirmDanger({
+      title:`Delete ${workerName}?`,
+      message:"Permanently removes their profile, onboarding records, documents, uploaded files, and portal login. This CANNOT be undone."+(records>0?`\n\n⚠ Also destroys ${sig.count||0} signed agreement(s) and ${doc.count||0} uploaded document(s).`:""),
+      consequence:"Blocked automatically if they have any payroll history.",
+      confirmWord:"DELETE", confirmLabel:"Delete hire",
+    }))) return;
+    setBusy(true); setMsg("");
+    const {data,error}=await client.functions.invoke("portal-admin",{body:{action:"delete_contractor",worker_id,force:records>0}});
+    setBusy(false);
+    if(error||(data&&data.error)){ setMsg("Couldn't delete: "+((data&&data.error)||await fnErrorMessage(error))); return; }
+    logEvent(client,{action:"delete_contractor",entity:workerName,detail:{worker_id,signatures:sig.count||0,documents:doc.count||0,from:"onboarding"}});
+    onChange&&onChange(); onClose&&onClose();
+  }
+  // Update the login email (if corrected) + issue a fresh temp password + re-send welcome.
+  async function submitResend(){
+    const email=(resend.email||"").trim();
+    setResend(r=>({...r,busy:true,err:""}));
+    const {data,error}=await client.functions.invoke("portal-admin",{body:{action:"update_login_and_resend",worker_id,email:email||undefined}});
+    if(error||(data&&data.error)){ const emsg=(data&&data.error)||("Couldn't update — "+await fnErrorMessage(error)); setResend(r=>({...r,busy:false,err:emsg})); return; }
+    logEvent(client,{action:"update_login_resend",entity:workerName,detail:{worker_id,email_changed:!!(data&&data.email_changed)}});
+    reloadW(); onChange&&onChange();
+    setResend(r=>({...r,busy:false,done:{email:data.email,password:data.password,emailed:data.emailed,changed:!!data.email_changed}}));
+  }
   const reloadTools=()=>client.rpc("get_tools_status",{p_worker_id:worker_id}).then(({data})=>setToolsStatus(data||null));
   useEffect(()=>{ reloadTools(); },[worker_id]); // eslint-disable-line
   const _toolsReq=(toolsStatus&&toolsStatus.requested)||{};
@@ -10901,6 +10978,15 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
         <p className="sub" style={{marginTop:2}}>{w.email}{w.work_email?` · ${w.work_email}`:""}</p>
         {msg && <div className="banner" style={{background:"#fee2e2",borderColor:"#fca5a5"}}>{msg}</div>}
 
+        {/* Hire management — correct the initial offer, re-send, withdraw, or delete. */}
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",margin:"4px 0 10px"}}>
+          <button className="btn ghost sm" disabled={busy} title="Fix name, email, address, FT/PT, role, company" onClick={()=>setShowEdit(true)}>✎ Edit details</button>
+          <button className="btn ghost sm" disabled={busy} title="Correct the login email, issue a fresh temp password, and re-send the welcome" onClick={()=>setResend({email:w.email||"",busy:false,err:"",done:null})}>✉ Update login &amp; resend</button>
+          <span style={{flex:1}}/>
+          <button className="btn ghost sm" disabled={busy} style={{color:"#b45309",borderColor:"#fcd34d"}} title="Rescind the offer and email the candidate" onClick={withdrawOffer}>⊘ Withdraw offer</button>
+          <button className="btn ghost sm" disabled={busy} style={{color:"#b91c1c",borderColor:"#fca5a5"}} title="Permanently delete this hire" onClick={deleteHire}>🗑 Delete hire</button>
+        </div>
+
         {prog && <div style={{background:"#f8fafc",border:"1px solid #e5e7eb",borderRadius:8,padding:"8px 10px",margin:"6px 0"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
             <div style={{fontSize:13}}><b>Stage:</b> {ONB_STAGE_LABEL[prog.current_stage]||prog.current_stage}
@@ -10912,7 +10998,7 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
               <button className="btn ghost sm" disabled={busy} title="Send back to documents" onClick={()=>reopenTo("stage3_docs")}>↺ Stage 3</button>
               {!prog.completed_at && <button className="btn sm" disabled={busy} onClick={markComplete}>✓ Mark complete</button>}
               {_hasTools && <button className="btn ghost sm" disabled={busy} title="Enter the tool logins to hand off" onClick={()=>setShowTools(true)}>🔑 Tool access{_toolsProvisioned?" ✓":""}</button>}
-              <button className="btn ghost sm" disabled={busy} style={{color:"#b91c1c",borderColor:"#fca5a5"}} onClick={revoke}>Revoke</button>
+              <button className="btn ghost sm" disabled={busy} title="Send their onboarding back to Stage 1 (re-sign)" onClick={revoke}>↺ Reset</button>
             </div>
           </div>
           {_hasTools && <div className="muted" style={{fontSize:11,marginTop:6}}>🔑 Tools to provision: {toolsRequestedList(_toolsReq).map(t=>TOOL_NAME[t]||"Other").join(", ")}{_toolsProvisioned?" — provisioned ✓":" — not yet provisioned"}</div>}
@@ -10920,6 +11006,38 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
 
         {showTools && <ToolsProvisionModal client={client} worker_id={worker_id} workerName={workerName} requested={_toolsReq}
           onClose={()=>setShowTools(false)} onDone={()=>reloadTools()}/>}
+
+        {showEdit && <ProfileModal client={client}
+          r={{ w:{id:worker_id, ...w}, workers:{id:worker_id, ...w},
+               company_id: wc?wc.company_id:null, companies:(wc&&wc.companies)?{name:wc.companies.name}:{name:""},
+               contract: wc?wc.contract:"FT", role: wc?wc.role:null, hubstaff_name: wc?wc.hubstaff_name:null, status:"active" }}
+          onClose={()=>setShowEdit(false)} onBillingChange={()=>{}}
+          onSaved={()=>{ reloadW(); reloadWc(); onChange&&onChange(); }}/>}
+
+        {resend && <div className="modal-bg" onClick={()=>!resend.busy&&setResend(null)} style={{zIndex:60}}>
+          <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:480}} role="dialog" aria-modal="true">
+            <h2 style={{marginTop:0}}>Update login &amp; resend</h2>
+            {!resend.done ? <div>
+              <p className="sub">Confirm (or fix) the contractor's email — we'll update their portal login, issue a fresh temporary password, and re-send the welcome with the latest details.</p>
+              <div className="field"><label>Login email</label>
+                <input type="email" value={resend.email} onChange={e=>setResend(r=>({...r,email:e.target.value}))} style={{width:"100%"}} aria-label="Login email"/></div>
+              <p className="muted" style={{fontSize:12,marginTop:6}}>A new temp password is always issued (the old one may have reached the wrong inbox). Fix name / company / rate / contract first via <b>Edit details</b> — those changes are included in the email.</p>
+              {resend.err && <div className="err" style={{fontSize:13,marginTop:6}}>{resend.err}</div>}
+              <div className="actions" style={{marginTop:10}}>
+                <button className="btn ghost" disabled={resend.busy} onClick={()=>setResend(null)}>Cancel</button>
+                <button className="btn" disabled={resend.busy||!(resend.email||"").trim()} onClick={submitResend}>{resend.busy?"Sending…":"Update & resend"}</button>
+              </div>
+            </div> : <div>
+              <div className="banner" style={{background:"#dcfce7",borderColor:"#86efac"}}>✓ {resend.done.changed?"Login email updated and welcome re-sent.":"Welcome re-sent with a fresh password."}{resend.done.emailed&&resend.done.emailed.email_configured===false?" Email isn't configured — share the password below manually.":""}</div>
+              <div className="card" style={{background:"#f8fafc"}}>
+                <div className="row"><span className="muted">Email</span><b>{resend.done.email}</b></div>
+                <div className="row"><span className="muted">New temp password</span><b>{resend.done.password}</b></div>
+              </div>
+              <button className="btn ghost sm" onClick={()=>{ try{navigator.clipboard.writeText("Email: "+resend.done.email+"\nTemp password: "+resend.done.password);}catch(_e){} }}>Copy</button>
+              <div className="actions" style={{marginTop:10}}><button className="btn" onClick={()=>setResend(null)}>Done</button></div>
+            </div>}
+          </div>
+        </div>}
 
         <h3 style={{marginBottom:4}}>1 · Agreements</h3>
         {(sigs||[]).length===0? <p className="sub">No signatures yet.</p> :
