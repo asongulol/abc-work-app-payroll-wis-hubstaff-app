@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-12 10:27 EDT · c3c20de";
+const BUILD = "2026-06-12 13:59 EDT · 2b74360";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -7559,6 +7559,7 @@ function PerContractorSummary({client,companyId,consolidated}){
   const [from,setFrom]=useState(`${yr}-01-01`);
   const [to,setTo]=useState("");
   const [sel,setSel]=useState(()=>new Set());  // selected worker_ids (empty = none chosen)
+  const [openKey,setOpenKey]=useState(null);   // which contractor row is expanded to its per-period statements
   const {data,loading}=useQuery(client,c=>{
     // Page the full payments set — same 1000-row-cap correctness fix as Reports
     // (this drives year-to-date statements, so truncation would under-report).
@@ -7595,8 +7596,10 @@ function PerContractorSummary({client,companyId,consolidated}){
     if(!sel.has(p.worker_id)) return;   // default none selected -> empty until contractors are chosen
     const key=`${p.worker_id}|${p.companies?.name||""}`;
     const g=byWorker[key]||(byWorker[key]={
-      name:fullName(p.workers)||"(unknown)", company:p.companies?.name||"",
-      periods:0, hours:0, gross:0, ha:0, t13:0, lunch:0, bonus:0, misc:0, ded:0, net:0, paid:0});
+      gkey:key, name:fullName(p.workers)||"(unknown)", company:p.companies?.name||"",
+      periods:0, hours:0, gross:0, ha:0, t13:0, lunch:0, bonus:0, misc:0, ded:0, net:0, paid:0,
+      statements:[]});
+    const mi=miscSum(p.misc_items);
     g.periods++;
     g.hours+=Number(p.worked_hours||0);
     g.gross+=Number(p.gross_php||0);
@@ -7604,11 +7607,22 @@ function PerContractorSummary({client,companyId,consolidated}){
     g.t13+=Number(p.thirteenth_month_php||0);
     g.lunch+=Number(p.pdd_lunch_php||0);
     g.bonus+=Number(p.bonus_php||0);
-    g.misc+=miscSum(p.misc_items);
+    g.misc+=mi;
     g.ded+=Number(p.deduction_php||0);
     g.net+=Number(p.net_php||0);
     if(p.status==="sent"||p.status==="reconciled") g.paid+=Number(p.net_php||0);
+    // Keep each underlying pay statement so a contractor's row can expand to the
+    // individual per-period breakdown that makes up the aggregate totals above.
+    g.statements.push({
+      start:p.pay_periods?.period_start||"", end:p.pay_periods?.period_end||"",
+      payDate:p.pay_periods?.pay_date||"", hours:Number(p.worked_hours||0),
+      gross:Number(p.gross_php||0), ha:Number(p.health_allowance_php||0),
+      t13:Number(p.thirteenth_month_php||0), lunch:Number(p.pdd_lunch_php||0),
+      bonus:Number(p.bonus_php||0), misc:mi, ded:Number(p.deduction_php||0),
+      net:Number(p.net_php||0), status:p.status});
   });
+  // Show each contractor's statements newest-first within the expansion.
+  Object.values(byWorker).forEach(g=>g.statements.sort((a,b)=>b.start.localeCompare(a.start)));
   const rows=Object.values(byWorker).sort((a,b)=>a.name.localeCompare(b.name));
   const totNet=rows.reduce((s,r)=>s+r.net,0);
 
@@ -7624,13 +7638,29 @@ function PerContractorSummary({client,companyId,consolidated}){
     downloadCSV(`contractor_summary_${from||"start"}_${to||"latest"}.csv`, [header,...body]);
   }
 
+  // One row per individual pay statement (period × contractor) — the per-period
+  // breakdown behind the aggregate, for anyone who needs statement-level detail.
+  function exportStatements(){
+    const header=["Contractor",...(consolidated?["Company"]:[]),"Period start","Period end","Pay date",
+      "Hours","Gross PHP","Health PHP","13th PHP","Lunch PHP","Bonus PHP","Misc PHP (net)","Perf short PHP","Net PHP","Status"];
+    const body=[];
+    rows.forEach(r=>r.statements.forEach(s=>body.push([r.name,...(consolidated?[r.company]:[]),
+      s.start,s.end,s.payDate,s.hours.toFixed(2),s.gross.toFixed(2),s.ha.toFixed(2),s.t13.toFixed(2),
+      s.lunch.toFixed(2),s.bonus.toFixed(2),s.misc.toFixed(2),s.ded.toFixed(2),s.net.toFixed(2),s.status||""])));
+    downloadCSV(`contractor_statements_${from||"start"}_${to||"latest"}.csv`, [header,...body]);
+  }
+  const stmtCount=rows.reduce((n,r)=>n+r.statements.length,0);
+
   return (
     <div className="card">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
         <div><h2>Contractor Pay Summary</h2>
           <p className="sub">Totals per selected contractor over a date range (by period start). For year-end
             statements, visa/mortgage letters, and quick "how much did we pay X" lookups.</p></div>
-        <button className="btn ghost sm" disabled={!rows.length} onClick={exportCsv}>Export CSV ({rows.length})</button>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          <button className="btn ghost sm" disabled={!rows.length} onClick={exportCsv}>Summary CSV ({rows.length})</button>
+          <button className="btn ghost sm" disabled={!stmtCount} onClick={exportStatements}>Statements CSV ({stmtCount})</button>
+        </div>
       </div>
       <div style={{display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap",margin:"8px 0"}}>
         <div><label style={{fontSize:10,color:"var(--muted)"}}>From (period start)</label><br/>
@@ -7653,9 +7683,13 @@ function PerContractorSummary({client,companyId,consolidated}){
           <th>Periods</th><th>Hours</th><th>Gross ₱</th><th>Misc ₱</th><th>Net ₱</th><th>Paid ₱</th>
         </tr></thead>
         <tbody>
-          {rows.map((r,i)=>(
-            <tr key={i}>
-              <td className="card-title"><b>{r.name}</b></td>{consolidated&&<td data-label="Company" className="muted">{r.company}</td>}
+          {rows.map(r=>{
+            const open=openKey===r.gkey;
+            const nCols=consolidated?8:7;
+            return (
+            <React.Fragment key={r.gkey}>
+            <tr onClick={()=>setOpenKey(open?null:r.gkey)} style={{cursor:"pointer",background:open?"#f1f5f9":undefined}}>
+              <td className="card-title"><span style={{color:"var(--muted)",marginRight:6}}>{open?"▾":"▸"}</span><b>{r.name}</b></td>{consolidated&&<td data-label="Company" className="muted">{r.company}</td>}
               <td data-label="Periods">{r.periods}</td>
               <td data-label="Hours">{r.hours.toFixed(2)}</td>
               <td data-label="Gross ₱">{money(r.gross,"PHP")}</td>
@@ -7663,12 +7697,40 @@ function PerContractorSummary({client,companyId,consolidated}){
               <td data-label="Net ₱"><b>{money(r.net,"PHP")}</b></td>
               <td data-label="Paid ₱" style={r.paid<r.net?{color:"var(--warn)"}:{color:"var(--good)"}}>{money(r.paid,"PHP")}</td>
             </tr>
-          ))}
+            {open && (
+              <tr><td colSpan={nCols} style={{background:"#f8fafc",padding:"8px 10px"}}>
+                <div className="sub" style={{margin:"0 0 6px"}}>Individual pay statements ({r.statements.length}) — each pay period that makes up the totals above.</div>
+                <table className="keep-table"><thead><tr>
+                  <th>Pay period</th><th>Pay date</th><th>Hours</th><th>Gross ₱</th><th>Health ₱</th>
+                  <th>13th ₱</th><th>Lunch ₱</th><th>Bonus ₱</th><th>Misc ₱</th><th>Net ₱</th><th>Status</th>
+                </tr></thead>
+                <tbody>{r.statements.map((s,j)=>{
+                  const isPaid=s.status==="sent"||s.status==="reconciled";
+                  return (
+                  <tr key={j}>
+                    <td>{s.start} → {s.end||"?"}</td>
+                    <td className="muted">{s.payDate||"—"}</td>
+                    <td>{s.hours.toFixed(2)}</td>
+                    <td>{money(s.gross,"PHP")}</td>
+                    <td>{s.ha?money(s.ha,"PHP"):"—"}</td>
+                    <td>{s.t13?money(s.t13,"PHP"):"—"}</td>
+                    <td>{s.lunch?money(s.lunch,"PHP"):"—"}</td>
+                    <td>{s.bonus?money(s.bonus,"PHP"):"—"}</td>
+                    <td style={s.misc<0?{color:"#b91c1c"}:{}}>{s.misc?money(s.misc,"PHP"):"—"}</td>
+                    <td><b>{money(s.net,"PHP")}</b></td>
+                    <td><span className="pill" style={isPaid?{background:"#dcfce7",color:"#065f46"}:{background:"#f3f4f6",color:"var(--muted)"}}>{isPaid?"paid":(s.status||"draft")}</span></td>
+                  </tr>
+                );})}</tbody></table>
+              </td></tr>
+            )}
+            </React.Fragment>
+          );})}
         </tbody>
       </table></div>}
       <p className="muted" style={{fontSize:11,marginTop:6}}>
-        CSV export includes the full breakdown (Health, 13th, Lunch, Bonus, Deductions). The on-screen
-        table is condensed; Gross + Misc + the other components reconcile to Net.</p>
+        Click a contractor to expand their individual pay statements per period. <b>Summary CSV</b> is the
+        condensed per-contractor totals; <b>Statements CSV</b> is one row per pay period (the full breakdown:
+        Health, 13th, Lunch, Bonus, Deductions). Gross + Misc + the other components reconcile to Net.</p>
     </div>
   );
 }
