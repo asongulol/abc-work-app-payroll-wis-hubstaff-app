@@ -591,7 +591,7 @@
    title="Switch to the classic admin design"
    style="position:fixed;left:10px;bottom:10px;z-index:40;font:600 11px/1 Inter,system-ui,sans-serif;color:#5c6677;background:rgba(255,255,255,.92);border:1px solid #e4e8ee;border-radius:999px;padding:6px 11px;text-decoration:none;box-shadow:0 1px 2px rgba(20,35,59,.08);opacity:.7">↩ Classic view</a>
 <script type="text/babel" data-type="module">
-const { useState, useEffect, useCallback } = React;
+const { useState, useEffect, useCallback, useMemo } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
 const BUILD = "2026-06-11 21:45 EDT · 81bb6a0";
 // Self-update: on load, compare the running build to the deployed version.txt
@@ -2419,18 +2419,23 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
       .select("worker_id,status,companies(name,kind)")
       .eq("status", "active"),
     [client, rosterNonce]);
-  const clientsByWorker = {};
-  (clientLinkData || []).forEach(l => {
-    // keep only CLIENT engagements — skip the employer link (the payroll home)
-    if (!l.worker_id || !l.companies || l.companies.kind !== "client") return;
-    (clientsByWorker[l.worker_id] = clientsByWorker[l.worker_id] || []).push(l.companies.name);
-  });
-  Object.values(clientsByWorker).forEach(a => a.sort((x, y) => x.localeCompare(y)));
+  // Build the worker→client-names map once per clientLinkData fetch (not on every
+  // render/keystroke — the filter box below re-renders this whole component).
+  const clientsByWorker = useMemo(() => {
+    const m = {};
+    (clientLinkData || []).forEach(l => {
+      // keep only CLIENT engagements — skip the employer link (the payroll home)
+      if (!l.worker_id || !l.companies || l.companies.kind !== "client") return;
+      (m[l.worker_id] = m[l.worker_id] || []).push(l.companies.name);
+    });
+    Object.values(m).forEach(a => a.sort((x, y) => x.localeCompare(y)));
+    return m;
+  }, [clientLinkData]);
 
   const [selected, setSelected] = useState(null);
   const [showInactive, setShowInactive] = useState(false);
   const [busyId, setBusyId] = useState(null);
-  const allRows = (data || []).filter(r => r.workers);
+  const allRows = useMemo(() => (data || []).filter(r => r.workers), [data]);
   // Cross-tab profile open: another tab called openContractor(workerId) — find
   // and select the worker's row so the profile modal opens. Show inactive in
   // case the target is inactive (otherwise the row would be hidden).
@@ -2454,18 +2459,23 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
     /* eslint-disable-next-line */
   },[pendingWorkerId, allRows.length]);
   const isActive = r => (r.workers.status==="active") && (r.status==="active");
-  const visible = showInactive ? allRows : allRows.filter(isActive);
-  const inactiveCount = allRows.length - allRows.filter(isActive).length;
-  // flatten searchable fields for sort/filter. _company holds the contractor's
-  // CLIENT engagement(s) (what the "Client" column shows / filters / sorts on),
-  // NOT the employer the roster rows are pinned to.
-  const flat = visible.map(r=>{
-    const clients=clientsByWorker[r.workers.id]||[];
-    return {...r,
-      _name:fullName(r.workers), _clients:clients,
-      _company:clients.join(", "), _role:r.role||"",
-      _method:r.workers.payout_method||"", _status:isActive(r)?"active":"inactive"};
-  });
+  // Single pass over allRows: partition active/inactive once (was three passes),
+  // then flatten the visible rows' searchable fields for sort/filter. _company
+  // holds the contractor's CLIENT engagement(s) (what the "Client" column shows /
+  // filters / sorts on), NOT the employer the roster rows are pinned to. Memoized
+  // so typing in the filter box doesn't re-derive the whole roster each keystroke.
+  const { flat, inactiveCount } = useMemo(() => {
+    const active = allRows.filter(isActive);
+    const visible = showInactive ? allRows : active;
+    const flat = visible.map(r=>{
+      const clients=clientsByWorker[r.workers.id]||[];
+      return {...r,
+        _name:fullName(r.workers), _clients:clients,
+        _company:clients.join(", "), _role:r.role||"",
+        _method:r.workers.payout_method||"", _status:isActive(r)?"active":"inactive"};
+    });
+    return { flat, inactiveCount: allRows.length - active.length };
+  }, [allRows, showInactive, clientsByWorker]);
   const {rows, Th, q, setQ}=useSortFilter(flat,{
     name:r=>r._name, company:r=>r._company, role:r=>r._role,
     contract:r=>r.contract, method:r=>r._method, status:r=>r._status,
@@ -10230,8 +10240,11 @@ function AuditLog({client,companyId,consolidated}){
     if(to)   q=q.lte("created_at",to+"T23:59:59.999Z");
     return q;
   },[client,companyId,consolidated,from,to]);
-  const {rows,Th,q,setQ}=useSortFilter((data||[]).map(r=>({...r,
-    _label:AUDIT_LABELS[r.action]||r.action, _when:r.created_at})),{
+  // Decorate rows once per fetch, not on every keystroke (the filter box below
+  // re-renders this component, and this list can be up to 500 rows).
+  const decorated=useMemo(()=>(data||[]).map(r=>({...r,
+    _label:AUDIT_LABELS[r.action]||r.action, _when:r.created_at})),[data]);
+  const {rows,Th,q,setQ}=useSortFilter(decorated,{
     when:r=>r._when, action:r=>r._label, entity:r=>r.entity, actor:r=>r.actor,
   },["_label","entity","actor"]);
   function exportCsv(){
@@ -11225,19 +11238,23 @@ function OnboardingAdmin({ client, companyId, consolidated, active, onContractor
     .order("updated_at",{ascending:false}), [client]);
   const { data:pendDocs, reload:reloadPend } = useQuery(client, c=>c.from("documents")
     .select("worker_id,kind,side,review_status,created_at").in("kind",ONB_DOC_KINDS), [client]);
-  const pendBy={}, deferBy={};
   // Count only the LATEST document per (worker,kind,side): a stale deferred /
   // needs-replacement row is superseded once the contractor re-uploads, so it
-  // no longer counts as pending review or an open follow-up.
-  const _latestDoc={};
-  (pendDocs||[]).forEach(d=>{ const k=d.worker_id+"|"+d.kind+"|"+(d.side||""); const at=d.created_at||"";
-    if(!_latestDoc[k]||at>_latestDoc[k].at) _latestDoc[k]={status:d.review_status,at,worker_id:d.worker_id}; });
-  Object.values(_latestDoc).forEach(v=>{ if(v.status==="deferred") deferBy[v.worker_id]=(deferBy[v.worker_id]||0)+1;
-    else if(v.status==="pending") pendBy[v.worker_id]=(pendBy[v.worker_id]||0)+1; });
-  const all=(progs||[]).map(p=>{ const w=p.workers||{}; return {...p,
+  // no longer counts as pending review or an open follow-up. Memoized per fetch
+  // so the filter box below doesn't re-aggregate every keystroke.
+  const { pendBy, deferBy } = useMemo(()=>{
+    const pendBy={}, deferBy={}, _latestDoc={};
+    (pendDocs||[]).forEach(d=>{ const k=d.worker_id+"|"+d.kind+"|"+(d.side||""); const at=d.created_at||"";
+      if(!_latestDoc[k]||at>_latestDoc[k].at) _latestDoc[k]={status:d.review_status,at,worker_id:d.worker_id}; });
+    Object.values(_latestDoc).forEach(v=>{ if(v.status==="deferred") deferBy[v.worker_id]=(deferBy[v.worker_id]||0)+1;
+      else if(v.status==="pending") pendBy[v.worker_id]=(pendBy[v.worker_id]||0)+1; });
+    return { pendBy, deferBy };
+  }, [pendDocs]);
+  const all=useMemo(()=>(progs||[]).map(p=>{ const w=p.workers||{}; return {...p,
     _name:[w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ")||w.email||p.worker_id,
-    _email:w.email||"", _pending:pendBy[p.worker_id]||0, _deferred:deferBy[p.worker_id]||0, _pct:onbPct(p) }; });
-  const visible=all.filter(r=> showDone || !r.completed_at || r._pending>0 || r._deferred>0 );
+    _email:w.email||"", _pending:pendBy[p.worker_id]||0, _deferred:deferBy[p.worker_id]||0, _pct:onbPct(p) }; }),
+    [progs,pendBy,deferBy]);
+  const visible=useMemo(()=>all.filter(r=> showDone || !r.completed_at || r._pending>0 || r._deferred>0 ),[all,showDone]);
   // count from the pending docs directly so a worker with a pending doc but no
   // onboarding_progress row still gets counted (orphans = uploaded outside onboarding).
   const progIds=new Set((progs||[]).map(p=>p.worker_id));
