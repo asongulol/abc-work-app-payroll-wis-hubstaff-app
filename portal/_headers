@@ -19,11 +19,11 @@
   Referrer-Policy: no-referrer
   Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://esm.sh https://challenges.cloudflare.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: https: blob:; font-src 'self' data: https://cdnjs.cloudflare.com; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.open-meteo.com https://esm.sh https://challenges.cloudflare.com https://cloudflareinsights.com; form-action 'self'; frame-src 'self' https://challenges.cloudflare.com
 
-# The portal shell is ONE HTML file — use no-cache (NOT no-store): the browser
-# may store the body but MUST revalidate every load, so the ETag yields a cheap
-# 304 on an unchanged shell and a fresh 200 after a deploy — without re-downloading
-# the whole file each visit. (The version.txt poll covers long-lived open tabs.)
+# The portal shell is ONE HTML file — use no-store (NOT no-cache): the browser must
+# fetch fresh every load and never restore a stale back/forward-cache (bfcache)
+# snapshot (bfcache ignores no-cache — the "keeps showing the old build" bug).
+# no-store also disables bfcache. (The version.txt poll auto-reloads open tabs.)
 /
-  Cache-Control: no-cache
+  Cache-Control: no-store
 /index.html
-  Cache-Control: no-cache
+  Cache-Control: no-store

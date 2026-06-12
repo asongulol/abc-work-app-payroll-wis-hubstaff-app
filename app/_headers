@@ -23,14 +23,16 @@
   Cache-Control: no-cache
 
 # The app shell is ONE HTML file (everything else loads from CDNs at runtime).
-# Use no-cache (NOT no-store): the browser may store the body but MUST revalidate
-# with the origin on every load. With the ETag Cloudflare sends, an unchanged
-# shell returns a cheap 304 (~0 bytes) and a changed shell returns a fresh 200 —
-# same deploy-freshness as no-store, without re-downloading ~700 KB every visit.
-# (The version.txt poll still covers the long-lived-open-tab case.)
+# no-store (NOT no-cache): the browser must NEVER serve a stored copy — it fetches
+# fresh from the origin on every load. We switched from no-cache because no-cache
+# still lets the back/forward cache (bfcache) restore a stale in-memory snapshot
+# (bfcache ignores no-cache), which was the "browser keeps showing the old build"
+# bug. no-store also disables bfcache. The ~800 KB re-download per load is an
+# acceptable cost for an internal app that must always be current; the version.txt
+# poll additionally auto-reloads long-open tabs.
 /
-  Cache-Control: no-cache
+  Cache-Control: no-store
 /index.html
-  Cache-Control: no-cache
+  Cache-Control: no-store
 /legacy.html
-  Cache-Control: no-cache
+  Cache-Control: no-store

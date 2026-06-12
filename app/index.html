@@ -593,21 +593,31 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-12 17:10 EDT · 291f1b9";
+const BUILD = "2026-06-12 17:23 EDT · ff1a4ce";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
-(async function(){
-  try{
-    // never interrupt an OAuth callback — its code/token lives in the URL.
-    if(/access_token=|[?&](code|error)=/.test(location.hash + "&" + location.search)) return;
-    const res = await fetch("version.txt?_=" + Date.now(), { cache:"no-store" });
-    if(!res.ok) return;
-    const latest = (await res.text()).trim();
-    if(!latest || latest === BUILD) return;                 // already current
-    if(!/[?&]_v=/.test(location.search))                    // auto-reload once (loop-safe)
-      location.replace(location.pathname + "?_v=" + encodeURIComponent(latest));
-  }catch(_e){ /* offline / blocked — ignore */ }
+(function(){
+  async function checkUpdate(){
+    try{
+      // never interrupt an OAuth callback — its code/token lives in the URL.
+      if(/access_token=|[?&](code|error)=/.test(location.hash + "&" + location.search)) return;
+      const res = await fetch("version.txt?_=" + Date.now(), { cache:"no-store" });
+      if(!res.ok) return;
+      const latest = (await res.text()).trim();
+      if(!latest || latest === BUILD) return;                 // already current
+      // Loop-safe: reload only if we're not already on THIS build's buster. (The
+      // old guard checked merely for the PRESENCE of _v=, so it stopped updating
+      // after the first reload — that's why long-open tabs went stale.)
+      if(location.search.indexOf("_v=" + encodeURIComponent(latest)) === -1)
+        location.replace(location.pathname + "?_v=" + encodeURIComponent(latest));
+    }catch(_e){ /* offline / blocked — ignore */ }
+  }
+  checkUpdate();
+  // Re-check when the tab is refocused/reopened, so an open tab picks up a new
+  // deploy without a manual refresh.
+  document.addEventListener("visibilitychange", function(){ if(!document.hidden) checkUpdate(); });
+  window.addEventListener("focus", checkUpdate);
 })();
 // Admin: set a contractor's single daily shift (PHT). Drives the portal's
 // start/end mood check-ins. Self-contained — fetches + saves on its own.
