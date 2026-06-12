@@ -29,8 +29,10 @@ if [ -n "$staged_csv" ]; then
 fi
 
 # 2) Scan the staged diff content for secret-looking strings.
-#    Only added lines (+) are scanned.
-added="$(git diff --cached --no-color -U0 | grep -E '^\+' | grep -vE '^\+\+\+' || true)"
+#    Only added lines (+) are scanned. Exclude this scanner and the hook files —
+#    they legitimately contain the very keywords (service_role, token, password…)
+#    we search for, so scanning them would false-positive on their own patterns.
+added="$(git diff --cached --no-color -U0 -- . ':(exclude)tools/check-secrets.sh' ':(exclude)tools/hooks' | grep -E '^\+' | grep -vE '^\+\+\+' || true)"
 
 # Patterns: provider-specific + generic high-entropy assignments.
 patterns=(
