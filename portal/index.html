@@ -379,8 +379,45 @@ function PhoneInput({ value, onChange, defaultCountry="PH", style, inputStyle, p
   );
 }
 
+// ---- Email: shared input with common-domain autocomplete -------------------
+// Domains ordered by approximate global mailbox count: Gmail is far ahead, then
+// the big consumer providers (Microsoft's Outlook/Hotmail, Yahoo, Apple), then
+// large legacy/regional ones. Pass `work` to pin the company domains to the front
+// (work-email fields), or `pin` to supply your own front-of-list domains.
+const EMAIL_DOMAINS = [
+  "gmail.com","yahoo.com","hotmail.com","outlook.com","icloud.com",
+  "aol.com","proton.me","gmx.com","yandex.com","live.com","msn.com","mail.com",
+];
+const WORK_EMAIL_DOMAINS = ["123babytalks.com","abckidsny.com"];
+// Build `local@domain` completions from what's typed. Once a domain is started
+// after "@", narrow to domains that begin with it; cap the list so it stays tidy.
+function emailSuggestions(value, domains){
+  const v=String(value||"");
+  const at=v.indexOf("@");
+  const local=(at>=0 ? v.slice(0,at) : v).trim();
+  if(!local) return [];
+  const typed=(at>=0 ? v.slice(at+1) : "").toLowerCase();
+  return domains.filter(d=> !typed || d.startsWith(typed)).slice(0,8).map(d=>`${local}@${d}`);
+}
+// Drop-in for <input type="email">. Emits the raw string via onChange(value) and
+// offers domain completions through a native <datalist> (degrades to a plain
+// field where datalist is unsupported).
+function EmailInput({ value, onChange, work, pin, style, placeholder, ...rest }){
+  const id=React.useId();
+  const domains=[...new Set([...(pin || (work ? WORK_EMAIL_DOMAINS : [])), ...EMAIL_DOMAINS])];
+  const opts=emailSuggestions(value, domains);
+  return (
+    <>
+      <input type="email" inputMode="email" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+        list={id} value={value||""} placeholder={placeholder} style={style}
+        onChange={e=>onChange(e.target.value)} {...rest}/>
+      <datalist id={id}>{opts.map(o=><option key={o} value={o}/>)}</datalist>
+    </>
+  );
+}
+
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-11 21:45 EDT · 81bb6a0";
+const BUILD = "2026-06-11 23:36 EDT · 772d76a";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -665,7 +702,7 @@ function Login({ client }){
       </div>
       <form className="card" onSubmit={signIn}>
         <label className="sub">Email</label>
-        <input type="email" autoComplete="username" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/>
+        <EmailInput autoComplete="username" value={email} onChange={setEmail} placeholder="you@example.com"/>
         <label className="sub">Password</label>
         <input type="password" autoComplete="current-password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="••••••••"/>
         {TURNSTILE_SITE_KEY && <div ref={capRef} style={{marginTop:10,display:"flex",justifyContent:"center"}}></div>}
@@ -972,6 +1009,8 @@ function ProfileView({ client, session, onSignOut }){
                   ? <select value={form[f.k]||""} onChange={e=>set(f.k,e.target.value)}><option value="">Select…</option>{f.opts.map(o=><option key={o} value={o}>{o}</option>)}{form[f.k]&&!f.opts.includes(form[f.k])&&<option value={form[f.k]}>{form[f.k]}</option>}</select>
                   : f.type==="tel"
                       ? <PhoneInput value={form[f.k]||""} onChange={v=>set(f.k,v)} defaultCountry="PH"/>
+                  : f.type==="email"
+                      ? <EmailInput work={f.work} value={form[f.k]||""} onChange={v=>set(f.k,v)} placeholder={f.ph||""}/>
                       : <input type={f.type||"text"} value={form[f.k]||""} disabled={f.sameAs&&sameAddr} onChange={e=>set(f.k,e.target.value)} placeholder={f.wise?"@yourtag":""}/>)
               : <div style={{padding:"6px 0",fontSize:15}}>{(f.type==="tel"?formatPhone(curVal(f)):curVal(f))||<span className="sub">—</span>}</div>}
             {f.wise && isEditable("wise_tag") &&
@@ -1844,6 +1883,8 @@ function Stage2Profile({ client, onAdvance }){
             ? <select value={form[d.k]||""} onChange={e=>set(d.k,e.target.value)} aria-invalid={errs[d.k]?"true":"false"}><option value="">Select…</option>{d.opts.map(o=><option key={o} value={o}>{o}</option>)}{form[d.k]&&!d.opts.includes(form[d.k])&&<option value={form[d.k]}>{form[d.k]}</option>}</select>
             : d.type==="tel"
               ? <PhoneInput value={form[d.k]||""} onChange={v=>set(d.k,v)} defaultCountry="PH"/>
+            : d.type==="email"
+              ? <EmailInput work={d.work} value={form[d.k]||""} onChange={v=>set(d.k,v)} aria-invalid={errs[d.k]?"true":"false"}/>
               : <input type={d.type||"text"} value={form[d.k]||""} onChange={e=>set(d.k,e.target.value)}
                 aria-invalid={errs[d.k]?"true":"false"} placeholder={d.wise?"@yourtag":""}/>}
           {d.wise &&

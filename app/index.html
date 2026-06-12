@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-11 21:45 EDT · 81bb6a0";
+const BUILD = "2026-06-11 23:36 EDT · 772d76a";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -964,6 +964,43 @@ function PhoneInput({ value, onChange, defaultCountry="US", style, inputStyle, p
   );
 }
 
+// ---- Email: shared input with common-domain autocomplete -------------------
+// Domains ordered by approximate global mailbox count: Gmail is far ahead, then
+// the big consumer providers (Microsoft's Outlook/Hotmail, Yahoo, Apple), then
+// large legacy/regional ones. Pass `work` to pin the company domains to the front
+// (work-email fields), or `pin` to supply your own front-of-list domains.
+const EMAIL_DOMAINS = [
+  "gmail.com","yahoo.com","hotmail.com","outlook.com","icloud.com",
+  "aol.com","proton.me","gmx.com","yandex.com","live.com","msn.com","mail.com",
+];
+const WORK_EMAIL_DOMAINS = ["123babytalks.com","abckidsny.com"];
+// Build `local@domain` completions from what's typed. Once a domain is started
+// after "@", narrow to domains that begin with it; cap the list so it stays tidy.
+function emailSuggestions(value, domains){
+  const v=String(value||"");
+  const at=v.indexOf("@");
+  const local=(at>=0 ? v.slice(0,at) : v).trim();
+  if(!local) return [];
+  const typed=(at>=0 ? v.slice(at+1) : "").toLowerCase();
+  return domains.filter(d=> !typed || d.startsWith(typed)).slice(0,8).map(d=>`${local}@${d}`);
+}
+// Drop-in for <input type="email">. Emits the raw string via onChange(value) and
+// offers domain completions through a native <datalist> (degrades to a plain
+// field where datalist is unsupported).
+function EmailInput({ value, onChange, work, pin, style, placeholder, ...rest }){
+  const id=React.useId();
+  const domains=[...new Set([...(pin || (work ? WORK_EMAIL_DOMAINS : [])), ...EMAIL_DOMAINS])];
+  const opts=emailSuggestions(value, domains);
+  return (
+    <>
+      <input type="email" inputMode="email" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+        list={id} value={value||""} placeholder={placeholder} style={style}
+        onChange={e=>onChange(e.target.value)} {...rest}/>
+      <datalist id={id}>{opts.map(o=><option key={o} value={o}/>)}</datalist>
+    </>
+  );
+}
+
 // Round contractor photo, or an initials circle when there's no photo.
 function Avatar({src,name,size=36}){
   const initials=(name||"").trim().split(/\s+/).map(x=>x[0]).filter(Boolean).slice(0,2).join("").toUpperCase()||"?";
@@ -1311,8 +1348,8 @@ function AdminsModal({ client, meId, onClose }) {
         </div>
         <p className="sub">Add anyone by their work email — even before they've signed in. They get access the moment they first sign in with Google (allowed domains: <b>abckidsny.com</b>, <b>abbilabs.com</b>). <b>Owners</b> manage this list and see all companies; <b>admins</b> see only the companies you assign below (and nothing until you assign at least one).</p>
         <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",margin:"8px 0"}}>
-          <input style={{flex:1,minWidth:200,padding:"6px 8px"}} type="email" placeholder="name@abckidsny.com" value={email}
-                 onChange={e=>setEmail(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter"&&!busy) add(); }} />
+          <EmailInput pin={["abckidsny.com","abbilabs.com"]} style={{flex:1,minWidth:200,padding:"6px 8px"}} placeholder="name@abckidsny.com" value={email}
+                 onChange={setEmail} onKeyDown={e=>{ if(e.key==="Enter"&&!busy) add(); }} />
           <select value={role} onChange={e=>setRole(e.target.value)}><option value="admin">Admin</option><option value="owner">Owner</option></select>
           <button className="btn sm" disabled={busy} onClick={add}>{busy?"…":"Add"}</button>
         </div>
@@ -2255,7 +2292,9 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
   const field=(label,k,type,ph)=>(
     <div style={{margin:"6px 0"}}>
       <label className="muted" style={{fontSize:12}}>{label}</label>
-      <input style={inp} type={type||"text"} value={f[k]} placeholder={ph||""} onChange={e=>set(k,e.target.value)} aria-invalid={errs[k]?"true":"false"}/>
+      {type==="email"
+        ? <EmailInput style={inp} value={f[k]} placeholder={ph||""} onChange={v=>set(k,v)} aria-invalid={errs[k]?"true":"false"}/>
+        : <input style={inp} type={type||"text"} value={f[k]} placeholder={ph||""} onChange={e=>set(k,e.target.value)} aria-invalid={errs[k]?"true":"false"}/>}
       {errs[k] && <div style={{color:"#b91c1c",fontSize:12}}>{errs[k]}</div>}
     </div>
   );
@@ -3234,8 +3273,8 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
             </select></Field>
         </div>
         <div className="row">
-          <div className="field"><label>Personal email</label><input style={inp} type="email" value={f.email} onChange={e=>set("email",e.target.value)}/></div>
-          <div className="field"><label>Work email <span className="muted" style={{fontWeight:400}}>(@abckidsny.com)</span></label><input style={inp} type="email" value={f.work_email} onChange={e=>set("work_email",e.target.value)} placeholder="name@abckidsny.com"/></div>
+          <div className="field"><label>Personal email</label><EmailInput style={inp} value={f.email} onChange={v=>set("email",v)}/></div>
+          <div className="field"><label>Work email <span className="muted" style={{fontWeight:400}}>(@abckidsny.com)</span></label><EmailInput work style={inp} value={f.work_email} onChange={v=>set("work_email",v)} placeholder="name@abckidsny.com"/></div>
           <div className="field"><label>Mobile <span className="muted" style={{fontWeight:400}}>(personal)</span></label><PhoneInput value={f.mobile} onChange={v=>set("mobile",v)} defaultCountry="PH"/></div>
           <div className="field"><label>Work number</label><PhoneInput value={f.work_number} onChange={v=>set("work_number",v)} defaultCountry="PH"/></div>
           <div className="field"><label>Ext.</label><input style={inp} value={f.work_extension} onChange={e=>set("work_extension",e.target.value)} placeholder="x123"/></div>
@@ -12005,7 +12044,7 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
                 </div>
                 <div className="row">
                   <div className="field" style={{minWidth:0,flex:"2 1 0"}}><label>Email</label>
-                    <input type="email" value={k.email} onChange={e=>setContact(i,"email",e.target.value)} style={{width:"100%"}}/></div>
+                    <EmailInput value={k.email} onChange={v=>setContact(i,"email",v)} style={{width:"100%"}}/></div>
                   <div className="field" style={{minWidth:0,flex:"2 1 0"}}><label>Mobile</label>
                     <PhoneInput value={k.mobile} onChange={v=>setContact(i,"mobile",v)} defaultCountry="US"/></div>
                 </div>
