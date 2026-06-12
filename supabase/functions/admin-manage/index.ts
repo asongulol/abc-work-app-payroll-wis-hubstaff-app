@@ -12,6 +12,7 @@
 //        -> { ok, user_id, email, role, provisioned }   provisioned=true if a new auth user was pre-created
 //   { action: "set_role", user_id, role }
 //        -> { ok }
+//   { action: "update_admin", user_id, name?, can_countersign? }
 //   { action: "remove_admin", user_id }
 //        -> { ok }
 // ---------------------------------------------------------------------------
@@ -132,6 +133,26 @@ Deno.serve(async (req) => {
       await fetch(`${SB}/rest/v1/audit_log`, {
         method: "POST", headers: { ...svc, Prefer: "return=minimal" },
         body: JSON.stringify({ action: "admin.role_changed", actor: caller.email ?? null, entity: user_id, detail: { user_id, role } }),
+      });
+      return json({ ok: true });
+    }
+
+    // ---- update_admin (display name + countersign permission) ----
+    if (body.action === "update_admin") {
+      const user_id = String(body.user_id || "").trim();
+      if (!user_id) return json({ error: "user_id required" }, 400);
+      const patch: Record<string, unknown> = {};
+      if (typeof body.name === "string") patch.name = body.name.trim() || null;
+      if (typeof body.can_countersign === "boolean") patch.can_countersign = body.can_countersign;
+      if (!Object.keys(patch).length) return json({ error: "nothing to update" }, 400);
+      const upd = await fetch(`${SB}/rest/v1/admin_users?user_id=eq.${user_id}`, {
+        method: "PATCH", headers: { ...svc, Prefer: "return=minimal" },
+        body: JSON.stringify(patch),
+      });
+      if (!upd.ok) return json({ error: `couldn't update admin: ${await upd.text()}` }, 500);
+      await fetch(`${SB}/rest/v1/audit_log`, {
+        method: "POST", headers: { ...svc, Prefer: "return=minimal" },
+        body: JSON.stringify({ action: "admin.updated", actor: caller.email ?? null, entity: user_id, detail: { user_id, ...patch } }),
       });
       return json({ ok: true });
     }

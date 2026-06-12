@@ -417,7 +417,7 @@ function EmailInput({ value, onChange, work, pin, style, placeholder, ...rest })
 }
 
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-12 15:52 EDT · f03d8d6";
+const BUILD = "2026-06-12 16:23 EDT · 565293c";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -1641,8 +1641,9 @@ function monthlyFromPeriod(rate){
 }
 function mergeAgreement(body, v){
   const empRaw=(v&&v.employment_type)||"";
-  const empPhrase={full_time:"Full-time (40 hours/week)",part_time:"Part-time (20 hours/week)"}[empRaw]||empRaw||"";
-  const empHours=empRaw==="full_time"?"40":empRaw==="part_time"?"20":"";
+  const empLabel=empRaw==="full_time"?"Full-time":empRaw==="part_time"?"Part-time":(empRaw||"");
+  const empHours=(v&&v.hours_per_week!=null&&String(v.hours_per_week).trim()!=="")?String(v.hours_per_week).trim():(empRaw==="full_time"?"40":empRaw==="part_time"?"20":"");
+  const empPhrase=empLabel?(empLabel+(empHours?` (${empHours} hours/week)`:"")):"";
   const sched=(v&&v.schedule)||"";
   const s={ contractor_name:(v&&v.contractor_name)||"", rate:(v&&v.rate)||"________",
     monthly_rate:(v&&v.monthly_rate)||"________", company_name:(v&&v.company_name)||"________",
@@ -1676,8 +1677,8 @@ function AgreementViewer({ client, agreement, onClose, onSigned }){
       const isIc = agreement.kind==="ic_agreement";
       const [{data:tpl},{data:inst},{data:ic},{data:w}] = await Promise.all([
         client.from("agreement_templates").select("body").eq("kind",agreement.kind).maybeSingle(),
-        client.from("onboarding_agreements").select("f_rate,f_start_date,f_position,f_company_name,f_employment_type,f_schedule,countersigner_name,addendum_type,addendum_text").eq("agreement_kind",agreement.kind).maybeSingle(),
-        isIc ? Promise.resolve({data:null}) : client.from("onboarding_agreements").select("f_rate,f_start_date,f_position,f_company_name,f_employment_type,f_schedule,countersigner_name").eq("agreement_kind","ic_agreement").maybeSingle(),
+        client.from("onboarding_agreements").select("f_rate,f_start_date,f_position,f_company_name,f_employment_type,f_hours_per_week,f_schedule,countersigner_name,addendum_type,addendum_text").eq("agreement_kind",agreement.kind).maybeSingle(),
+        isIc ? Promise.resolve({data:null}) : client.from("onboarding_agreements").select("f_rate,f_start_date,f_position,f_company_name,f_employment_type,f_hours_per_week,f_schedule,countersigner_name").eq("agreement_kind","ic_agreement").maybeSingle(),
         client.from("workers").select("first_name,middle_name,last_name,ph_address,hire_date").maybeSingle(),
       ]);
       if(!alive) return;
@@ -1692,7 +1693,7 @@ function AgreementViewer({ client, agreement, onClose, onSigned }){
         contractor_name: w?fullName(w):"", rate:pick("f_rate"), monthly_rate:monthlyFromPeriod(pick("f_rate")),
         company_name:pick("f_company_name"), start_date:pick("f_start_date")||(w&&w.hire_date)||"",
         position:pick("f_position"), countersigner_name:(inst&&inst.countersigner_name)||(ic&&ic.countersigner_name)||"",
-        employment_type:pick("f_employment_type"), schedule:pick("f_schedule"),
+        employment_type:pick("f_employment_type"), hours_per_week:pick("f_hours_per_week"), schedule:pick("f_schedule"),
         contractor_address: w&&w.ph_address, addendum: agAddendum(inst&&inst.addendum_type, inst&&inst.addendum_text), today });
       setText(merged);
     })();

@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-12 15:52 EDT · f03d8d6";
+const BUILD = "2026-06-12 16:23 EDT · 565293c";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -1261,8 +1261,9 @@ function AdminsModal({ client, meId, onClose }) {
   const [email,setEmail]=useState(""); const [role,setRole]=useState("admin");
   const [inviteCos,setInviteCos]=useState([]);   // company_ids to grant on invite (admins only)
   const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [note,setNote]=useState("");
+  const [nameEdit,setNameEdit]=useState({});   // user_id -> in-progress name edit
   function load(){
-    client.from("admin_users").select("user_id,email,role,added_at").order("added_at")
+    client.from("admin_users").select("user_id,email,role,name,can_countersign,added_at").order("added_at")
       .then(({data,error})=>{ if(error){ setMsg("Couldn't load the admin list: "+error.message); setRows([]); } else setRows(data||[]); });
     client.from("pending_admins").select("email,role,added_at").order("added_at")
       .then(({data})=>setPending(data||[]));
@@ -1332,6 +1333,8 @@ function AdminsModal({ client, meId, onClose }) {
     setEmail(""); setRole("admin"); setInviteCos([]); load();
   }
   async function changeRole(user_id, newRole){ if(await call("set_role",{ user_id, role:newRole })) load(); }
+  async function saveName(user_id){ const nm=nameEdit[user_id]??""; if(await call("update_admin",{ user_id, name:nm })){ setNameEdit(x=>{const n={...x};delete n[user_id];return n;}); load(); } }
+  async function toggleCountersign(user_id, val){ if(await call("update_admin",{ user_id, can_countersign:val })) load(); }
   async function remove(user_id, em){
     if(!window.confirm(user_id ? `Remove admin access for ${em}? They'll keep their Google account but lose access to this app.` : `Cancel the pending invite for ${em}?`)) return;
     if(await call("remove_admin", user_id ? { user_id } : { email: em })){
@@ -1386,6 +1389,16 @@ function AdminsModal({ client, meId, onClose }) {
                           : <button className="btn ghost sm" disabled={busy} onClick={()=>changeRole(a.user_id,"admin")}>Make admin</button>}
                         <button className="btn ghost sm" disabled={busy} onClick={()=>remove(a.user_id,a.email)}>Remove</button>
                       </div>}
+                </div>
+                <div style={{display:"flex",gap:12,alignItems:"center",marginTop:6,flexWrap:"wrap"}}>
+                  <label className="muted" style={{fontSize:11,display:"flex",alignItems:"center",gap:4}}>Name
+                    <input style={{fontSize:12,padding:"3px 6px"}} value={nameEdit[a.user_id]??a.name??""}
+                      onChange={ev=>setNameEdit(x=>({...x,[a.user_id]:ev.target.value}))}
+                      onBlur={()=>{ if((nameEdit[a.user_id]??(a.name??""))!==(a.name??"")) saveName(a.user_id); }}
+                      onKeyDown={ev=>{ if(ev.key==="Enter") ev.currentTarget.blur(); }}
+                      placeholder="Full name — shown on agreements"/></label>
+                  <label style={{fontSize:11,display:"flex",alignItems:"center",gap:4}}>
+                    <input type="checkbox" checked={a.can_countersign!==false} disabled={busy} onChange={ev=>toggleCountersign(a.user_id,ev.target.checked)}/> Can countersign agreements</label>
                 </div>
                 {a.role==="owner"
                   ? <div className="muted" style={{fontSize:11,marginTop:4}}>Owner · all companies</div>
@@ -2140,7 +2153,7 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
   const today=new Date().toISOString().slice(0,10);
   const DEFAULTS={ first_name:"", middle_name:"", last_name:"", email:"",
     ph_address:"", permanent_address:"", date_of_birth:"",
-    company_id:companyId||"", contract:"FT", role:"", rate:"", contract_date:today, hire_date:today,
+    company_id:companyId||"", contract:"FT", role:"", rate:"", hours:"40", contract_date:today, hire_date:today,
     shift_start:etToPhtHHMM("08:00"), shift_end:etToPhtHHMM("17:00"),
     ic_addendum_type:"", ic_addendum_text:"", extra_docs:[],
     tools:{gmail:false,providersoft:false,hubstaff:false,zoom:false,others:""},
@@ -2166,10 +2179,17 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
   const mref=useModalA11y(onClose,{escClose:false, dep:!!result});
   const [admins,setAdmins]=useState([]); const [companies,setCompanies]=useState([]);
   useEffect(()=>{
-    client.from("admin_users").select("user_id,email").then(({data})=>setAdmins(data||[]));
+    client.from("admin_users").select("user_id,email,name,can_countersign").then(({data})=>{
+      const list=data||[]; setAdmins(list);
+      // Default the countersigner to the current admin — but only if THEY may
+      // countersign — and use their name (not email) on the document.
+      client.auth.getUser().then(({data:ud})=>{ const u=ud&&ud.user; if(!u) return;
+        const meA=list.find(a=>a.user_id===u.id);
+        if(meA && meA.can_countersign!==false) setF(x=>x.countersigner_user_id?x:{...x,countersigner_user_id:u.id,countersigner_name:meA.name||meA.email||u.email||""});
+      });
+    });
     // Companies the admin may assign to (RLS scopes this to their companies; owner sees all).
     client.from("companies").select("id,name,status").eq("status","active").order("name").then(({data})=>setCompanies(data||[]));
-    client.auth.getUser().then(({data})=>{ const u=data&&data.user; if(u) setF(x=>x.countersigner_user_id?x:{...x,countersigner_user_id:u.id,countersigner_name:u.email||""}); });
   },[]);  // eslint-disable-line
   const doneRef=React.useRef(false);
   useEffect(()=>{
@@ -2198,7 +2218,9 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
     }
     if(s===2){
       if(!ne(f.company_id)) e.company_id="Select a company";
-      if(ne(f.rate) && !(parseFloat(f.rate)>0)) e.rate="Enter a positive amount";
+      if(!ne(f.role)) e.role="Required";
+      if(!ne(f.rate)) e.rate="Required"; else if(!(parseFloat(f.rate)>0)) e.rate="Enter a positive amount";
+      if(!ne(f.hours)) e.hours="Required"; else if(!(parseFloat(f.hours)>0)) e.hours="Enter a positive number";
       if(!ne(f.hire_date)) e.hire_date="Required";
       if(!ne(f.countersigner_user_id)) e.countersigner_user_id="Assign a countersigner";
       if(!ne(f.shift_start)||!ne(f.shift_end)) e.shift="Set a shift start and end";
@@ -2254,7 +2276,7 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
       if(r.error && /payout_method/i.test(r.error.message)) r=await client.from("workers").insert({...base,payout_method:"wise"}).select().single();
       if(r.error) throw r.error;
       w=r.data;
-      const {error:e2}=await client.from("worker_companies").insert({worker_id:w.id, company_id:coId, contract:f.contract, role:f.role.trim()||null, status:"active", started_on:f.hire_date||null});
+      const {error:e2}=await client.from("worker_companies").insert({worker_id:w.id, company_id:coId, contract:f.contract, role:f.role.trim()||null, weekly_hours:parseFloat(f.hours)||null, status:"active", started_on:f.hire_date||null});
       if(e2) throw e2;
       if(parseFloat(f.rate)>0){
         const {error:e3}=await client.from("rates").insert({worker_id:w.id, company_id:coId, amount_php:parseFloat(f.rate), effective_start:f.contract_date||f.hire_date||today});
@@ -2276,20 +2298,21 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
         // Engagement basis snapshotted onto the agreements: FT/PT (→ 40/20 hrs/wk
         // in the doc) and the shift window, so every agreement states the terms.
         const empType=f.contract==="PT"?"part_time":f.contract==="FT"?"full_time":null;
+        const hours=parseFloat(f.hours)||null;
         const schedule=(ne(f.shift_start)&&ne(f.shift_end))?`${f.shift_start}–${f.shift_end} (PHT)`:null;
         await client.from("onboarding_agreements").upsert({
           worker_id:w.id, agreement_kind:"ic_agreement",
           f_rate:f.rate?String(f.rate).trim():null, f_position:f.role.trim()||null, f_start_date:f.hire_date||null,
-          f_company_name:coName, f_employment_type:empType, f_schedule:schedule,
+          f_company_name:coName, f_employment_type:empType, f_hours_per_week:hours, f_schedule:schedule,
           addendum_type:f.ic_addendum_type||null, addendum_text:(f.ic_addendum_text||"").trim()||null,
           countersigner_user_id:csId, countersigner_name:csName,
           prepared_by:myId, prepared_at:new Date().toISOString(), updated_at:new Date().toISOString()
         },{onConflict:"worker_id,agreement_kind"});
         // same countersigner + company + engagement basis on the other agreements so none show a blank line
-        if(csId||csName||coName||empType||schedule){ for(const k of ONB_AGR_KINDS){ if(k==="ic_agreement") continue;
+        if(csId||csName||coName||empType||schedule||hours){ for(const k of ONB_AGR_KINDS){ if(k==="ic_agreement") continue;
           await client.from("onboarding_agreements").upsert({ worker_id:w.id, agreement_kind:k,
             countersigner_user_id:csId, countersigner_name:csName, f_company_name:coName,
-            f_employment_type:empType, f_schedule:schedule,
+            f_employment_type:empType, f_hours_per_week:hours, f_schedule:schedule,
             prepared_by:myId, prepared_at:new Date().toISOString(), updated_at:new Date().toISOString() },{onConflict:"worker_id,agreement_kind"}); } }
         const xdocs=ocUniq((f.extra_docs||[]).filter(t=>(t||"").trim()).map(t=>({kind:ocSlug(t),title:t.trim(),required:true})));
         if(f.invite && xdocs.length){
@@ -2372,10 +2395,14 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
           {errs.company_id && <div style={{color:"#b91c1c",fontSize:12}}>{errs.company_id}</div>}
         </div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-          <div style={{margin:"6px 0"}}><label className="muted" style={{fontSize:12}}>Contract</label>
-            <select style={inp} value={f.contract} onChange={e=>set("contract",e.target.value)}><option value="FT">Full-time (40 hrs/week)</option><option value="PT">Part-time (20 hrs/week)</option></select></div>
-          {field("Role / position","role","text","e.g. Billing Specialist — shows on the IC Agreement")}
+          <div style={{margin:"6px 0"}}><label className="muted" style={{fontSize:12}}>Contract *</label>
+            <select style={inp} value={f.contract} onChange={e=>{ const v=e.target.value; setF(x=>({...x,contract:v,hours:v==="PT"?"20":"40"})); }}><option value="FT">Full-time (40 hrs/week)</option><option value="PT">Part-time (20 hrs/week)</option></select></div>
+          <div style={{margin:"6px 0"}}><label className="muted" style={{fontSize:12}}>Expected hours / week *</label>
+            <input style={inp} type="number" min="1" max="60" step="0.5" value={f.hours} onChange={e=>set("hours",e.target.value)} aria-invalid={errs.hours?"true":"false"}/>
+            {errs.hours && <div style={{color:"#b91c1c",fontSize:12}}>{errs.hours}</div>}
+            <div className="muted" style={{fontSize:11,marginTop:2}}>Defaults to {f.contract==="PT"?"20 (part-time)":"40 (full-time)"} — adjust if different.</div></div>
         </div>
+        {field("Role / position *","role","text","e.g. Billing Specialist — shows on the IC Agreement")}
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>{field("Rate (PHP / period)","rate","number")}{field("Contract date","contract_date","date")}</div>
         {field("Hire date (start) *","hire_date","date")}
         <div style={{display:"flex",gap:16,marginTop:6}}>
@@ -2396,9 +2423,9 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
         <div style={{marginTop:12,paddingTop:10,borderTop:"1px solid #eef0f3"}}>
           <label className="muted" style={{fontSize:12}}>Company countersigner * <span style={{fontWeight:400}}>(signs for ABC Kids NY — their name appears on the agreement the contractor signs)</span></label>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-            <select style={inp} value={f.countersigner_user_id} onChange={e=>{ const a=admins.find(x=>x.user_id===e.target.value); set("countersigner_user_id",e.target.value); set("countersigner_name",a?a.email:""); }} aria-invalid={errs.countersigner_user_id?"true":"false"}>
+            <select style={inp} value={f.countersigner_user_id} onChange={e=>{ const a=admins.find(x=>x.user_id===e.target.value); set("countersigner_user_id",e.target.value); set("countersigner_name",a?(a.name||a.email):""); }} aria-invalid={errs.countersigner_user_id?"true":"false"}>
               <option value="">— select admin —</option>
-              {admins.map(a=><option key={a.user_id} value={a.user_id}>{a.email}</option>)}
+              {admins.filter(a=>a.can_countersign!==false).map(a=><option key={a.user_id} value={a.user_id}>{a.name?`${a.name} (${a.email})`:a.email}</option>)}
             </select>
             <input style={inp} value={f.countersigner_name} onChange={e=>set("countersigner_name",e.target.value)} placeholder="Name shown on the agreement"/>
           </div>
@@ -2466,7 +2493,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
   const { data, loading, reload } = useQuery(client, c => {
     // workers joined to their company link(s) + current rate
     let q = c.from("worker_companies")
-      .select("contract,role,hubstaff_name,hubstaff_user_id,status,company_id,companies(name),"+
+      .select("contract,role,weekly_hours,hubstaff_name,hubstaff_user_id,status,company_id,companies(name),"+
               "workers(id,first_name,middle_name,last_name,status,email,mobile,ph_address,hire_date,date_of_birth,"+
               "payout_method,gcash,paymaya,paypal,wise_recipient_id,wise_recipient_uuid,wise_recipients,wise_tag,photo_url,health_allowance_eligible,thirteenth_month_eligible,"+
               "emergency_name,emergency_relationship,emergency_mobile,permanent_address,address_landmark,postal_code,marital_status,education_level,course,year_graduated,school,work_email,work_number,work_extension,profile_extras)");
@@ -2927,6 +2954,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   });
   const [contract,setContract]=useState(r.contract||"FT");
   const [role,setRole]=useState(r.role||"");
+  const [weeklyHours,setWeeklyHours]=useState(r.weekly_hours!=null?String(r.weekly_hours):"");
   const [hubName,setHubName]=useState(r.hubstaff_name||"");
   const [rate,setRate]=useState("");
   const [rateEff,setRateEff]=useState(new Date().toISOString().slice(0,10));
@@ -3055,8 +3083,8 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     },["first_name","middle_name","last_name","email","work_email","mobile","work_number","work_extension","ph_address","hire_date",
        "date_of_birth","health_allowance_eligible","thirteenth_month_eligible",
        "emergency_name","emergency_relationship","emergency_mobile","permanent_address","address_landmark","postal_code","marital_status","education_level","course","year_graduated","school"]);
-    const linkDiff=auditDiff({contract:r.contract,role:r.role,hubstaff_name:r.hubstaff_name},
-      {contract,role:role||null,hubstaff_name:hubName||null},["contract","role","hubstaff_name"]);
+    const linkDiff=auditDiff({contract:r.contract,role:r.role,hubstaff_name:r.hubstaff_name,weekly_hours:r.weekly_hours},
+      {contract,role:role||null,hubstaff_name:hubName||null,weekly_hours:parseFloat(weeklyHours)||null},["contract","role","hubstaff_name","weekly_hours"]);
     // culture / fun facts live in the profile_extras jsonb — merge, don't clobber
     const exOld=(w.profile_extras&&typeof w.profile_extras==="object")?w.profile_extras:{};
     const exNew={...exOld};
@@ -3079,7 +3107,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     let e2=null;
     if(r.company_id){
       ({error:e2}=await client.from("worker_companies")
-        .update({contract, role:role||null, hubstaff_name:hubName||null})
+        .update({contract, role:role||null, hubstaff_name:hubName||null, weekly_hours:parseFloat(weeklyHours)||null})
         .eq("worker_id",w.id).eq("company_id",r.company_id));
     }
     if(e1||e2){setSavedMsg("Error: "+((e1||e2).message));return false;}
@@ -3290,6 +3318,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
               <option value="PT">Part-time (40h/period)</option>
             </select></div>
           <div className="field"><label>Role</label><input style={inp} value={role} onChange={e=>setRole(e.target.value)} placeholder="e.g. Billing Associate"/></div>
+          <div className="field"><label>Expected hours / week</label><input style={inp} type="number" min="1" max="60" step="0.5" value={weeklyHours} onChange={e=>setWeeklyHours(e.target.value)} placeholder={contract==="PT"?"20":"40"}/></div>
           <Field label="Payout method">
             <select value={payMethod} onChange={e=>savePayMethod(e.target.value)}
               style={{border:payMethod?"1px solid var(--border)":"1px solid var(--warn)",
@@ -10515,8 +10544,9 @@ function monthlyFromPeriod(rate){
 }
 function mergeAgreement(body, v){
   const empRaw=(v&&v.employment_type)||"";
-  const empPhrase={full_time:"Full-time (40 hours/week)",part_time:"Part-time (20 hours/week)"}[empRaw]||empRaw||"";
-  const empHours=empRaw==="full_time"?"40":empRaw==="part_time"?"20":"";
+  const empLabel=empRaw==="full_time"?"Full-time":empRaw==="part_time"?"Part-time":(empRaw||"");
+  const empHours=(v&&v.hours_per_week!=null&&String(v.hours_per_week).trim()!=="")?String(v.hours_per_week).trim():(empRaw==="full_time"?"40":empRaw==="part_time"?"20":"");
+  const empPhrase=empLabel?(empLabel+(empHours?` (${empHours} hours/week)`:"")):"";
   const sched=(v&&v.schedule)||"";
   const s={ contractor_name:(v&&v.contractor_name)||"", rate:(v&&v.rate)||"________",
     monthly_rate:(v&&v.monthly_rate)||"________", company_name:(v&&v.company_name)||"________",
@@ -10611,7 +10641,7 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigC
       .then(({data})=>{ const m={}; (data||[]).forEach(r=>m[r.agreement_kind]=r); setInsts(m); });
     client.from("agreement_templates").select("kind,body")
       .then(({data})=>{ const m={}; (data||[]).forEach(r=>m[r.kind]=r.body); setTpls(m); });
-    client.from("admin_users").select("user_id,email").then(({data})=>setAdmins(data||[]));
+    client.from("admin_users").select("user_id,email,name,can_countersign").then(({data})=>setAdmins(data||[]));
     client.from("workers").select("ph_address,hire_date").eq("id",worker_id).maybeSingle().then(({data})=>{ setWaddr((data&&data.ph_address)||""); setWhire((data&&data.hire_date)||""); });
     // Live company name (fallback for {{company_name}} when an agreement row predates the snapshot).
     client.from("worker_companies").select("status,companies(name)").eq("worker_id",worker_id)
@@ -10640,18 +10670,18 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigC
   const effF=(r,field)=> (r&&r[field]) || (r!==icRow ? (icRow[field]||"") : "");
   const effStart=(r)=> effF(r,"f_start_date") || whire || "";
   const effCs=(r)=> (r&&r.countersigner_name) || icRow.countersigner_name || "";
-  const startEdit=(k)=>{ const r=insts[k]||{}; setEdit(e=>({...e,[k]:{f_position:effF(r,"f_position"),f_rate:effF(r,"f_rate"),f_start_date:effStart(r),f_employment_type:effF(r,"f_employment_type")||"",f_schedule:effF(r,"f_schedule")||"",countersigner_user_id:(r.countersigner_user_id||icRow.countersigner_user_id||""),countersigner_name:effCs(r),addendum_type:r.addendum_type||"",addendum_text:r.addendum_text||""}})); };
+  const startEdit=(k)=>{ const r=insts[k]||{}; setEdit(e=>({...e,[k]:{f_position:effF(r,"f_position"),f_rate:effF(r,"f_rate"),f_start_date:effStart(r),f_employment_type:effF(r,"f_employment_type")||"",f_hours_per_week:effF(r,"f_hours_per_week")?String(effF(r,"f_hours_per_week")):"",f_schedule:effF(r,"f_schedule")||"",countersigner_user_id:(r.countersigner_user_id||icRow.countersigner_user_id||""),countersigner_name:effCs(r),addendum_type:r.addendum_type||"",addendum_text:r.addendum_text||""}})); };
   const setF=(k,f,v)=>setEdit(e=>({...e,[k]:{...e[k],[f]:v}}));
   async function savePrep(k){
     const f=edit[k]; setBusy(k); setMsg("");
     const adminRow=admins.find(a=>a.user_id===f.countersigner_user_id);
     const row={ worker_id, agreement_kind:k,
       f_position:f.f_position||null, f_rate:f.f_rate||null, f_start_date:f.f_start_date||null,
-      f_employment_type:f.f_employment_type||null, f_schedule:(f.f_schedule||"").trim()||null,
+      f_employment_type:f.f_employment_type||null, f_hours_per_week:(f.f_hours_per_week?parseFloat(f.f_hours_per_week)||null:null), f_schedule:(f.f_schedule||"").trim()||null,
       f_company_name:(insts[k]&&insts[k].f_company_name)||coName||null,
       addendum_type:(k==="ic_agreement"&&f.addendum_type)||null, addendum_text:(k==="ic_agreement"&&(f.addendum_text||"").trim())||null,
       countersigner_user_id:f.countersigner_user_id||null,
-      countersigner_name:(f.countersigner_name||(adminRow&&adminRow.email))||null,
+      countersigner_name:(f.countersigner_name||(adminRow&&(adminRow.name||adminRow.email)))||null,
       prepared_by:me&&me.id, prepared_at:new Date().toISOString(), updated_at:new Date().toISOString() };
     const { error } = await client.from("onboarding_agreements").upsert(row,{onConflict:"worker_id,agreement_kind"});
     setBusy("");
@@ -10690,7 +10720,7 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigC
     const merged=mergeAgreement(tpls[k]||"",{ contractor_name:workerName, rate:effF(r,"f_rate"), monthly_rate:monthlyFromPeriod(effF(r,"f_rate")),
       company_name:effF(r,"f_company_name")||coName, start_date:effStart(r),
       position:effF(r,"f_position"), countersigner_name:effCs(r), contractor_address:waddr,
-      employment_type:effF(r,"f_employment_type"), schedule:effF(r,"f_schedule"),
+      employment_type:effF(r,"f_employment_type"), hours_per_week:effF(r,"f_hours_per_week"), schedule:effF(r,"f_schedule"),
       addendum:agAddendum(r.addendum_type,r.addendum_text), today });
     // signature_data / countersign_data are user-controlled — only emit them as an
     // <img> if they're a clean data:image base64 URI (that charset can't contain a
@@ -10757,12 +10787,14 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange, onSigC
                   <select value={e.f_employment_type||""} onChange={ev=>setF(k,"f_employment_type",ev.target.value)}>
                     <option value="">— not set —</option><option value="full_time">Full-time (40 hrs/week)</option><option value="part_time">Part-time (20 hrs/week)</option>
                   </select></label>
+                <label className="muted" style={{fontSize:12}}>Expected hours / week
+                  <input type="number" min="1" max="60" step="0.5" value={e.f_hours_per_week||""} onChange={ev=>setF(k,"f_hours_per_week",ev.target.value)} placeholder={e.f_employment_type==="part_time"?"20":"40"}/></label>
                 <label className="muted" style={{fontSize:12,gridColumn:"1 / span 2"}}>Shift / schedule (shown in the agreement)
                   <input value={e.f_schedule||""} onChange={ev=>setF(k,"f_schedule",ev.target.value)} placeholder="e.g. 09:00–18:00 (PHT), Mon–Fri"/></label>
                 <label className="muted" style={{fontSize:12}}>Countersigner
-                  <select value={e.countersigner_user_id} onChange={ev=>{ const a=admins.find(x=>x.user_id===ev.target.value); setF(k,"countersigner_user_id",ev.target.value); setF(k,"countersigner_name",a?a.email:""); }}>
+                  <select value={e.countersigner_user_id} onChange={ev=>{ const a=admins.find(x=>x.user_id===ev.target.value); setF(k,"countersigner_user_id",ev.target.value); setF(k,"countersigner_name",a?(a.name||a.email):""); }}>
                     <option value="">— select admin —</option>
-                    {admins.map(a=><option key={a.user_id} value={a.user_id}>{a.email}</option>)}
+                    {admins.filter(a=>a.can_countersign!==false).map(a=><option key={a.user_id} value={a.user_id}>{a.name?`${a.name} (${a.email})`:a.email}</option>)}
                   </select></label>
                 <label className="muted" style={{fontSize:12,gridColumn:"1 / span 2"}}>Countersigner name (shown on the document)
                   <input value={e.countersigner_name} onChange={ev=>setF(k,"countersigner_name",ev.target.value)} placeholder="Full name for the signature line"/></label>
@@ -10874,7 +10906,7 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
   // Membership (company/contract/role) — used to build the ProfileModal row shape
   // so "Edit details" can fix work info (FT/PT, role, company) on this hire.
   const { data:wcRows, reload:reloadWc } = useQuery(client, c=>c.from("worker_companies")
-    .select("company_id,contract,role,hubstaff_name,status,companies(name)")
+    .select("company_id,contract,role,weekly_hours,hubstaff_name,status,companies(name)")
     .eq("worker_id",worker_id).order("status",{ascending:true}).limit(1), [client,worker_id]);
   const { data:sigs, reload:reloadSigs } = useQuery(client, c=>c.from("onboarding_signatures")
     .select("agreement_kind,doc_version,doc_sha256,signed_legal_name,signature_method,signature_data,ip_address,user_agent,device_fingerprint,signed_at,signed_date,status")
@@ -11036,7 +11068,7 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
         {showEdit && <ProfileModal client={client}
           r={{ w:{id:worker_id, ...w}, workers:{id:worker_id, ...w},
                company_id: wc?wc.company_id:null, companies:(wc&&wc.companies)?{name:wc.companies.name}:{name:""},
-               contract: wc?wc.contract:"FT", role: wc?wc.role:null, hubstaff_name: wc?wc.hubstaff_name:null, status:"active" }}
+               contract: wc?wc.contract:"FT", role: wc?wc.role:null, weekly_hours: wc?wc.weekly_hours:null, hubstaff_name: wc?wc.hubstaff_name:null, status:"active" }}
           onClose={()=>setShowEdit(false)} onBillingChange={()=>{}}
           onSaved={()=>{ reloadW(); reloadWc(); onChange&&onChange(); }}/>}
 

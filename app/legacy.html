@@ -8849,8 +8849,9 @@ function monthlyFromPeriod(rate){
 // classic UI renders agreements identically (company_name / monthly_rate / addendum).
 function mergeAgreement(body, v){
   const empRaw=(v&&v.employment_type)||"";
-  const empPhrase={full_time:"Full-time (40 hours/week)",part_time:"Part-time (20 hours/week)"}[empRaw]||empRaw||"";
-  const empHours=empRaw==="full_time"?"40":empRaw==="part_time"?"20":"";
+  const empLabel=empRaw==="full_time"?"Full-time":empRaw==="part_time"?"Part-time":(empRaw||"");
+  const empHours=(v&&v.hours_per_week!=null&&String(v.hours_per_week).trim()!=="")?String(v.hours_per_week).trim():(empRaw==="full_time"?"40":empRaw==="part_time"?"20":"");
+  const empPhrase=empLabel?(empLabel+(empHours?` (${empHours} hours/week)`:"")):"";
   const sched=(v&&v.schedule)||"";
   const s={ contractor_name:(v&&v.contractor_name)||"", rate:(v&&v.rate)||"________",
     monthly_rate:(v&&v.monthly_rate)||"________", company_name:(v&&v.company_name)||"________",
@@ -8981,7 +8982,7 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
     const merged=mergeAgreement(tpls[k]||"",{ contractor_name:workerName, rate:r.f_rate,
       monthly_rate:monthlyFromPeriod(r.f_rate), company_name:r.f_company_name||"",
       start_date:r.f_start_date, position:r.f_position, countersigner_name:r.countersigner_name,
-      employment_type:r.f_employment_type, schedule:r.f_schedule,
+      employment_type:r.f_employment_type, hours_per_week:r.f_hours_per_week, schedule:r.f_schedule,
       addendum:agAddendum(r.addendum_type,r.addendum_text), today });
     // signature_data / countersign_data are user-controlled — only emit them as an
     // <img> if they're a clean data:image base64 URI (that charset can't contain a
