@@ -8869,6 +8869,7 @@ function mergeAgreement(body, v){
     const bits=[];
     if(empPhrase) bits.push("Engagement: "+empPhrase+".");
     if(sched) bits.push("Work schedule: "+sched+".");
+    if(sched) bits.push("This schedule is stated in U.S. Eastern Time, which observes U.S. daylight saving time. Because the Philippines does not change its clocks, the equivalent local Philippine start and end times shift by one hour when the U.S. springs forward (mid-March) and falls back (early November).");
     out += "\n\n"+bits.join(" ");
   }
   return out;

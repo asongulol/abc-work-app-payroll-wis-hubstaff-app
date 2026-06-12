@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-12 16:23 EDT · 565293c";
+const BUILD = "2026-06-12 16:35 EDT · 9fcfba5";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -657,6 +657,25 @@ function etToPhtHHMM(hhmm){
   const gap=8-etOffsetHours(new Date());   // 12 (EDT) or 13 (EST)
   const t=(((h*60+m+gap*60)%1440)+1440)%1440;
   return String(Math.floor(t/60)).padStart(2,"0")+":"+String(t%60).padStart(2,"0");
+}
+// Inverse of etToPhtHHMM: a PHT "HH:MM" -> the equivalent US Eastern "HH:MM"
+// for today's DST. Used to express a contractor's shift on agreements in ET (the
+// anchor) even though it's stored in PHT.
+function phtToEtHHMM(hhmm){
+  const [h,m]=String(hhmm).split(":").map(Number);
+  const gap=8-etOffsetHours(new Date());   // 12 (EDT) or 13 (EST)
+  const t=(((h*60+m-gap*60)%1440)+1440)%1440;
+  return String(Math.floor(t/60)).padStart(2,"0")+":"+String(t%60).padStart(2,"0");
+}
+// "HH:MM" (24h) -> "h:MM AM/PM"
+function fmt12(hhmm){
+  const [h,m]=String(hhmm).split(":").map(Number);
+  if(!Number.isFinite(h)||!Number.isFinite(m)) return String(hhmm||"");
+  return (((h+11)%12)+1)+":"+String(m).padStart(2,"0")+" "+(h<12?"AM":"PM");
+}
+// A PHT shift start/end rendered as an Eastern-Time label for agreements.
+function phtShiftToEtLabel(startPht,endPht){
+  return fmt12(phtToEtHHMM(startPht))+" – "+fmt12(phtToEtHHMM(endPht))+" Eastern Time";
 }
 
 // Display label for a payout method: BPI uppercase, others Capitalized.
@@ -2299,7 +2318,7 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
         // in the doc) and the shift window, so every agreement states the terms.
         const empType=f.contract==="PT"?"part_time":f.contract==="FT"?"full_time":null;
         const hours=parseFloat(f.hours)||null;
-        const schedule=(ne(f.shift_start)&&ne(f.shift_end))?`${f.shift_start}–${f.shift_end} (PHT)`:null;
+        const schedule=(ne(f.shift_start)&&ne(f.shift_end))?phtShiftToEtLabel(f.shift_start,f.shift_end):null;
         await client.from("onboarding_agreements").upsert({
           worker_id:w.id, agreement_kind:"ic_agreement",
           f_rate:f.rate?String(f.rate).trim():null, f_position:f.role.trim()||null, f_start_date:f.hire_date||null,
@@ -2396,7 +2415,7 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
         </div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
           <div style={{margin:"6px 0"}}><label className="muted" style={{fontSize:12}}>Contract *</label>
-            <select style={inp} value={f.contract} onChange={e=>{ const v=e.target.value; setF(x=>({...x,contract:v,hours:v==="PT"?"20":"40"})); }}><option value="FT">Full-time (40 hrs/week)</option><option value="PT">Part-time (20 hrs/week)</option></select></div>
+            <select style={inp} value={f.contract} onChange={e=>{ const v=e.target.value; setF(x=>({...x,contract:v,hours:v==="PT"?"20":"40"})); }}><option value="FT">Full-time</option><option value="PT">Part-time</option></select></div>
           <div style={{margin:"6px 0"}}><label className="muted" style={{fontSize:12}}>Expected hours / week *</label>
             <input style={inp} type="number" min="1" max="60" step="0.5" value={f.hours} onChange={e=>set("hours",e.target.value)} aria-invalid={errs.hours?"true":"false"}/>
             {errs.hours && <div style={{color:"#b91c1c",fontSize:12}}>{errs.hours}</div>}
@@ -3314,8 +3333,8 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
         <div className="row">
           <div className="field"><label>Contract</label>
             <select style={inp} value={contract} onChange={e=>setContract(e.target.value)}>
-              <option value="FT">Full-time (80h/period)</option>
-              <option value="PT">Part-time (40h/period)</option>
+              <option value="FT">Full-time</option>
+              <option value="PT">Part-time</option>
             </select></div>
           <div className="field"><label>Role</label><input style={inp} value={role} onChange={e=>setRole(e.target.value)} placeholder="e.g. Billing Associate"/></div>
           <div className="field"><label>Expected hours / week</label><input style={inp} type="number" min="1" max="60" step="0.5" value={weeklyHours} onChange={e=>setWeeklyHours(e.target.value)} placeholder={contract==="PT"?"20":"40"}/></div>
@@ -10564,6 +10583,7 @@ function mergeAgreement(body, v){
     const bits=[];
     if(empPhrase) bits.push("Engagement: "+empPhrase+".");
     if(sched) bits.push("Work schedule: "+sched+".");
+    if(sched) bits.push("This schedule is stated in U.S. Eastern Time, which observes U.S. daylight saving time. Because the Philippines does not change its clocks, the equivalent local Philippine start and end times shift by one hour when the U.S. springs forward (mid-March) and falls back (early November).");
     out += "\n\n"+bits.join(" ");
   }
   return out;
