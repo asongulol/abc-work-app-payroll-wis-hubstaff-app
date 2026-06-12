@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#
+# pre-commit hook -> blocks secrets / PII from being committed.
+# Real logic in tools/check-secrets.sh (tracked, auditable).
+# Install via: npm run hooks:install
+#
+# Bypass in a pinch with:  git commit --no-verify
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+exec bash "$REPO_ROOT/tools/check-secrets.sh"

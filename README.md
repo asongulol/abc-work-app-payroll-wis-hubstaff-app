@@ -179,6 +179,7 @@ supabase secrets set GMAIL_USER=…  GMAIL_APP_PASSWORD=…   # (or RESEND_API_K
 | [`docs/AUTH_RLS_DESIGN.md`](docs/AUTH_RLS_DESIGN.md) | Auth + RLS design |
 | [`SETUP.md`](SETUP.md) · [`WISE_SETUP.md`](WISE_SETUP.md) · [`FINISH_SETUP.md`](FINISH_SETUP.md) · [`GOOGLE_LOGIN_SETUP.md`](GOOGLE_LOGIN_SETUP.md) | First-time setup walkthroughs |
 | [`docs/precompile-build.md`](docs/precompile-build.md) · [`docs/optimization-plan.md`](docs/optimization-plan.md) | Build pipeline + performance work |
+| [`docs/automation.md`](docs/automation.md) | Git hooks, CI, deploy script, changelog — the dev-cycle & deployment automations |
 | [`AGENTS.md`](AGENTS.md) / [`CLAUDE.md`](CLAUDE.md) | Conventions for AI-assisted development |
 
 ---

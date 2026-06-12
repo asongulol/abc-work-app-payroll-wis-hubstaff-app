@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+#
+# pre-push hook
+#   1. Gates the push on your existing checks (lint + HTML syntax + build:check).
+#   2. Generates an AI changelog entry from the diff being pushed.
+#
+# Real logic lives in tracked scripts under tools/ (auditable + editable).
+# Install via: npm run hooks:install   (or: bash tools/install-hooks.sh)
+#
+# Bypass in a pinch with:  git push --no-verify
+
+set -uo pipefail
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+echo "[pre-push] Running checks (lint + build:check)…"
+if ! npm run --silent lint; then
+  echo "[pre-push] ❌ lint failed — push aborted. Fix, or bypass with: git push --no-verify" >&2
+  exit 1
+fi
+if ! npm run --silent build:check; then
+  echo "[pre-push] ❌ build:check failed — push aborted. Fix, or bypass with: git push --no-verify" >&2
+  exit 1
+fi
+echo "[pre-push] ✓ checks passed."
+
+# Pushing to main auto-deploys the Cloudflare workers, so the build stamp MUST be
+# fresh or the footer freezes (a recurring gotcha — see README "Deploying").
+# Warn if stamp wasn't run for this commit; don't hard-block.
+if ! git diff --quiet -- app/index.html portal/index.html 2>/dev/null; then :; fi
+echo "[pre-push] Reminder: run 'npm run stamp' before pushing a deploy so the"
+echo "[pre-push]           visible Build footer + version.txt match this commit."
+
+# Changelog generation never blocks the push (best-effort).
+bash "$REPO_ROOT/tools/gen-changelog.sh" || true
+exit 0

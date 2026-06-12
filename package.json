@@ -9,7 +9,14 @@
     "lint:html": "node tools/check-html-syntax.mjs",
     "stamp": "node tools/stamp-build.mjs",
     "build": "node tools/stamp-build.mjs && node tools/build-apps.mjs",
-    "build:check": "node tools/build-apps.mjs --check"
+    "build:check": "node tools/build-apps.mjs --check",
+    "check": "npm run lint && npm run build:check",
+    "check:secrets": "bash tools/check-secrets.sh",
+    "deploy": "bash tools/deploy.sh",
+    "deploy:frontend": "bash tools/deploy.sh --frontend",
+    "deploy:functions": "bash tools/deploy.sh --functions",
+    "docs": "bash tools/gen-changelog.sh",
+    "hooks:install": "bash tools/install-hooks.sh"
   },
   "devDependencies": {
     "@eslint/js": "^9.13.0",
