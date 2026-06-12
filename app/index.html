@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-12 16:47 EDT · 3f1419d";
+const BUILD = "2026-06-12 17:04 EDT · 29e7cd3";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -2290,6 +2290,16 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
         if(Array.isArray(dupe)&&dupe.length){
           setErrs({email:"A contractor with this email already exists"}); setStep(1);
           setErr(`${[dupe[0].first_name,dupe[0].last_name].filter(Boolean).join(" ")||"Someone"} already uses ${f.email.trim()} — open their profile instead.`);
+          setBusy(false); return;
+        }
+        // Early warning before we create anything: reject an email that already has
+        // a portal login (visible to this admin). The edge create_login is the
+        // authoritative guard — it can see ALL auth accounts (admins / leftover
+        // users) — but catching the common case here avoids a create-then-rollback.
+        const {data:loginDupe}=await client.from("contractor_logins").select("worker_id").ilike("email",f.email.trim()).limit(1);
+        if(Array.isArray(loginDupe)&&loginDupe.length){
+          setErrs({email:"This email already has a portal login"}); setStep(1);
+          setErr(`${f.email.trim()} is already in use by another portal login — use a different email for this contractor.`);
           setBusy(false); return;
         }
       }

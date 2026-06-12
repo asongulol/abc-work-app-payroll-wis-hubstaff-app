@@ -258,6 +258,21 @@ Deno.serve(async (req) => {
         return json({ error: `This contractor already has a portal login (${ex[0].email || "set"}, ${ex[0].status}).` }, 409);
       }
 
+      // Guard: the email must not already belong to ANY auth account (another
+      // contractor's login, an admin, or a leftover user). Without this, Supabase
+      // Auth can reject the create OR silently return the EXISTING user — leaving a
+      // login that can't actually sign in, with no error surfaced. Fail loudly here.
+      const lkRes = await fetch(`${SB}/rest/v1/rpc/admin_lookup_auth_user`, {
+        method: "POST", headers: svc, body: JSON.stringify({ p_email: email }),
+      });
+      if (lkRes.ok) {
+        const existingId = await lkRes.json().catch(() => null);
+        if (existingId && typeof existingId === "string" &&
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(existingId)) {
+          return json({ error: `That email (${email}) is already in use by another account — use a different email for this contractor, or remove the existing account first.`, code: "email_taken" }, 409);
+        }
+      }
+
       const pw = String(body.password || "").trim() ||
         ("Abc-" + Math.random().toString(36).slice(2, 8) + "-" + Math.floor(Math.random() * 9000 + 1000));
 
