@@ -8848,15 +8848,28 @@ function monthlyFromPeriod(rate){
 // mergeAgreement() (shared agreement_templates) — kept in sync so the kill-switch
 // classic UI renders agreements identically (company_name / monthly_rate / addendum).
 function mergeAgreement(body, v){
+  const empRaw=(v&&v.employment_type)||"";
+  const empPhrase={full_time:"Full-time (40 hours/week)",part_time:"Part-time (20 hours/week)"}[empRaw]||empRaw||"";
+  const empHours=empRaw==="full_time"?"40":empRaw==="part_time"?"20":"";
+  const sched=(v&&v.schedule)||"";
   const s={ contractor_name:(v&&v.contractor_name)||"", rate:(v&&v.rate)||"________",
     monthly_rate:(v&&v.monthly_rate)||"________", company_name:(v&&v.company_name)||"________",
     client_name:(v&&v.company_name)||"________", employer_name:(v&&v.employer_name)||"Aaron Anderson E.H.S. LLC",
     start_date:(v&&v.start_date)||"________", position:(v&&v.position)||"________",
     contractor_address:(v&&v.contractor_address)||"________",
     countersigner_name:(v&&v.countersigner_name)||"________", today:(v&&v.today)||"",
+    employment_type:empPhrase||"________", hours_per_week:empHours||"________", schedule:sched||"________",
     addendum:(v&&v.addendum)||"" };
   let out = String(body||"").replace(/\{\{\s*(\w+)\s*\}\}/g,(m,k)=> (k in s? s[k]: m));
   if(s.addendum && !/\{\{\s*addendum\s*\}\}/.test(String(body||""))) out += "\n\n"+s.addendum;
+  // Auto-append the engagement basis (employment type + shift) when set and the
+  // template doesn't already place those tokens — so every agreement states it.
+  if(!/\{\{\s*(employment_type|hours_per_week|schedule)\s*\}\}/.test(String(body||"")) && (empPhrase||sched)){
+    const bits=[];
+    if(empPhrase) bits.push("Engagement: "+empPhrase+".");
+    if(sched) bits.push("Work schedule: "+sched+".");
+    out += "\n\n"+bits.join(" ");
+  }
   return out;
 }
 function escapeHtml(x){ return String(x==null?"":x).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
@@ -8968,6 +8981,7 @@ function AgreementsPanel({ client, worker_id, workerName, sigs, onChange }){
     const merged=mergeAgreement(tpls[k]||"",{ contractor_name:workerName, rate:r.f_rate,
       monthly_rate:monthlyFromPeriod(r.f_rate), company_name:r.f_company_name||"",
       start_date:r.f_start_date, position:r.f_position, countersigner_name:r.countersigner_name,
+      employment_type:r.f_employment_type, schedule:r.f_schedule,
       addendum:agAddendum(r.addendum_type,r.addendum_text), today });
     // signature_data / countersign_data are user-controlled — only emit them as an
     // <img> if they're a clean data:image base64 URI (that charset can't contain a
