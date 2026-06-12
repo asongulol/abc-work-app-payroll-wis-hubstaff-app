@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-12 16:35 EDT · 9fcfba5";
+const BUILD = "2026-06-12 16:47 EDT · 3f1419d";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -1563,6 +1563,10 @@ function parseBool(v){
 // refresh/close/navigation. Used by the hire wizard, bulk import, announcements.
 function draftLoad(key){ try{ const r=localStorage.getItem(key); if(!r) return null; const d=JSON.parse(r); return (d&&("v" in d))?d:null; }catch{ return null; } }
 function draftClear(key){ try{ localStorage.removeItem(key); }catch(_e){} }
+// Synchronous persist — for the "Save" choice on the unsaved-changes prompt, so a
+// draft is written immediately (not waiting on the 500ms autosave debounce, which
+// the unmount can cut off — the bug where "Save" left nothing to resume).
+function draftSave(key, value){ try{ localStorage.setItem(key, JSON.stringify({v:value, at:Date.now()})); }catch(_e){} }
 function useAutoDraft(key, value, hasContent, doneRef){
   useEffect(()=>{
     const id=setTimeout(()=>{ if(doneRef&&doneRef.current) return;
@@ -1573,6 +1577,27 @@ function useAutoDraft(key, value, hasContent, doneRef){
 function DraftNotice({show, onFresh}){
   if(!show) return null;
   return <div className="banner" style={{marginTop:8,marginBottom:4,background:"#eff6ff",borderColor:"#bfdbfe",color:"#1e40af",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}><span>↩ Resumed your saved draft.</span><button className="btn ghost sm" onClick={onFresh}>Start fresh</button></div>;
+}
+// Discoverable entry point for a saved-but-not-submitted hire draft, so "Save" on
+// the leave-prompt isn't a dead end — the draft shows up here to Resume or Discard.
+// Re-reads whenever refreshKey changes (pass the wizard's open state so it updates
+// the moment the wizard closes).
+function HireDraftBanner({ companyId, refreshKey, onResume }){
+  const KEY="eis_hire_draft_"+(companyId||"none");
+  const [draft,setDraft]=useState(null);
+  useEffect(()=>{ try{ const r=localStorage.getItem(KEY); if(r){ const d=JSON.parse(r); const f=(d&&d.f)||{};
+        const nm=[f.first_name,f.middle_name,f.last_name].filter(Boolean).join(" ")||f.email||"unnamed hire";
+        setDraft({name:nm, at:d&&d.at}); } else setDraft(null); }catch{ setDraft(null); } },[KEY, refreshKey]);
+  if(!draft || refreshKey) return null;   // hidden while the wizard itself is open
+  return (
+    <div className="banner" style={{marginTop:8,background:"#fffbeb",borderColor:"#fde68a",color:"#92400e",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+      <span>📝 Unfinished hire draft for <b>{draft.name}</b>{draft.at?<span className="muted" style={{fontSize:12}}> · saved {new Date(draft.at).toLocaleString()}</span>:null}.</span>
+      <span style={{display:"flex",gap:6}}>
+        <button className="btn sm" onClick={onResume}>Resume</button>
+        <button className="btn ghost sm" onClick={()=>{ draftClear(KEY); setDraft(null); }}>Discard</button>
+      </span>
+    </div>
+  );
 }
 
 // ── Unsaved-changes guard ──────────────────────────────────────────────────
@@ -1674,7 +1699,7 @@ function BulkImport({ client, companyId, consolidated, onClose, onDone }){
   useAutoDraft(DKEY, text, !!(text&&text.trim()), doneRef);   // auto-save the pasted roster
   useEffect(()=>{ if(result){ doneRef.current=true; draftClear(DKEY); } },[result]);  // eslint-disable-line
   function startFresh(){ draftClear(DKEY); setText(""); setDraftRestored(false); setParseErr(""); }
-  useUnsavedGuard({ dirty: !result && !!(text&&text.trim()), label:"the bulk import", save: ()=>true, discard: ()=>startFresh() });
+  useUnsavedGuard({ dirty: !result && !!(text&&text.trim()), label:"the bulk import", save: ()=>{ draftSave(DKEY, text); return true; }, discard: ()=>startFresh() });
 
   // Delimiter-aware CSV/TSV parse (same state machine as parseCSV, parameterized).
   function parseDelimited(t,delim){
@@ -2114,7 +2139,7 @@ function AnnouncementsModal({ client, onClose }){
   const [draftRestored,setDraftRestored]=useState(!!(_ad&&_ad.v&&(((_ad.v.title||"").trim())||((_ad.v.body||"").trim()))));
   useAutoDraft(AKEY, {title,body}, !!(title.trim()||body.trim()), null);   // auto-save the draft announcement
   function startFresh(){ draftClear(AKEY); setTitle(""); setBody(""); setDraftRestored(false); }
-  useUnsavedGuard({ dirty: !!(title.trim()||body.trim()), label:"the draft announcement", save: ()=>true, discard: ()=>startFresh() });
+  useUnsavedGuard({ dirty: !!(title.trim()||body.trim()), label:"the draft announcement", save: ()=>{ draftSave(AKEY, {title,body}); return true; }, discard: ()=>startFresh() });
   function load(){ client.from("announcements").select("id,title,body,active,published_at").order("published_at",{ascending:false}).then(({data})=>setRows(data||[])); }
   useEffect(load,[]);
   async function post(){
@@ -2226,7 +2251,10 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
   // so "Save" just keeps that draft (nothing is created until "Create contractor")
   // and "Discard" clears it. Not dirty once the contractor has been created (result).
   const ucDirty = !result && (ne(f.first_name)||ne(f.last_name)||ne(f.email)||ne(f.role)||ne(f.rate)||ne(f.ic_addendum_text)||(Array.isArray(f.extra_docs)&&f.extra_docs.some(ne)));
-  useUnsavedGuard({ dirty: ucDirty, label:"the new-contractor form", save: ()=>true, discard: ()=>startFresh() });
+  // "Save" on the leave-prompt writes the draft right now (the autosave debounce
+  // may not have fired) so it's there to resume from the Hiring screen banner.
+  const persistDraft=()=>{ try{ localStorage.setItem(DRAFT_KEY, JSON.stringify({f, step, companyName:companyName||"", at:Date.now()})); }catch(_e){} };
+  useUnsavedGuard({ dirty: ucDirty, label:"the new-contractor form", save: ()=>{ persistDraft(); return true; }, discard: ()=>startFresh() });
   const close=guardedClose(onClose);   // prompt to keep-draft / discard if there are entries
   function validateStep(s){
     const e={};
@@ -2759,6 +2787,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
         </tbody>
       </table></div>}
       {selected && <ProfileModal r={selected} client={client} onClose={()=>{setSelected(null);reload();}} onBillingChange={onBillingChange} onSaved={reload} />}
+      <HireDraftBanner companyId={companyId} refreshKey={showWizard} onResume={()=>setShowWizard(true)}/>
       {showWizard && <AddContractorWizard client={client} companyId={companyId}
         companyName={(allRows.find(x=>x.company_id===companyId)||{}).companies?.name||""}
         onClose={()=>{setShowWizard(false);reload();}} onCreated={reload} />}
@@ -11575,6 +11604,7 @@ function OnboardingAdmin({ client, companyId, consolidated, active, onContractor
           <button className="btn ghost sm" onClick={refresh}>Refresh</button>
         </div>
       </div>
+      <HireDraftBanner companyId={companyId} refreshKey={showWizard} onResume={()=>setShowWizard(true)}/>
       {showWizard && <AddContractorWizard client={client} companyId={companyId} companyName={coName} onClose={()=>{setShowWizard(false); refresh();}} onCreated={()=>{refresh(); onContractorChanged&&onContractorChanged();}} />}
       {showTpl && <AgreementTemplatesModal client={client} onClose={()=>setShowTpl(false)}/>}
       {showCfg && <OnboardingConfigModal client={client} onClose={()=>setShowCfg(false)}/>}
