@@ -417,7 +417,7 @@ function EmailInput({ value, onChange, work, pin, style, placeholder, ...rest })
 }
 
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-12 18:27 EDT · c50ebea";
+const BUILD = "2026-06-12 18:48 EDT · c4b475e";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -906,7 +906,7 @@ function DocsView({ client, session, od }){
         </select>
         <label className="filedrop" style={{margin:"8px 0"}}>
           {file ? <span style={{color:"var(--text)",fontWeight:600}}>📎 {file.name}</span> : <span>Tap to choose a file — PDF, JPG or PNG</span>}
-          <input type="file" onChange={e=>setFile(e.target.files?.[0]||null)}/>
+          <input type="file" accept="application/pdf,image/jpeg,image/png" onChange={e=>setFile(e.target.files?.[0]||null)}/>
         </label>
         {msg && <div style={{fontSize:14,padding:"4px 0",color:msg.includes("✓")?"var(--good)":"var(--accent)"}}>{msg}</div>}
         <button className="btn" style={{width:"100%"}} disabled={busy} onClick={upload}>{busy?"Uploading…":"Upload"}</button>
@@ -1976,7 +1976,7 @@ function UploadSlot({ client, session, wid, slot, doc, onChange }){
           <label className="sub" style={{display:"block",marginTop:6}}>{t("ob.doc.issued")}</label>
           <input type="date" value={issued} onChange={e=>setIssued(e.target.value)}/>
         </div>}
-        <input type="file" accept="application/pdf,image/jpeg,image/png" capture="environment"
+        <input type="file" accept="application/pdf,image/jpeg,image/png"
           onChange={e=>setFile(e.target.files&&e.target.files[0]||null)} style={{margin:"6px 0"}}/>
         {msg && <div className="err">{msg}</div>}
         <button className="btn ghost" style={{color:"var(--accent)",borderColor:"var(--accent)",padding:"6px 12px"}} disabled={busy} onClick={doUpload}>
