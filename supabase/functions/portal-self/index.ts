@@ -127,7 +127,24 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
     const action = body.action;
-    if (action !== "update_profile" && action !== "complete_tab" && action !== "finish_onboarding" && action !== "advance_from_stage1") return json({ error: "unknown action" }, 400);
+    if (action !== "update_profile" && action !== "complete_tab" && action !== "finish_onboarding" && action !== "advance_from_stage1" && action !== "set_password") return json({ error: "unknown action" }, 400);
+
+    // ---- set_password: forced first-sign-in password change. The project's Auth
+    // config requires the *current* password for a user-context change, but the
+    // first-sign-in screen has no current-password field by design (the temp one
+    // was emailed). A service-role admin update of the caller's OWN auth user sets
+    // the new password and clears the must_set_password gate flag without that
+    // requirement. Scoped strictly to caller.id (their own account). ----
+    if (action === "set_password") {
+      const pw = String(body.password || "");
+      if (pw.length < 8) return json({ error: "Use at least 8 characters." }, 400);
+      const upd = await fetch(`${SB}/auth/v1/admin/users/${caller.id}`, {
+        method: "PUT", headers: svc,
+        body: JSON.stringify({ password: pw, user_metadata: { must_set_password: false } }),
+      });
+      if (!upd.ok) return json({ error: `couldn't set password: ${await upd.text()}` }, upd.status);
+      return json({ ok: true });
+    }
 
     // shared: turn input fields into {patch, extra} limited to an allowed set
     const buildPatch = (inFields: any, allowed: Set<string>) => {
