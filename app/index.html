@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-11 23:36 EDT · 772d76a";
+const BUILD = "2026-06-12 10:27 EDT · c3c20de";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -4251,6 +4251,19 @@ function TimeImport({client,companyId,consolidated,goTab,openPeriodForEdit}){
   // to review, or clicks "Review & approve time" — so the tab opens on the
   // import step, not a wall of rows.
   const [revealApproval,setRevealApproval]=useState(false);
+
+  // …but if unapproved time is ALREADY waiting (e.g. ingested by the daily
+  // Hubstaff cron, or left pending from a prior session), open the grid on load
+  // so those rows can't hide behind the import step. Without this, Process & Pay
+  // counts the pending entries while this tab shows nothing to approve.
+  useEffect(()=>{
+    if(!client||!companyId){return;}
+    let cancelled=false;
+    client.from("time_entries").select("id",{count:"exact",head:true})
+      .eq("company_id",companyId).neq("approval","approved")
+      .then(({count})=>{ if(!cancelled && (count||0)>0) setRevealApproval(true); });
+    return ()=>{cancelled=true;};
+  },[client,companyId]);
 
   // load this company's hubstaff_name -> worker_id map (incl. inactive, so we can
   // still import a final period for a removed contractor — but we warn).
