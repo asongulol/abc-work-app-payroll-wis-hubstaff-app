@@ -11,13 +11,21 @@ is paid the 15th of the next month. Contractors are **paid in PHP**.
 
 ## Each pay period — the 6 steps
 
-### 1. Pick the company
-Use the **company switcher** (top bar). Everything below is scoped to it.
+### 1. Pick the employer
+Use the **employer switcher** (top bar). Everything below is scoped to the employer
+(Aaron Anderson E.H.S. LLC) — that's the payroll home for every contractor. The
+**client** picker is separate and lives inside the *Invoicing* tab; it does not
+change payroll.
 
 ### 2. Bring in the time — *Time & Approval tab*
-Either:
-- **Option A — CSV**: export the daily report from Hubstaff, drop the file in.
-- **Option B — API**: click *List my orgs* → pick org → set the dates → *Sync*.
+A daily cron already ingests Hubstaff time at 04:00 Manila, so the period is often
+staged before you start. To pull it yourself:
+- **Option A — CSV**: export the daily report from Hubstaff, drop the file in
+  (per-client; switch to one client to use this).
+- **Option B — API**: click *List my orgs* → pick org → set the dates →
+  **Import Time**. This consolidated sync runs org-wide and attributes each
+  project's time to its client (map them under *Configuration → Hubstaff Projects
+  → Clients*).
 
 The preview shows matched vs unmatched contractors and flags anyone inactive.
 If it warns about overlapping dates, choose **Overwrite**, **Skip overlapping**,
@@ -68,6 +76,13 @@ clean record of the pay run.
   movable holidays (Good Friday, Thanksgiving, etc.) auto-compute per year.
 - **Fix a bad import**: *Imports tab* — view or delete a specific import batch, or
   delete by date range.
+- **A new hire**: use *Hiring & Onboarding* → **Hire new contractor** (guided
+  wizard: identity, IC terms, portal login). The contractor then signs agreements,
+  completes their profile, and uploads documents in the portal; you approve / send
+  back / waive / defer each document from the HR review console on the same tab.
+- **Invoice a client**: *Invoicing tab* — pick the client and date range; it bills
+  each engaged contractor's hours × their client USD bill rate (set per engagement
+  on the contractor profile). Generates a numbered invoice you can print or export.
 
 ---
 

@@ -2,10 +2,10 @@
 
 # Code Map — ABC Kids HR/Payroll App
 
-Two single-file React apps (in-browser Babel) + Supabase (Postgres/RLS + 11 Deno edge functions). No bundler. Deploy: git push → Cloudflare Workers (static assets).
+Two single-file React apps (in-browser Babel) + Supabase (Postgres/RLS + 10 Deno edge functions). No bundler. Deploy: git push → Cloudflare Workers (static assets).
 
-- **Admin app** `app/index.html` (~11.7k lines, ~61 components) · classic fallback `app/legacy.html`
-- **Contractor portal** `portal/index.html` (~1.8k lines, ~24 components)
+- **Admin app** `app/index.html` (~12.7k lines, ~60+ components) · classic fallback `app/legacy.html`
+- **Contractor portal** `portal/index.html` (~2.1k lines, ~25 components)
 - **Edge functions** `supabase/functions/*` · **Schema/RLS** `schema/`
 
 ---
@@ -21,7 +21,7 @@ flowchart LR
   subgraph Supabase
     AUTH["Auth<br/>(Google OAuth + email/pw)"]
     DB[("Postgres<br/>+ RLS")]
-    EF["Edge functions x11"]
+    EF["Edge functions ×10"]
   end
   subgraph External
     HUB["Hubstaff API<br/>(time tracking)"]
@@ -135,13 +135,14 @@ flowchart TD
 |---|---|---|
 | `wise-payouts` | batch, draft, poll, status, match, rates, recipients, get_recipient, search_contacts, find_transfers_by_recipient, profile | **Wise API**, DB (payments/workers) |
 | `hubstaff-sync` | cron_ingest, activity_backfill, get_user, list_orgs | **Hubstaff API**, DB (time_entries) |
-| `portal-admin` | create_login, reset_password, revoke_login, delete_contractor | Supabase Auth + DB |
-| `portal-self` | update_profile, finish_onboarding | DB (own rows) |
-| `portal-review` | waive, defer, needs_replacement, set_signed_date | DB (documents/signatures) |
+| `portal-admin` | create_login, reset_password, revoke_login, resend_hire_emails, send_tools_email, delete_contractor | Supabase Auth + DB + email |
+| `portal-self` | update_profile, complete_tab, finish_onboarding, advance_from_stage1 | DB (own rows) |
+| `portal-review` | approve, needs_replacement, waive, defer, set_signed_date | DB (documents/signatures) |
 | `portal-sign` | (sign) | DB (onboarding_signatures) |
 | `portal-countersign` | (countersign) | DB (onboarding_agreements) |
 | `admin-manage` | add_admin, remove_admin, set_role | Supabase Auth + admin_users |
-| `documents-expiry-check` | (cron report) | DB (documents) |
+| `documents-expiry-check` | (cron report — expiring tracked docs) | DB (documents) + email |
+| `hiring-docs-review-check` | (cron report — new-hire docs pending HR review) | DB (documents) + email |
 
 ---
 
