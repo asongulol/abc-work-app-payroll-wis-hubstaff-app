@@ -417,7 +417,7 @@ function EmailInput({ value, onChange, work, pin, style, placeholder, ...rest })
 }
 
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-12 18:14 EDT · ea3d4f0";
+const BUILD = "2026-06-12 18:27 EDT · c50ebea";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -2054,32 +2054,35 @@ function Stage3Docs({ client, session, cfg, onAdvance }){
 function SetPassword({ client }){
   const [pw,setPw]=useState(""); const [pw2,setPw2]=useState("");
   const [busy,setBusy]=useState(false); const [err,setErr]=useState("");
+  function signOut(){ try{ client.auth.signOut(); }catch(_e){} }
   async function submit(e){
     e.preventDefault(); setErr("");
     if(pw.length<8){ setErr("Use at least 8 characters."); return; }
     if(pw!==pw2){ setErr("The two passwords don't match."); return; }
     setBusy(true);
-    // Capture the email while the session is still valid — setting the password
-    // can invalidate the current refresh token.
+    // Email from the locally-stored session (present even if the access token has
+    // already expired or been invalidated). Fall back to a server lookup.
     let email="";
     try{ const { data:sd }=await client.auth.getSession(); email=(sd&&sd.session&&sd.session.user&&sd.session.user.email)||""; }catch(_e){}
-    // Route through portal-self (service role) so the forced first-sign-in change
-    // doesn't trip the project's "current password required" rule — there's no
-    // current-password field here by design (the temp one was emailed).
+    if(!email){ try{ const { data:ud }=await client.auth.getUser(); email=(ud&&ud.user&&ud.user.email)||""; }catch(_e){} }
+    // Set the password (portal-self, service role — clears must_set_password without
+    // the project's "current password required" rule). This may 401 if the session
+    // was already spent on a prior attempt (the admin password change invalidates
+    // it). That's fine — we recover by signing in below.
     const { data, error }=await client.functions.invoke("portal-self",{ body:{ action:"set_password", password:pw } });
-    if(error||(data&&data.error)){ setBusy(false); setErr((data&&data.error)||"Couldn't save your password — please try again."); return; }
-    // Re-establish the session with the NEW password so they go STRAIGHT to
-    // onboarding — no second sign-in. (The password change can invalidate the old
-    // refresh token, so refreshSession() would bounce them to login; a clean
-    // sign-in side-steps that and its JWT also carries the cleared must_set_password.)
+    const setFailed = !!(error || (data&&data.error));
+    // ALWAYS sign in fresh with the new password. This works whether set_password
+    // just succeeded OR the password was already changed on a prior attempt —
+    // either way we land on a valid session with must_set_password cleared, straight
+    // into onboarding. Avoids the dead-session bounce that left people stuck.
     if(email){
       const { error:siErr }=await client.auth.signInWithPassword({ email, password: pw });
-      if(siErr){ setBusy(false); setErr("Your password was saved — please sign in with it to continue."); return; }
-    } else {
-      try{ await client.auth.refreshSession(); }catch(_e){}
+      if(!siErr){ setBusy(false); return; }   // onAuthStateChange drops this gate
     }
     setBusy(false);
-    // onAuthStateChange (from the fresh sign-in) → App drops this gate into onboarding.
+    setErr(setFailed
+      ? "We couldn't update your password. Tap “Sign out” below, sign in again with the temporary password from your welcome email, then try once more."
+      : "Your password was saved — please sign out and sign in with your new password to continue.");
   }
   return (
     <div className="wrap">
@@ -2097,7 +2100,13 @@ function SetPassword({ client }){
         {err && <div className="err">{err}</div>}
         <button className="btn" style={{width:"100%",marginTop:8}} disabled={busy}>{busy?"Saving…":"Save password & continue"}</button>
       </form>
-      <p className="sub" style={{textAlign:"center"}}>This keeps your account secure — you won't see this again. Trouble? Contact your payroll admin.</p>
+      <div style={{textAlign:"center",marginTop:12}}>
+        <button type="button" onClick={signOut} disabled={busy}
+          style={{background:"#fff",color:"#1F3A68",border:"2px solid #1F3A68",borderRadius:8,padding:"8px 16px",fontSize:14,fontWeight:700,cursor:"pointer"}}>
+          ⏻ Sign out
+        </button>
+      </div>
+      <p className="sub" style={{textAlign:"center",marginTop:10}}>This keeps your account secure — you won't see this again. Trouble? Contact your payroll admin.</p>
     </div>
   );
 }
