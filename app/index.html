@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-12 18:48 EDT · c4b475e";
+const BUILD = "2026-06-15 12:49 EDT · 2e31baf";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -10569,6 +10569,41 @@ const ONB_AGR_LABEL = { ic_agreement:"IC Agreement", non_compete:"Non-Compete", 
 const ONB_DOC_LABEL = { resume:"Resume / CV", diploma:"Diploma / TOR", nbi_clearance:"NBI Clearance", gov_id:"Gov ID / Passport" };
 const ONB_STAGE_LABEL = { stage1_sign:"Signing", stage2_profile:"Profile", stage3_docs:"Documents", complete:"Complete" };
 const ONB_DOC_KINDS = ["resume","diploma","nbi_clearance","gov_id"];
+// The required document slots that Stage 3 needs, derived from onboarding_config,
+// expanding multi-side kinds (e.g. gov_id front+back) into one slot each. Mirrors
+// portal-review/reEvalStage3 so the admin UI shows EXACTLY what the server
+// requires. Falls back to the same built-in default set the edge function uses.
+const ONB_DEFAULT_REQ_DOCS = [{kind:"resume"},{kind:"diploma"},{kind:"nbi_clearance"},{kind:"gov_id",sides:["front","back"]}];
+function onbReqSlots(cfg){
+  const docs=((cfg&&Array.isArray(cfg.documents)&&cfg.documents.length)?cfg.documents:ONB_DEFAULT_REQ_DOCS)
+    .filter(d=>d&&d.required!==false);                 // honor optional docs
+  const slots=[];
+  docs.forEach(d=>{ const sides=(Array.isArray(d.sides)&&d.sides.length)?d.sides:[null];
+    sides.forEach(side=>slots.push({ kind:d.kind, side:side||null,
+      label:(ONB_DOC_LABEL[d.kind]||d.title||d.kind)+(side?` (${side})`:"") })); });
+  return slots;
+}
+// Per-required-slot Stage-3 status from the worker's uploaded docs. Mirrors the
+// server's kind-level "cleared" rule (waive/defer clear the whole kind) so the
+// flag never disagrees with completion. state: approved | pending |
+// needs_replacement | waived | deferred | missing ("missing" = never uploaded).
+function onbSlotStates(cfg, rows){
+  const clearedKind={}, latest={};
+  (rows||[]).forEach(d=>{
+    if(d.review_status==="waived"||d.review_status==="deferred") clearedKind[d.kind]=d.review_status;
+    const at=d.created_at||"";
+    [d.kind+"|"+(d.side||""), d.kind+"|*"].forEach(k=>{ if(!latest[k]||at>(latest[k].created_at||"")) latest[k]=d; });
+  });
+  return onbReqSlots(cfg).map(s=>{
+    if(clearedKind[s.kind]) return {...s, state:clearedKind[s.kind], doc:null};
+    const d=latest[s.side?s.kind+"|"+s.side:s.kind+"|*"]||null;
+    const state=!d?"missing":d.review_status==="approved"?"approved":d.review_status==="needs_replacement"?"needs_replacement":"pending";
+    return {...s, state, doc:d};
+  });
+}
+// Slots the CONTRACTOR still owes (never uploaded, or rejected and awaiting a
+// re-upload) — i.e. blocking Stage 3 but NOT "waiting for HR review" (pending).
+function onbOwedSlots(cfg, rows){ return onbSlotStates(cfg,rows).filter(s=>s.state==="missing"||s.state==="needs_replacement"); }
 // Defaults for the email-notification config blocks (mirror the edge functions:
 // portal-admin's hire emails + hiring-docs-review-check's digest). Edited in the
 // Onboarding setup modal; persisted under onboarding_config.{hire_emails,review_notify}.
@@ -10589,9 +10624,10 @@ const ONB_DEFAULT_HIRE_EMAILS = {
     html:`<p>Hi {{name}},</p><p>Your onboarding is complete — here are the tool logins you'll need to get started:</p>{{tools_block}}<p>Please save these somewhere safe and, where possible, change any passwords on first sign-in.</p><p>— ABC Kids NY</p>` },
 };
 function onbPct(p){ return Math.round(((p.stage1_complete?1:0)+(p.stage2_complete?1:0)+(p.stage3_complete?1:0))/3*100); }
-function onbStatus(p, pending){
-  if(pending>0) return {txt:"Action needed",color:"#b45309",bg:"#fef3c7"};
+function onbStatus(p, pending, owed){
+  if(pending>0) return {txt:"Action needed",color:"#b45309",bg:"#fef3c7"};   // HR must review
   if(p.completed_at) return {txt:"Complete",color:"#166534",bg:"#dcfce7"};
+  if(owed>0) return {txt:"Awaiting docs",color:"#92400e",bg:"#fef3c7"};       // contractor still owes uploads
   if(p.stalled) return {txt:"Stalled",color:"#991b1b",bg:"#fee2e2"};
   return {txt:"In progress",color:"#1e40af",bg:"#dbeafe"};
 }
@@ -10986,6 +11022,8 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
   const { data:progRows, reload:reloadProg } = useQuery(client, c=>c.from("onboarding_progress")
     .select("current_stage,stage1_complete,stage2_complete,stage3_complete,completed_at,started_at")
     .eq("worker_id",worker_id).limit(1), [client,worker_id]);
+  const { data:psRows } = useQuery(client, c=>c.from("portal_settings").select("onboarding_config").eq("id",1).limit(1), [client]);
+  const onbCfg=((psRows||[])[0]||{}).onboarding_config||{};
   const prog=(progRows||[])[0]||null;
   const w=(wRows||[])[0]||{};
   const workerName=[w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ")||w.email||"Contractor";
@@ -11094,6 +11132,7 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
   function revoke(){ applyProg({ current_stage:"stage1_sign",stage1_complete:false,stage2_complete:false,stage3_complete:false,completed_at:null },
     "Revoke / reset onboarding", "This sends them back to Stage 1 and re-locks their pay-data access."); }
   const byKey={}; (docs||[]).forEach(d=>{ const k=d.kind+"|"+(d.side||""); (byKey[k]=byKey[k]||[]).push(d); });
+  const missingSlots=onbSlotStates(onbCfg, docs||[]).filter(s=>s.state==="missing");   // required, never uploaded
   const FIELDS=[["Mobile","mobile"],["Current address","ph_address"],["Permanent address","permanent_address"],["Postal","postal_code"],["Date of birth","date_of_birth"],["Emergency contact","emergency_name"],["Relationship","emergency_relationship"],["Emergency mobile","emergency_mobile"],["Marital","marital_status"],["Highest Degree Attained","education_level"],["Degree and Major","course"],["Year grad.","year_graduated"],["School","school"],["GCash","gcash"],["PayMaya","paymaya"],["PayPal","paypal"],["Wise Tag","wise_tag"]];
   return (
     <div className="modal-bg" onClick={onClose}>
@@ -11188,8 +11227,11 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
         {(ex.nickname||ex.favorite_color||ex.favorite_food||ex.tshirt_size||ex.shoe_size||ex.hobbies||ex.motto)&&<p className="muted" style={{fontSize:12,marginTop:4}}>{[ex.nickname&&"Nickname: "+ex.nickname,ex.favorite_color&&"Color: "+ex.favorite_color,ex.favorite_food&&"Food: "+ex.favorite_food,ex.tshirt_size&&"T-shirt: "+ex.tshirt_size,ex.shoe_size&&"Shoe: "+ex.shoe_size,ex.hobbies&&"Hobbies: "+ex.hobbies,ex.motto&&"Motto: "+ex.motto].filter(Boolean).join(" · ")}</p>}
 
         <h3 style={{marginBottom:4,marginTop:14}}>3 · Documents</h3>
-        {(docs||[]).length===0? <p className="sub">No documents uploaded yet.</p> :
-         Object.keys(byKey).sort().map(key=>{
+        {missingSlots.length>0 && prog && prog.stage1_complete && prog.stage2_complete && !prog.completed_at && <div className="banner" style={{background:"#fef3c7",borderColor:"#fcd34d",color:"#92400e"}}>
+          ⚠ {missingSlots.length} required document{missingSlots.length>1?"s":""} not uploaded yet: {missingSlots.map(s=>s.label).join(", ")}. Stage 3 stays open until {missingSlots.length>1?"these are":"this is"} provided (or waived).
+        </div>}
+        {(docs||[]).length===0 && missingSlots.length===0 && <p className="sub">No documents uploaded yet.</p>}
+        {Object.keys(byKey).sort().map(key=>{
            const list=byKey[key]; const d=list[0]; const side=key.split("|")[1]; const kind=key.split("|")[0];
            const badge=d.review_status==="approved"?{txt:"Approved",color:"#166534",bg:"#dcfce7"}:d.review_status==="waived"?{txt:"Waived",color:"#475569",bg:"#e2e8f0"}:d.review_status==="deferred"?{txt:"Deferred · follow up",color:"#92400e",bg:"#fef3c7"}:d.review_status==="needs_replacement"?{txt:"Needs replacement",color:"#b45309",bg:"#fef3c7"}:{txt:"Pending review",color:"#1e40af",bg:"#dbeafe"};
            return (
@@ -11213,6 +11255,14 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
             </div>
            );
          })}
+        {missingSlots.map(s=>(
+          <div key={"miss|"+s.kind+"|"+(s.side||"")} style={{borderTop:"1px solid #e5e7eb",padding:"8px 0"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+              <div><b>{s.label}</b><div className="muted" style={{fontSize:11}}>Required — not uploaded yet</div></div>
+              <Badge s={{txt:"Missing",color:"#92400e",bg:"#fef3c7"}}/>
+            </div>
+          </div>
+        ))}
       </div>
       {revDoc && <ReasonPicker doc={revDoc} onCancel={()=>setRevDoc(null)}
         onSubmit={(reason)=>{ const d=revDoc; setRevDoc(null); review(d,"needs_replacement",reason); }}/>}
@@ -11585,28 +11635,40 @@ function OnboardingAdmin({ client, companyId, consolidated, active, onContractor
     .order("updated_at",{ascending:false}), [client]);
   const { data:pendDocs, reload:reloadPend } = useQuery(client, c=>c.from("documents")
     .select("worker_id,kind,side,review_status,created_at").in("kind",ONB_DOC_KINDS), [client]);
+  const { data:psRows } = useQuery(client, c=>c.from("portal_settings").select("onboarding_config").eq("id",1).limit(1), [client]);
+  const onbCfg=((psRows||[])[0]||{}).onboarding_config||{};
   const pendBy={}, deferBy={};
   // Count only the LATEST document per (worker,kind,side): a stale deferred /
   // needs-replacement row is superseded once the contractor re-uploads, so it
   // no longer counts as pending review or an open follow-up.
-  const _latestDoc={};
+  const _latestDoc={}, docsByWorker={};
   (pendDocs||[]).forEach(d=>{ const k=d.worker_id+"|"+d.kind+"|"+(d.side||""); const at=d.created_at||"";
-    if(!_latestDoc[k]||at>_latestDoc[k].at) _latestDoc[k]={status:d.review_status,at,worker_id:d.worker_id}; });
+    if(!_latestDoc[k]||at>_latestDoc[k].at) _latestDoc[k]={status:d.review_status,at,worker_id:d.worker_id};
+    (docsByWorker[d.worker_id]=docsByWorker[d.worker_id]||[]).push(d); });
   Object.values(_latestDoc).forEach(v=>{ if(v.status==="deferred") deferBy[v.worker_id]=(deferBy[v.worker_id]||0)+1;
     else if(v.status==="pending") pendBy[v.worker_id]=(pendBy[v.worker_id]||0)+1; });
-  const all=(progs||[]).map(p=>{ const w=p.workers||{}; return {...p,
+  // Required slots the contractor still owes (missing/never uploaded, or rejected
+  // and awaiting a re-upload). Only flag once they've REACHED the documents step
+  // (stages 1 & 2 done) — before that their blocker is signing/profile, not docs,
+  // so an empty doc set is expected, not "missing".
+  const owedBy={};
+  (progs||[]).forEach(p=>{ if(p.completed_at || !(p.stage1_complete&&p.stage2_complete)) return;
+    const owed=onbOwedSlots(onbCfg, docsByWorker[p.worker_id]||[]); if(owed.length) owedBy[p.worker_id]=owed; });
+  const all=(progs||[]).map(p=>{ const w=p.workers||{}; const owed=owedBy[p.worker_id]||[]; return {...p,
     _name:[w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ")||w.email||p.worker_id,
-    _email:w.email||"", _pending:pendBy[p.worker_id]||0, _deferred:deferBy[p.worker_id]||0, _pct:onbPct(p) }; });
-  const visible=all.filter(r=> showDone || !r.completed_at || r._pending>0 || r._deferred>0 );
+    _email:w.email||"", _pending:pendBy[p.worker_id]||0, _deferred:deferBy[p.worker_id]||0,
+    _owed:owed.length, _owedTip:owed.map(s=>s.label+(s.state==="needs_replacement"?" (needs replacement)":" (not uploaded)")).join("; "), _pct:onbPct(p) }; });
+  const visible=all.filter(r=> showDone || !r.completed_at || r._pending>0 || r._deferred>0 || r._owed>0 );
   // count from the pending docs directly so a worker with a pending doc but no
   // onboarding_progress row still gets counted (orphans = uploaded outside onboarding).
   const progIds=new Set((progs||[]).map(p=>p.worker_id));
   const needReview=Object.keys(pendBy).length;
   const orphanReview=Object.keys(pendBy).filter(id=>!progIds.has(id)).length;
   const needFollowup=Object.keys(deferBy).length;
+  const needUpload=Object.keys(owedBy).length;
   const { rows, Th, q, setQ } = useSortFilter(visible, {
     name:r=>r._name, stage:r=>r.current_stage, pct:r=>r._pct,
-    status:r=>(r._pending>0?0:r.completed_at?3:r.stalled?1:2), updated:r=>r.updated_at,
+    status:r=>(r._pending>0?0:r._owed>0?1:r.completed_at?4:r.stalled?2:3), updated:r=>r.updated_at,
   }, ["_name","_email"]);
   function refresh(){ reload(); reloadPend(); }
   // Re-query when this tab becomes active so a contractor deleted on another tab
@@ -11630,6 +11692,7 @@ function OnboardingAdmin({ client, companyId, consolidated, active, onContractor
       {showCfg && <OnboardingConfigModal client={client} onClose={()=>setShowCfg(false)}/>}
       <Alert show={needReview>0} type="warn" tab="onboarding">{needReview} contractor{needReview>1?"s have":" has"} documents waiting for review.{orphanReview>0?` (${orphanReview} uploaded outside onboarding — not listed below.)`:""}</Alert>
       <Alert show={needFollowup>0} type="info" tab="onboarding">📌 {needFollowup} contractor{needFollowup>1?"s have":" has"} deferred document{needFollowup>1?"s":""} to follow up on.</Alert>
+      <Alert show={needUpload>0} type="warn" tab="onboarding">⚠ {needUpload} contractor{needUpload>1?"s are":" is"} missing required document upload{needUpload>1?"s":""} (stuck before Stage 3 can finish).</Alert>
       <FilterBox q={q} setQ={setQ} placeholder="Filter by name or email…" />
       {loading? <Skeleton rows={4}/> :
        rows.length===0? <div className="empty">{q?"No matches for your filter.":"No onboarding in progress."}{(!q && !showDone && all.length>0)?" (Completed are hidden — tick “Show completed”.)":""}</div> :
@@ -11641,7 +11704,7 @@ function OnboardingAdmin({ client, companyId, consolidated, active, onContractor
                <td>{r._name}{r.name_mismatch_flag&&<span title="Signed legal name differs from profile name" style={{marginLeft:6}}>⚠️</span>}<div className="muted" style={{fontSize:11}}>{r._email}</div></td>
                <td>{ONB_STAGE_LABEL[r.current_stage]||r.current_stage}</td>
                <td><div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:60,height:6,background:"#e5e7eb",borderRadius:999,overflow:"hidden"}}><div style={{width:r._pct+"%",height:"100%",background:"#1F3A68"}}/></div><span className="muted" style={{fontSize:11}}>{r._pct}%</span></div></td>
-               <td><Badge s={onbStatus(r,r._pending)}/>{r._pending>0&&<span className="muted" style={{fontSize:11,marginLeft:4}}>{r._pending}</span>}{r._deferred>0&&<span title="Deferred document(s) to follow up" style={{marginLeft:6,fontSize:11,padding:"1px 6px",borderRadius:999,background:"#eef2ff",color:"#3730a3",whiteSpace:"nowrap"}}>📌 {r._deferred} follow-up</span>}</td>
+               <td><Badge s={onbStatus(r,r._pending,r._owed)}/>{r._pending>0&&<span className="muted" style={{fontSize:11,marginLeft:4}}>{r._pending}</span>}{r._owed>0&&<span title={r._owedTip} style={{marginLeft:6,fontSize:11,padding:"1px 6px",borderRadius:999,background:"#fef3c7",color:"#92400e",whiteSpace:"nowrap"}}>⚠ {r._owed} to upload</span>}{r._deferred>0&&<span title="Deferred document(s) to follow up" style={{marginLeft:6,fontSize:11,padding:"1px 6px",borderRadius:999,background:"#eef2ff",color:"#3730a3",whiteSpace:"nowrap"}}>📌 {r._deferred} follow-up</span>}</td>
                <td className="muted" style={{whiteSpace:"nowrap",fontSize:12}}>{new Date(r.updated_at).toLocaleDateString()}</td>
                <td><button className="btn ghost sm" onClick={()=>setSel(r.worker_id)}>Review</button></td>
              </tr>
