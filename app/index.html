@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-15 12:49 EDT · 2e31baf";
+const BUILD = "2026-06-15 18:41 EDT · 9864471";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -11017,7 +11017,7 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
     .select("agreement_kind,doc_version,doc_sha256,signed_legal_name,signature_method,signature_data,ip_address,user_agent,device_fingerprint,signed_at,signed_date,status")
     .eq("worker_id",worker_id).order("signed_at"), [client,worker_id]);
   const { data:docs, reload:reloadDocs } = useQuery(client, c=>c.from("documents")
-    .select("id,kind,side,title,storage_path,issued_on,review_status,review_reason,reviewed_at,created_at")
+    .select("id,kind,side,title,storage_path,issued_on,review_status,review_reason,reviewed_at,created_at,defer_until")
     .eq("worker_id",worker_id).in("kind",ONB_DOC_KINDS).order("created_at",{ascending:false}), [client,worker_id]);
   const { data:progRows, reload:reloadProg } = useQuery(client, c=>c.from("onboarding_progress")
     .select("current_stage,stage1_complete,stage2_complete,stage3_complete,completed_at,started_at")
@@ -11028,7 +11028,7 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
   const w=(wRows||[])[0]||{};
   const workerName=[w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ")||w.email||"Contractor";
   const ex=(w.profile_extras&&typeof w.profile_extras==="object")?w.profile_extras:{};
-  const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [revDoc,setRevDoc]=useState(null); const [revErr,setRevErr]=useState(null);
+  const [busy,setBusy]=useState(false); const [msg,setMsg]=useState(""); const [revDoc,setRevDoc]=useState(null); const [revErr,setRevErr]=useState(null); const [deferTarget,setDeferTarget]=useState(null);
   const [toolsStatus,setToolsStatus]=useState(null); const [showTools,setShowTools]=useState(false);
   const [showEdit,setShowEdit]=useState(false);     // ProfileModal reuse — edit initial hire details
   const [resend,setResend]=useState(null);          // null | {email,busy,err,done} — update login + resend
@@ -11093,12 +11093,21 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
     if(error||!data){ if(win)win.close(); setMsg("Open failed: "+((error&&error.message)||"no url")); return; }
     if(win) win.location=data.signedUrl; else window.open(data.signedUrl,"_blank");
   }
-  async function review(d,action,reason,override){
+  // `d` is either an uploaded doc (has .id) or a missing required slot (.kind /
+  // .side, no row yet — the function creates a placeholder). opts: {reason,
+  // override, defer_until}. revErr is keyed by id OR kind|side so the inline
+  // error lands on the right row.
+  async function review(d,action,opts){
+    opts=opts||{};
+    const rowKey=d.id||(d.kind+"|"+(d.side||""));
     setBusy(true); setMsg(""); setRevErr(null);
-    const { data, error } = await client.functions.invoke("portal-review",{body:{action,document_id:d.id,reason:reason||null,override:!!override}});
+    const reqBody={ action, reason:opts.reason||null, override:!!opts.override };
+    if(d.id) reqBody.document_id=d.id; else { reqBody.worker_id=worker_id; reqBody.kind=d.kind; reqBody.side=d.side||null; }
+    if(opts.defer_until) reqBody.defer_until=opts.defer_until;
+    const { data, error } = await client.functions.invoke("portal-review",{body:reqBody});
     setBusy(false);
-    if(error||(data&&data.error)){ setRevErr({id:d.id,text:(data&&data.error)||await fnErrorMessage(error)}); return; }
-    logEvent(client,{action:"document_review",entity:(ONB_DOC_LABEL[d.kind]||d.kind),detail:{document_id:d.id,action,reason:reason||null,override:!!override}});
+    if(error||(data&&data.error)){ setRevErr({id:rowKey,text:(data&&data.error)||await fnErrorMessage(error)}); return; }
+    logEvent(client,{action:"document_review",entity:(ONB_DOC_LABEL[d.kind]||d.kind),detail:{document_id:d.id||null,kind:d.kind,side:d.side||null,action,reason:opts.reason||null,defer_until:opts.defer_until||null,override:!!opts.override}});
     reloadDocs(); onChange&&onChange();
   }
   // NBI freshness is enforced server-side (portal-review); mirror it here only to
@@ -11133,6 +11142,7 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
     "Revoke / reset onboarding", "This sends them back to Stage 1 and re-locks their pay-data access."); }
   const byKey={}; (docs||[]).forEach(d=>{ const k=d.kind+"|"+(d.side||""); (byKey[k]=byKey[k]||[]).push(d); });
   const missingSlots=onbSlotStates(onbCfg, docs||[]).filter(s=>s.state==="missing");   // required, never uploaded
+  const todayISO=new Date().toISOString().slice(0,10);   // for deferred-doc overdue flagging
   const FIELDS=[["Mobile","mobile"],["Current address","ph_address"],["Permanent address","permanent_address"],["Postal","postal_code"],["Date of birth","date_of_birth"],["Emergency contact","emergency_name"],["Relationship","emergency_relationship"],["Emergency mobile","emergency_mobile"],["Marital","marital_status"],["Highest Degree Attained","education_level"],["Degree and Major","course"],["Year grad.","year_graduated"],["School","school"],["GCash","gcash"],["PayMaya","paymaya"],["PayPal","paypal"],["Wise Tag","wise_tag"]];
   return (
     <div className="modal-bg" onClick={onClose}>
@@ -11242,14 +11252,15 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
                 <Badge s={badge}/>
               </div>
               {d.review_status==="needs_replacement"&&d.review_reason&&<div className="muted" style={{fontSize:12}}>Reason: {d.review_reason}</div>}
+              {d.review_status==="deferred"&&d.defer_until&&<div style={{fontSize:12,marginTop:2,color:d.defer_until<todayISO?"#b91c1c":"#92400e"}}>📌 Follow up by {d.defer_until}{d.defer_until<todayISO?" · overdue":""}</div>}
               {isNbiStale(d) && <div style={{fontSize:12,color:"#b45309",marginTop:4}}>⚠ Issued {d.issued_on} — older than 6 months (NBI freshness rule).</div>}
               <div style={{display:"flex",gap:6,marginTop:6,flexWrap:"wrap"}}>
                 <button className="btn ghost sm" onClick={()=>view(d)} disabled={!d.storage_path}>View</button>
                 {d.review_status!=="approved" && !isNbiStale(d) && <button className="btn sm" disabled={busy} onClick={()=>review(d,"approve")}>Approve</button>}
-                {d.review_status!=="approved" && isNbiStale(d) && <button className="btn sm" disabled={busy} title="Override the freshness rule — recorded in the audit log" onClick={()=>review(d,"approve",null,true)}>Approve anyway</button>}
+                {d.review_status!=="approved" && isNbiStale(d) && <button className="btn sm" disabled={busy} title="Override the freshness rule — recorded in the audit log" onClick={()=>review(d,"approve",{override:true})}>Approve anyway</button>}
                 {d.review_status!=="needs_replacement"&&<button className="btn ghost sm" disabled={busy} onClick={()=>setRevDoc(d)}>Needs replacement</button>}
                 {d.review_status!=="waived"&&<button className="btn ghost sm" disabled={busy} title="Drop this requirement for this contractor (onboarding can finish without it)" onClick={()=>{ if(window.confirm("Waive the "+(ONB_DOC_LABEL[kind]||kind)+" requirement? The contractor won't need to provide it.")) review(d,"waive"); }}>Waive</button>}
-                {d.review_status!=="deferred"&&<button className="btn ghost sm" disabled={busy} title="Let onboarding finish now; collect this later — shows as a follow-up in this tab" onClick={()=>review(d,"defer")}>Defer</button>}
+                {d.review_status!=="deferred"&&<button className="btn ghost sm" disabled={busy} title="Let onboarding finish now; collect this by a set date — shows as a follow-up in this tab" onClick={()=>setDeferTarget(d)}>Defer…</button>}
               </div>
               {revErr&&revErr.id===d.id&&<div className="err" style={{marginTop:6,fontSize:13}}>{revErr.text}</div>}
             </div>
@@ -11261,11 +11272,54 @@ function OnboardingDrilldown({ client, worker_id, onClose, onChange }){
               <div><b>{s.label}</b><div className="muted" style={{fontSize:11}}>Required — not uploaded yet</div></div>
               <Badge s={{txt:"Missing",color:"#92400e",bg:"#fef3c7"}}/>
             </div>
+            <div style={{display:"flex",gap:6,marginTop:6,flexWrap:"wrap"}}>
+              <button className="btn ghost sm" disabled={busy} title="Drop this requirement for this contractor (onboarding can finish without it)" onClick={()=>{ if(window.confirm("Waive the "+s.label+" requirement? The contractor won't need to provide it.")) review(s,"waive"); }}>Waive</button>
+              <button className="btn ghost sm" disabled={busy} title="Let onboarding finish now; collect this by a set date — shows as a follow-up" onClick={()=>setDeferTarget(s)}>Defer…</button>
+            </div>
+            {revErr&&revErr.id===(s.kind+"|"+(s.side||""))&&<div className="err" style={{marginTop:6,fontSize:13}}>{revErr.text}</div>}
           </div>
         ))}
       </div>
       {revDoc && <ReasonPicker doc={revDoc} onCancel={()=>setRevDoc(null)}
-        onSubmit={(reason)=>{ const d=revDoc; setRevDoc(null); review(d,"needs_replacement",reason); }}/>}
+        onSubmit={(reason)=>{ const d=revDoc; setRevDoc(null); review(d,"needs_replacement",{reason}); }}/>}
+      {deferTarget && <DeferPicker target={deferTarget} onCancel={()=>setDeferTarget(null)}
+        onSubmit={({defer_until,reason})=>{ const t=deferTarget; setDeferTarget(null); review(t,"defer",{defer_until,reason}); }}/>}
+    </div>
+  );
+}
+
+// Defer picker — collect a REQUIRED follow-up date ("collect by") + optional
+// reason before deferring a document/missing slot. The date is a tracked
+// reminder only; it does not auto-relock onboarding. `target` is an uploaded doc
+// or a missing required slot (both carry .kind/.label/.side).
+function DeferPicker({ target, onCancel, onSubmit }){
+  const mref=useModalA11y(onCancel,{escClose:false});   // has free-text/date: no Escape-close
+  const todayISO=new Date().toISOString().slice(0,10);
+  const [due,setDue]=useState(""); const [reason,setReason]=useState(""); const [err,setErr]=useState("");
+  const label=target.label||(ONB_DOC_LABEL[target.kind]||target.kind)+(target.side?` (${target.side})`:"");
+  function submit(){
+    if(!due){ setErr("Pick a follow-up date."); return; }
+    if(due<todayISO){ setErr("The follow-up date can't be in the past."); return; }
+    onSubmit({defer_until:due, reason:reason.trim()||null});
+  }
+  return (
+    <div className="modal-bg" onClick={e=>e.stopPropagation()}>
+      <div className="modal" ref={mref} role="dialog" aria-modal="true" aria-labelledby="dp-title" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <h2 id="dp-title" style={{margin:0}}>Defer document</h2>
+          <button className="btn ghost sm" onClick={onCancel}>Close</button>
+        </div>
+        <p className="sub">{label} — onboarding can finish now; collect this by the date below. It stays on the follow-up list until provided.</p>
+        <label style={{display:"block",fontSize:13,fontWeight:600,marginTop:6}}>Collect by</label>
+        <input type="date" value={due} min={todayISO} onChange={e=>{setDue(e.target.value); setErr("");}} style={{width:"100%"}}/>
+        <label style={{display:"block",fontSize:13,fontWeight:600,marginTop:8}}>Note <span className="muted" style={{fontWeight:400}}>(optional)</span></label>
+        <input value={reason} onChange={e=>setReason(e.target.value)} placeholder="e.g. waiting on NBI release" style={{width:"100%"}}/>
+        {err && <div className="err" style={{marginTop:6}}>{err}</div>}
+        <div style={{display:"flex",gap:8,marginTop:12}}>
+          <button className="btn" onClick={submit}>Defer until {due||"…"}</button>
+          <button className="btn ghost" onClick={onCancel}>Cancel</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -11634,18 +11688,20 @@ function OnboardingAdmin({ client, companyId, consolidated, active, onContractor
     .select("worker_id,current_stage,stage1_complete,stage2_complete,stage3_complete,name_mismatch_flag,stalled,started_at,completed_at,updated_at,workers(first_name,middle_name,last_name,email)")
     .order("updated_at",{ascending:false}), [client]);
   const { data:pendDocs, reload:reloadPend } = useQuery(client, c=>c.from("documents")
-    .select("worker_id,kind,side,review_status,created_at").in("kind",ONB_DOC_KINDS), [client]);
+    .select("worker_id,kind,side,review_status,created_at,defer_until").in("kind",ONB_DOC_KINDS), [client]);
   const { data:psRows } = useQuery(client, c=>c.from("portal_settings").select("onboarding_config").eq("id",1).limit(1), [client]);
   const onbCfg=((psRows||[])[0]||{}).onboarding_config||{};
-  const pendBy={}, deferBy={};
+  const todayISO=new Date().toISOString().slice(0,10);
+  const pendBy={}, deferBy={}, overdueBy={};
   // Count only the LATEST document per (worker,kind,side): a stale deferred /
   // needs-replacement row is superseded once the contractor re-uploads, so it
   // no longer counts as pending review or an open follow-up.
   const _latestDoc={}, docsByWorker={};
   (pendDocs||[]).forEach(d=>{ const k=d.worker_id+"|"+d.kind+"|"+(d.side||""); const at=d.created_at||"";
-    if(!_latestDoc[k]||at>_latestDoc[k].at) _latestDoc[k]={status:d.review_status,at,worker_id:d.worker_id};
+    if(!_latestDoc[k]||at>_latestDoc[k].at) _latestDoc[k]={status:d.review_status,at,worker_id:d.worker_id,defer_until:d.defer_until};
     (docsByWorker[d.worker_id]=docsByWorker[d.worker_id]||[]).push(d); });
-  Object.values(_latestDoc).forEach(v=>{ if(v.status==="deferred") deferBy[v.worker_id]=(deferBy[v.worker_id]||0)+1;
+  Object.values(_latestDoc).forEach(v=>{ if(v.status==="deferred"){ deferBy[v.worker_id]=(deferBy[v.worker_id]||0)+1;
+      if(v.defer_until && v.defer_until<todayISO) overdueBy[v.worker_id]=(overdueBy[v.worker_id]||0)+1; }
     else if(v.status==="pending") pendBy[v.worker_id]=(pendBy[v.worker_id]||0)+1; });
   // Required slots the contractor still owes (missing/never uploaded, or rejected
   // and awaiting a re-upload). Only flag once they've REACHED the documents step
@@ -11656,7 +11712,7 @@ function OnboardingAdmin({ client, companyId, consolidated, active, onContractor
     const owed=onbOwedSlots(onbCfg, docsByWorker[p.worker_id]||[]); if(owed.length) owedBy[p.worker_id]=owed; });
   const all=(progs||[]).map(p=>{ const w=p.workers||{}; const owed=owedBy[p.worker_id]||[]; return {...p,
     _name:[w.first_name,w.middle_name,w.last_name].filter(Boolean).join(" ")||w.email||p.worker_id,
-    _email:w.email||"", _pending:pendBy[p.worker_id]||0, _deferred:deferBy[p.worker_id]||0,
+    _email:w.email||"", _pending:pendBy[p.worker_id]||0, _deferred:deferBy[p.worker_id]||0, _overdue:overdueBy[p.worker_id]||0,
     _owed:owed.length, _owedTip:owed.map(s=>s.label+(s.state==="needs_replacement"?" (needs replacement)":" (not uploaded)")).join("; "), _pct:onbPct(p) }; });
   const visible=all.filter(r=> showDone || !r.completed_at || r._pending>0 || r._deferred>0 || r._owed>0 );
   // count from the pending docs directly so a worker with a pending doc but no
@@ -11704,7 +11760,7 @@ function OnboardingAdmin({ client, companyId, consolidated, active, onContractor
                <td>{r._name}{r.name_mismatch_flag&&<span title="Signed legal name differs from profile name" style={{marginLeft:6}}>⚠️</span>}<div className="muted" style={{fontSize:11}}>{r._email}</div></td>
                <td>{ONB_STAGE_LABEL[r.current_stage]||r.current_stage}</td>
                <td><div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:60,height:6,background:"#e5e7eb",borderRadius:999,overflow:"hidden"}}><div style={{width:r._pct+"%",height:"100%",background:"#1F3A68"}}/></div><span className="muted" style={{fontSize:11}}>{r._pct}%</span></div></td>
-               <td><Badge s={onbStatus(r,r._pending,r._owed)}/>{r._pending>0&&<span className="muted" style={{fontSize:11,marginLeft:4}}>{r._pending}</span>}{r._owed>0&&<span title={r._owedTip} style={{marginLeft:6,fontSize:11,padding:"1px 6px",borderRadius:999,background:"#fef3c7",color:"#92400e",whiteSpace:"nowrap"}}>⚠ {r._owed} to upload</span>}{r._deferred>0&&<span title="Deferred document(s) to follow up" style={{marginLeft:6,fontSize:11,padding:"1px 6px",borderRadius:999,background:"#eef2ff",color:"#3730a3",whiteSpace:"nowrap"}}>📌 {r._deferred} follow-up</span>}</td>
+               <td><Badge s={onbStatus(r,r._pending,r._owed)}/>{r._pending>0&&<span className="muted" style={{fontSize:11,marginLeft:4}}>{r._pending}</span>}{r._owed>0&&<span title={r._owedTip} style={{marginLeft:6,fontSize:11,padding:"1px 6px",borderRadius:999,background:"#fef3c7",color:"#92400e",whiteSpace:"nowrap"}}>⚠ {r._owed} to upload</span>}{r._deferred>0&&<span title={r._overdue>0?`${r._overdue} follow-up(s) past their collect-by date`:"Deferred document(s) to follow up"} style={{marginLeft:6,fontSize:11,padding:"1px 6px",borderRadius:999,background:r._overdue>0?"#fee2e2":"#eef2ff",color:r._overdue>0?"#b91c1c":"#3730a3",whiteSpace:"nowrap"}}>📌 {r._deferred} follow-up{r._overdue>0?` · ${r._overdue} overdue`:""}</span>}</td>
                <td className="muted" style={{whiteSpace:"nowrap",fontSize:12}}>{new Date(r.updated_at).toLocaleDateString()}</td>
                <td><button className="btn ghost sm" onClick={()=>setSel(r.worker_id)}>Review</button></td>
              </tr>
