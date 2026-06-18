@@ -142,7 +142,15 @@ Deno.serve(async (req) => {
         method: "PUT", headers: svc,
         body: JSON.stringify({ password: pw, user_metadata: { must_set_password: false } }),
       });
-      if (!upd.ok) return json({ error: `couldn't set password: ${await upd.text()}` }, upd.status);
+      if (!upd.ok) {
+        // GoTrue enforces the project's password policy HERE (min length, required
+        // character classes, leaked-password/HIBP protection) — the client only
+        // checks length. Parse GoTrue's own reason so the contractor sees WHY the
+        // password was rejected (e.g. "known to be weak") instead of a dead end.
+        let reason = "";
+        try { const j = JSON.parse(await upd.text()); reason = j.msg || j.error_description || j.error || ""; } catch (_e) { /* non-JSON body */ }
+        return json({ error: reason || "That password was rejected — please choose a stronger one.", code: "weak_password" }, upd.status);
+      }
       return json({ ok: true });
     }
 

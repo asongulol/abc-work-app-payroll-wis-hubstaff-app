@@ -417,7 +417,7 @@ function EmailInput({ value, onChange, work, pin, style, placeholder, ...rest })
 }
 
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-15 18:41 EDT · 9864471";
+const BUILD = "2026-06-18 15:59 EDT · ba1c7df";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -2048,9 +2048,10 @@ function Stage3Docs({ client, session, cfg, onAdvance }){
 
 // First-login password change. Shown when the account carries
 // user_metadata.must_set_password (set by portal-admin when a temp password is
-// issued). updateUser() changes the password AND clears the flag in one call, so
-// the onAuthStateChange refresh drops the user past this gate. No escape skip —
-// a stuck contractor contacts the admin, who can reset.
+// issued). The portal-self set_password call changes the password AND clears the
+// flag in one shot; a refresh-token grant then refreshes the JWT so onAuthStateChange
+// drops the user past this gate. No escape skip — a stuck contractor contacts the
+// admin, who can reset.
 function SetPassword({ client }){
   const [pw,setPw]=useState(""); const [pw2,setPw2]=useState("");
   const [busy,setBusy]=useState(false); const [err,setErr]=useState("");
@@ -2060,29 +2061,28 @@ function SetPassword({ client }){
     if(pw.length<8){ setErr("Use at least 8 characters."); return; }
     if(pw!==pw2){ setErr("The two passwords don't match."); return; }
     setBusy(true);
-    // Email from the locally-stored session (present even if the access token has
-    // already expired or been invalidated). Fall back to a server lookup.
-    let email="";
-    try{ const { data:sd }=await client.auth.getSession(); email=(sd&&sd.session&&sd.session.user&&sd.session.user.email)||""; }catch(_e){}
-    if(!email){ try{ const { data:ud }=await client.auth.getUser(); email=(ud&&ud.user&&ud.user.email)||""; }catch(_e){} }
     // Set the password (portal-self, service role — clears must_set_password without
-    // the project's "current password required" rule). This may 401 if the session
-    // was already spent on a prior attempt (the admin password change invalidates
-    // it). That's fine — we recover by signing in below.
+    // the project's "current password required" rule). GoTrue still enforces the
+    // project's password policy (length / character classes / leaked-password
+    // protection), so a too-simple password comes back rejected with a real reason.
     const { data, error }=await client.functions.invoke("portal-self",{ body:{ action:"set_password", password:pw } });
-    const setFailed = !!(error || (data&&data.error));
-    // ALWAYS sign in fresh with the new password. This works whether set_password
-    // just succeeded OR the password was already changed on a prior attempt —
-    // either way we land on a valid session with must_set_password cleared, straight
-    // into onboarding. Avoids the dead-session bounce that left people stuck.
-    if(email){
-      const { error:siErr }=await client.auth.signInWithPassword({ email, password: pw });
-      if(!siErr){ setBusy(false); return; }   // onAuthStateChange drops this gate
+    if(error || (data && data.error)){
+      // Surface GoTrue's actual reason (e.g. "Password is known to be weak…") so the
+      // contractor knows to pick a stronger one — the old generic message hid it,
+      // leaving people stuck retrying the same rejected password.
+      const reason=await fnErr(error,data);
+      setBusy(false);
+      setErr(reason + (/[.!?]$/.test(reason)?" ":". ") + "Try 12+ characters mixing letters, a number and a symbol — and avoid common or reused passwords.");
+      return;
     }
+    // Password saved + must_set_password cleared server-side. Refresh the JWT via the
+    // refresh-token grant — NOT signInWithPassword, which requires a Turnstile captcha
+    // token this screen doesn't render (it 400s as captcha_failed). The refreshed
+    // token carries must_set_password:false, so onAuthStateChange drops this gate.
+    const { error:rErr }=await client.auth.refreshSession();
     setBusy(false);
-    setErr(setFailed
-      ? "We couldn't update your password. Tap “Sign out” below, sign in again with the temporary password from your welcome email, then try once more."
-      : "Your password was saved — please sign out and sign in with your new password to continue.");
+    if(rErr) setErr("Your password was saved — please sign out and sign in with your new password to continue.");
+    // success: onAuthStateChange re-renders past this gate
   }
   return (
     <div className="wrap">
@@ -2094,7 +2094,8 @@ function SetPassword({ client }){
       </div>
       <form className="card" onSubmit={submit}>
         <label className="sub">New password</label>
-        <input type="password" autoComplete="new-password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="At least 8 characters"/>
+        <input type="password" autoComplete="new-password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="12+ chars: letters, a number & a symbol"/>
+        <p className="sub" style={{margin:"4px 0 0",fontSize:12}}>Use at least 12 characters with a mix of letters, a number and a symbol. Avoid common or previously-used passwords.</p>
         <label className="sub">Confirm new password</label>
         <input type="password" autoComplete="new-password" value={pw2} onChange={e=>setPw2(e.target.value)} placeholder="Re-enter password"/>
         {err && <div className="err">{err}</div>}
