@@ -4429,21 +4429,31 @@ function _easter(y){const a=y%19,b=Math.floor(y/100),c=y%100,d=Math.floor(b/4),e
   l=(32+2*e+2*i-h-k)%7,mm=Math.floor((a+11*h+22*l)/451),mo=Math.floor((h+l-7*mm+114)/31),
   da=((h+l-7*mm+114)%31)+1;return new Date(y,mo-1,da);}
 const _isoD=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-// Default observed holidays for a given year (the offices' list).
+// Shift a holiday that lands on a weekend to the nearest working day (US
+// observance): Saturday -> the Friday before, Sunday -> the Monday after.
+// Both are the closest weekday (1 day away vs 2). Weekdays pass through.
+function _observed(d){
+  const o=new Date(d), wd=o.getDay();
+  if(wd===6) o.setDate(o.getDate()-1);       // Sat -> Fri
+  else if(wd===0) o.setDate(o.getDate()+1);  // Sun -> Mon
+  return o;
+}
+// Default observed holidays for a given year (the offices' list). Fixed-date
+// holidays are shifted to the nearest working day when they fall on a weekend.
 function defaultHolidays(year){
   const e=_easter(year), gf=new Date(e); gf.setDate(e.getDate()-2);
   const thx=_nthWeekday(year,10,4,4), aft=new Date(thx); aft.setDate(thx.getDate()+1);
   return [
-    {name:"New Year's Day", date:_isoD(new Date(year,0,1))},
+    {name:"New Year's Day", date:_isoD(_observed(new Date(year,0,1)))},
     {name:"Martin Luther King Jr. Day", date:_isoD(_nthWeekday(year,0,1,3))},
     {name:"Good Friday", date:_isoD(gf)},
     {name:"Memorial Day", date:_isoD(_lastWeekday(year,4,1))},
-    {name:"Independence Day", date:_isoD(new Date(year,6,4))},
+    {name:"Independence Day", date:_isoD(_observed(new Date(year,6,4)))},
     {name:"Labor Day", date:_isoD(_nthWeekday(year,8,1,1))},
     {name:"Indigenous Peoples' Day", date:_isoD(_nthWeekday(year,9,1,2))},
     {name:"Thanksgiving Day", date:_isoD(thx)},
     {name:"Day after Thanksgiving", date:_isoD(aft)},
-    {name:"Christmas Day", date:_isoD(new Date(year,11,25))},
+    {name:"Christmas Day", date:_isoD(_observed(new Date(year,11,25)))},
   ];
 }
 // Load holidays for a year: user-saved overrides (localStorage) else defaults.
@@ -4454,10 +4464,14 @@ function getHolidays(year){
 function saveHolidays(year,list){ localStorage.setItem("holidays_"+year, JSON.stringify(list)); }
 function _isWeekday(dateStr){ const wd=new Date(dateStr+"T00:00:00").getDay(); return wd>=1 && wd<=5; }
 // count holiday dates within [start,end] inclusive. weekdayOnly: only holidays
-// that land on a Mon-Fri (a Sat/Sun holiday doesn't reduce expected work).
+// on a Mon-Fri count. Default holidays are already shifted to the nearest
+// working day (see _observed), so weekend-landing holidays still reduce
+// expected work; weekdayOnly only drops manually-entered weekend overrides.
+// Scan adjacent years too: an observance shift can move a holiday across a
+// year boundary (New Year's Day on a Saturday is observed Dec 31 prior year).
 function holidaysInRange(start,end,weekdayOnly){
   const ys=new Date(start).getFullYear(), ye=new Date(end).getFullYear();
-  let all=[]; for(let y=ys;y<=ye;y++) all=all.concat(getHolidays(y));
+  let all=[]; for(let y=ys-1;y<=ye+1;y++) all=all.concat(getHolidays(y));
   return all.filter(h=>h.date>=start && h.date<=end && (!weekdayOnly || _isWeekday(h.date)));
 }
 // Expected hours: WORKING DAYS (Mon-Fri) in period x dayHours, minus dayHours
