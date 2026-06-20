@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-20 00:51 EDT · ca2a41c";
+const BUILD = "2026-06-20 01:11 EDT · dd02a27";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -12819,13 +12819,16 @@ function SessionsApproval({ client, companiesNonce }){
 function SessionsClientView({ client, companyId }){
   const inp={width:"100%"};
   const today=new Date().toISOString().slice(0,10);
-  // This client's active contractors — powers the add-session picker + name/rate lookups.
+  // This client's contractors (ALL statuses) — so name/rate resolve even for a
+  // worker whose engagement ended after a session was logged (e.g. a contractor
+  // self-logged it, then the engagement closed before approval). The add-session
+  // picker still offers only ACTIVE engagements (filtered below).
   const { data:roster }=useQuery(client,
-    c=>c.from("worker_companies").select("worker_id,role,session_rate_usd,workers(first_name,middle_name,last_name)").eq("status","active").eq("company_id",companyId),
+    c=>c.from("worker_companies").select("worker_id,status,role,session_rate_usd,workers(first_name,middle_name,last_name)").eq("company_id",companyId),
     [client,companyId]);
-  const nameBy={}, rateBy={};
-  (roster||[]).forEach(r=>{ if(!r.worker_id)return; nameBy[r.worker_id]=fullName(r.workers); rateBy[r.worker_id]=Number(r.session_rate_usd)||0; });
-  const rosterOpts=(roster||[]).filter(r=>r.worker_id).map(r=>({id:r.worker_id,name:nameBy[r.worker_id]})).sort((a,b)=>a.name.localeCompare(b.name));
+  const nameBy={}, rateBy={}, hasRate={};
+  (roster||[]).forEach(r=>{ if(!r.worker_id)return; nameBy[r.worker_id]=fullName(r.workers); rateBy[r.worker_id]=Number(r.session_rate_usd)||0; hasRate[r.worker_id]=r.session_rate_usd!=null && Number(r.session_rate_usd)>0; });
+  const rosterOpts=(roster||[]).filter(r=>r.worker_id && r.status==="active").map(r=>({id:r.worker_id,name:nameBy[r.worker_id]})).sort((a,b)=>a.name.localeCompare(b.name));
 
   // ACTIVE = pending/rejected (needs a decision). APPROVED = billable history.
   const { data, loading, reload:reloadActive }=useQuery(client,
@@ -12940,7 +12943,8 @@ function SessionsClientView({ client, companyId }){
                 <td data-label="Type">{s.session_type||<span className="muted">—</span>}</td>
                 <td data-label="Units">{s.units}</td>
                 <td data-label="Case">{s.case_ref||<span className="muted">—</span>}</td>
-                <td data-label="Status"><span className="pill" style={s.approval==="rejected"?{background:"#fee2e2",color:"var(--bad)"}:{background:"var(--warn-soft)",color:"var(--warn)"}}>{s.approval}</span></td>
+                <td data-label="Status"><span className="pill" style={s.approval==="rejected"?{background:"#fee2e2",color:"var(--bad)"}:{background:"var(--warn-soft)",color:"var(--warn)"}}>{s.approval}</span>
+                  {!hasRate[s.worker_id] && <span className="pill" title="This contractor has no session rate on this client — it will bill $0. Set it in their Edit → Client engagements before approving." style={{marginLeft:6,background:"#fee2e2",color:"#b91c1c",fontSize:10}}>no rate · $0</span>}</td>
                 <td className="card-action" style={{textAlign:"right",whiteSpace:"nowrap"}}>
                   <button className="btn sm" disabled={busy} onClick={()=>setApproval([s.id],"approved")}>Approve</button>{" "}
                   <button className="btn ghost sm" style={{borderColor:"var(--bad)",color:"var(--bad)"}} disabled={busy} onClick={()=>deleteSessions([s.id],nameBy[s.worker_id])}>Delete</button>

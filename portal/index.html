@@ -417,7 +417,7 @@ function EmailInput({ value, onChange, work, pin, style, placeholder, ...rest })
 }
 
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-20 00:51 EDT · ca2a41c";
+const BUILD = "2026-06-20 01:11 EDT · dd02a27";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -854,6 +854,97 @@ function TimeView({ client }){
         </div>
         );
       })}
+    </div>
+  );
+}
+
+// Contractor self-service session logging. Sessions are recorded against a CLIENT
+// the contractor is engaged with (via my_clients() RPC — id+name only, no rates),
+// inserted as 'pending', and approved by an admin in the Service Sessions tab.
+function SessionsView({ client }){
+  const [wid,setWid]=useState(null);
+  const [clients,setClients]=useState(null);   // [{id,name}] from my_clients()
+  const [rows,setRows]=useState(null); const [err,setErr]=useState("");
+  const [cid,setCid]=useState("");
+  const [date,setDate]=useState(()=>new Date().toISOString().slice(0,10));
+  const [units,setUnits]=useState("1"); const [type,setType]=useState(""); const [caseRef,setCaseRef]=useState("");
+  const [busy,setBusy]=useState(false); const [msg,setMsg]=useState("");
+  function load(){
+    setErr("");   // clear any prior transient error so a successful reload recovers
+    client.from("workers").select("id").maybeSingle().then(({data})=>setWid(data?.id||null));
+    client.rpc("my_clients").then(({data,error})=>{ if(error) setErr(error.message); setClients(data||[]); });
+    client.from("service_sessions").select("id,company_id,session_date,session_type,units,case_ref,approval")
+      .order("session_date",{ascending:false}).limit(500)
+      .then(({data,error})=>{ if(error) setErr(error.message); setRows(data||[]); });
+  }
+  useEffect(load,[]);
+  const nameByCid={}; (clients||[]).forEach(c=>nameByCid[c.id]=c.name);
+  async function add(){
+    if(!cid){ setMsg("Pick a client."); return; }
+    if(!wid){ setMsg("Couldn't find your profile — contact your admin."); return; }
+    if(!date){ setMsg("Pick a date."); return; }
+    const u=parseInt(units,10);
+    if(!Number.isFinite(u)||u<0){ setMsg("Units must be a whole number of 0 or more."); return; }
+    setBusy(true); setMsg("");
+    const { error }=await client.from("service_sessions").insert({
+      worker_id:wid, company_id:cid, session_date:date, units:u, approval:"pending",
+      session_type:type.trim()||null, case_ref:caseRef.trim()||null });
+    setBusy(false);
+    if(error){ setMsg("Couldn't log session: "+error.message); return; }
+    setMsg("Logged ✓ — pending admin approval."); setType(""); setCaseRef(""); setUnits("1");
+    load();
+  }
+  async function del(id){
+    if(!window.confirm("Remove this pending session?")) return;
+    setBusy(true); setMsg("");
+    const { error }=await client.from("service_sessions").delete().eq("id",id);
+    setBusy(false);
+    if(error){ setMsg("Couldn't remove: "+error.message); return; }
+    load();
+  }
+  if(err) return <div className="wrap"><div className="err">{err}</div></div>;
+  const inp={width:"100%",padding:8,boxSizing:"border-box"};
+  const pill=(a)=> a==="approved"?{background:"#dcfce7",color:"#166534"}
+                 : a==="rejected"?{background:"#fee2e2",color:"#b91c1c"}
+                 : {background:"#fef9c3",color:"#854d0e"};
+  return (
+    <div className="wrap">
+      <div className="pagehead"><span className="sticker">📋 Your sessions</span></div>
+      {clients && clients.length===0
+        ? <div className="empty">You're not assigned to a client yet — service sessions are logged per client. Contact your admin to be added.</div>
+        : <div className="card">
+          <div style={{fontWeight:700,marginBottom:6}}>Log a session</div>
+          <label className="k" style={{display:"block"}}>Client<br/>
+            <select value={cid} onChange={e=>setCid(e.target.value)} style={inp}>
+              <option value="">— pick a client —</option>
+              {(clients||[]).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+            </select></label>
+          <div className="row" style={{gap:8,flexWrap:"wrap",marginTop:8,padding:0}}>
+            <label className="k" style={{flex:1,minWidth:140}}>Date<br/><input type="date" value={date} onChange={e=>setDate(e.target.value)} style={inp}/></label>
+            <label className="k" style={{width:90}}>Units<br/><input type="number" min="0" step="1" value={units} onChange={e=>setUnits(e.target.value)} style={inp}/></label>
+          </div>
+          <div className="row" style={{gap:8,flexWrap:"wrap",marginTop:8,padding:0}}>
+            <label className="k" style={{flex:1,minWidth:140}}>Type<br/><input value={type} placeholder="e.g. home visit" onChange={e=>setType(e.target.value)} style={inp}/></label>
+            <label className="k" style={{flex:1,minWidth:140}}>Case ref<br/><input value={caseRef} placeholder="optional" onChange={e=>setCaseRef(e.target.value)} style={inp}/></label>
+          </div>
+          <button className="btn" disabled={busy||!cid} onClick={add} style={{marginTop:10}}>{busy?"…":"Log session"}</button>
+          {msg && <div className="sub" style={{marginTop:8}}>{msg}</div>}
+        </div>}
+
+      <div style={{fontWeight:700,margin:"14px 0 6px"}}>Recent sessions</div>
+      {rows===null ? <div className="empty">Loading…</div>
+       : rows.length===0 ? <div className="empty">No sessions logged yet.</div>
+       : rows.map(s=>(
+        <div className="card" key={s.id}>
+          <div className="row" style={{fontWeight:700,padding:0}}><span>{nameByCid[s.company_id]||"Client"}</span>
+            <span style={{...pill(s.approval),padding:"2px 8px",borderRadius:999,fontSize:12,fontWeight:700}}>{s.approval}</span></div>
+          <div className="row"><span className="k">Date</span><span>{s.session_date}</span></div>
+          <div className="row"><span className="k">Units</span><span>{s.units}</span></div>
+          {s.session_type && <div className="row"><span className="k">Type</span><span>{s.session_type}</span></div>}
+          {s.case_ref && <div className="row"><span className="k">Case</span><span>{s.case_ref}</span></div>}
+          {s.approval==="pending" && <button className="btn ghost" style={{marginTop:8,color:"var(--accent)",borderColor:"var(--accent)"}} disabled={busy} onClick={()=>del(s.id)}>Remove</button>}
+        </div>
+      ))}
     </div>
   );
 }
@@ -1516,6 +1607,7 @@ function Portal({ client, session }){
       {tab==="home" && <Home client={client} session={session} od={od}/>}
       {tab==="pay"  && <PaySlips client={client}/>}
       {tab==="time" && <TimeView client={client}/>}
+      {tab==="sessions" && <SessionsView client={client}/>}
       {tab==="docs" && <DocsView client={client} session={session} od={od}/>}
       {tab==="me"   && <ProfileView client={client} session={session} onSignOut={signOut}/>}
       <div className="pbuild" style={{textAlign:"center",color:"var(--muted)",fontSize:11,padding:"10px 0 84px"}}>Build {BUILD}</div>
@@ -1523,6 +1615,7 @@ function Portal({ client, session }){
         <button className={tab==="home"?"on":""} onClick={()=>goTab("home")}><span className="ic">🏠</span>Home</button>
         <button className={tab==="pay"?"on":""}  onClick={()=>goTab("pay")}><span className="ic">₱</span>Pay slips</button>
         <button className={tab==="time"?"on":""} onClick={()=>goTab("time")}><span className="ic">⏱</span>Time</button>
+        <button className={tab==="sessions"?"on":""} onClick={()=>goTab("sessions")}><span className="ic">📋</span>Sessions</button>
         <button className={tab==="docs"?"on":""} onClick={()=>goTab("docs")}><span className="ic"><span style={{position:"relative",display:"inline-block"}}>📄{docCount>0 && <span aria-label={`${docCount} to upload`} style={{position:"absolute",top:-6,right:-11,background:"#dc2626",color:"#fff",borderRadius:999,fontSize:10,fontWeight:800,minWidth:15,height:15,lineHeight:"15px",textAlign:"center",padding:"0 3px",boxShadow:"0 0 0 2px #fff"}}>{docCount}</span>}</span></span>Docs</button>
         <button className={tab==="me"?"on":""}   onClick={()=>goTab("me")}><span className="ic">👤</span>Profile</button>
         <button className="nav-collapse" onClick={()=>setNavCollapsed(c=>!c)}
