@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-19 19:22 EDT · ea7f268";
+const BUILD = "2026-06-19 21:22 EDT · bc1ec2e";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -5267,23 +5267,48 @@ function TimeApproval({client,companyId,consolidated,goTab,openPeriodForEdit}){
   const approved=approvedData||[];
   const entries=active.concat(approved);   // combined, for prior-state lookups
 
-  // group active by contractor for review
-  const byPerson={};
-  active.forEach(e=>{(byPerson[e.source_name]=byPerson[e.source_name]||[]).push(e);});
-  // Sort by contractor name so row order is STABLE — otherwise object-insertion
-  // order (driven by work_date) makes rows jump around when hours change.
-  const people=Object.entries(byPerson).sort((a,b)=>a[0].localeCompare(b[0]));
-
-  // period span across ACTIVE entries (the period being approved now)
-  const activeDates=active.map(e=>e.work_date).sort();
-  const pStart=activeDates[0], pEnd=activeDates[activeDates.length-1];
   function countWorkingDays(start,end){
     if(!start||!end)return 0;
     let wd=0; const s=new Date(start+"T00:00:00"), e=new Date(end+"T00:00:00");
     for(let d=new Date(s); d<=e; d.setDate(d.getDate()+1)){ const w=d.getDay(); if(w>=1&&w<=5) wd++; }
     return Math.max(0, wd - holidaysInRange(start,end,true).length);
   }
-  const periodDays=activeDates.length?new Set(activeDates).size:0;
+
+  // Scope the grid to ONE canonical pay period at a time. ACTIVE (pending/
+  // rejected) entries are bucketed by periodFor(); without this the view unions
+  // every non-approved entry — including the days the daily Hubstaff cron stages
+  // for the NEXT period — which inflated the span, the counts, and "days worked".
+  const [selPeriod,setSelPeriod]=useState(null);   // "start|end" of the chosen period
+  const periodBuckets={};
+  active.forEach(e=>{
+    if(!e.work_date)return;
+    const p=periodFor(e.work_date); const key=`${p.start}|${p.end}`;
+    (periodBuckets[key]||(periodBuckets[key]={start:p.start,end:p.end,count:0})).count++;
+  });
+  // oldest period first — you pay the oldest unpaid period next.
+  const periodList=Object.values(periodBuckets).sort((a,b)=>a.start.localeCompare(b.start));
+  // honour the user's pick while it still has entries; otherwise snap to oldest.
+  const selKey=(selPeriod && periodBuckets[selPeriod]) ? selPeriod
+             : (periodList[0] ? `${periodList[0].start}|${periodList[0].end}` : null);
+  const curPeriod=selKey ? periodBuckets[selKey] : null;
+  // only the selected period's active entries feed the grid + the action buttons.
+  const activeInPeriod=curPeriod
+    ? active.filter(e=> e.work_date>=curPeriod.start && e.work_date<=curPeriod.end)
+    : [];
+  const pendingAll=active.filter(e=>e.approval==="pending").length;   // across ALL periods
+
+  // group the SELECTED period's active entries by contractor for review
+  const byPerson={};
+  activeInPeriod.forEach(e=>{(byPerson[e.source_name]=byPerson[e.source_name]||[]).push(e);});
+  // Sort by contractor name so row order is STABLE — otherwise object-insertion
+  // order (driven by work_date) makes rows jump around when hours change.
+  const people=Object.entries(byPerson).sort((a,b)=>a[0].localeCompare(b[0]));
+
+  // span = the canonical period boundaries (not the min/max of present entries),
+  // so a partially-tracked current period still reports its true length.
+  const pStart=curPeriod?curPeriod.start:undefined, pEnd=curPeriod?curPeriod.end:undefined;
+  const periodDays=(pStart&&pEnd)
+    ? Math.round((new Date(pEnd+"T00:00:00")-new Date(pStart+"T00:00:00"))/86400000)+1 : 0;
   const workingDays=countWorkingDays(pStart,pEnd);
 
   // group APPROVED into periods by half-month span (via periodFor)
@@ -5534,7 +5559,7 @@ function TimeApproval({client,companyId,consolidated,goTab,openPeriodForEdit}){
     }catch(ex){ setMsg("Couldn't update approval: "+(ex.message||ex)); }
     finally{ setBusy(false); }
   }
-  const pendingIds=active.filter(e=>e.approval==="pending").map(e=>e.id);
+  const pendingIds=activeInPeriod.filter(e=>e.approval==="pending").map(e=>e.id);
   const pendingTotal=pendingIds.length;
 
   // Only blank the card on the FIRST load (data still null). On reloads after
@@ -5548,17 +5573,25 @@ function TimeApproval({client,companyId,consolidated,goTab,openPeriodForEdit}){
         <div>
           <h2>Enter Manual Time</h2>
           <p className="sub">Add hours by hand below, or review any staged imports before they become payable.
-            {" "}{pendingTotal} pending entr{pendingTotal===1?"y":"ies"}.
-            {pStart && <span> · span {pStart} → {pEnd} ({periodDays} days, {workingDays} working).</span>}</p>
+            {" "}{pendingTotal} pending entr{pendingTotal===1?"y":"ies"} in this period.
+            {pStart && <span> · {pStart} → {pEnd} ({periodDays} days, {workingDays} working).</span>}
+            {pendingAll>pendingTotal &&
+              <span> · {pendingAll-pendingTotal} more pending in {periodList.length-1} other period{periodList.length-1===1?"":"s"} — use the period picker.</span>}</p>
         </div>
         {people.length>0 &&
-        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          {periodList.length>1 &&
+            <select value={selKey||""} onChange={e=>setSelPeriod(e.target.value)}
+              title="Choose which pending pay period to review" style={{padding:"6px 8px"}}>
+              {periodList.map(p=>{ const k=`${p.start}|${p.end}`;
+                return <option key={k} value={k}>{p.start} → {p.end} ({p.count})</option>; })}
+            </select>}
           <button className="btn" disabled={busy||!pendingTotal}
             onClick={()=>setApproval(pendingIds,"approved")}>
-            {busy?"Working…":`Approve all pending (${pendingTotal})`}</button>
+            {busy?"Working…":`Approve all in period (${pendingTotal})`}</button>
           <button className="btn ghost" disabled={busy||!pendingTotal}
             onClick={()=>setApproval(pendingIds,"rejected")}>
-            Reject all pending</button>
+            Reject all in period</button>
         </div>}
       </div>
 
