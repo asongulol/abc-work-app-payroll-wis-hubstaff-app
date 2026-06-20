@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-20 01:11 EDT · dd02a27";
+const BUILD = "2026-06-20 01:59 EDT · 5d11dcc";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -2207,7 +2207,7 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
   const today=new Date().toISOString().slice(0,10);
   const DEFAULTS={ first_name:"", middle_name:"", last_name:"", email:"",
     ph_address:"", permanent_address:"", date_of_birth:"",
-    company_id:companyId||"", contract:"FT", role:"", rate:"", hours:"40", contract_date:today, hire_date:today,
+    company_id:companyId||"", contract:"FT", role:"", rate:"", bill_rate_usd:"", hours:"40", contract_date:today, hire_date:today,
     shift_start:etToPhtHHMM("08:00"), shift_end:etToPhtHHMM("17:00"),
     ic_addendum_type:"", ic_addendum_text:"", extra_docs:[],
     tools:{gmail:false,providersoft:false,hubstaff:false,zoom:false,others:""},
@@ -2343,7 +2343,8 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
       if(r.error && /payout_method/i.test(r.error.message)) r=await client.from("workers").insert({...base,payout_method:"wise"}).select().single();
       if(r.error) throw r.error;
       w=r.data;
-      const {error:e2}=await client.from("worker_companies").insert({worker_id:w.id, company_id:coId, contract:f.contract, role:f.role.trim()||null, weekly_hours:parseFloat(f.hours)||null, status:"active", started_on:f.hire_date||null});
+      const billV=parseFloat(f.bill_rate_usd);   // USD the client is invoiced per hour (optional at hire)
+      const {error:e2}=await client.from("worker_companies").insert({worker_id:w.id, company_id:coId, contract:f.contract, role:f.role.trim()||null, weekly_hours:parseFloat(f.hours)||null, bill_rate_usd:(Number.isFinite(billV)&&billV>=0?billV:null), status:"active", started_on:f.hire_date||null});
       if(e2) throw e2;
       if(parseFloat(f.rate)>0){
         const {error:e3}=await client.from("rates").insert({worker_id:w.id, company_id:coId, amount_php:parseFloat(f.rate), effective_start:f.contract_date||f.hire_date||today});
@@ -2471,6 +2472,7 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
         </div>
         {field("Role / position *","role","text","e.g. Billing Specialist — shows on the IC Agreement")}
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>{field("Rate (PHP / period)","rate","number")}{field("Contract date","contract_date","date")}</div>
+        {field("Client bill rate (USD/hr)","bill_rate_usd","number","optional — the rate the client is invoiced; set later if unknown")}
         {field("Hire date (start) *","hire_date","date")}
         <div style={{display:"flex",gap:16,marginTop:6}}>
           <label style={{fontSize:13,display:"flex",gap:6,alignItems:"center"}}><input type="checkbox" checked={f.health_allowance_eligible} onChange={e=>set("health_allowance_eligible",e.target.checked)}/> Health allowance</label>
@@ -3287,6 +3289,13 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   const [engEdit,setEngEdit]=useState({});   // per-client engagement edits: {cid:{role,bill_rate_usd}}
   const engVal=(m,k)=> (engEdit[m.company_id]&&k in engEdit[m.company_id]) ? engEdit[m.company_id][k] : (m[k]??"");
   const setEng=(cid,k,v)=> setEngEdit(e=>({...e,[cid]:{...e[cid],[k]:v}}));
+  // "Bill per session" toggle — UI-only (no stored flag): on = the Session rate
+  // field is shown; a set session_rate_usd is what actually enables session
+  // billing. Defaults on when a rate already exists. Turning it OFF clears the
+  // rate (so Save persists null → session billing disabled for that engagement).
+  const [sessOn,setSessOn]=useState({});   // {cid:bool}
+  const sessEnabled=(m)=> (m.company_id in sessOn) ? sessOn[m.company_id] : (m.session_rate_usd!=null);
+  const toggleSess=(m,on)=>{ setSessOn(s=>({...s,[m.company_id]:on})); if(!on) setEng(m.company_id,"session_rate_usd",""); };
   const todayISO=new Date().toISOString().slice(0,10);
   function loadMemberships(){
     client.from("worker_companies").select("company_id,status,role,contract,bill_rate_usd,session_rate_usd,companies(name)").eq("worker_id",w.id)
@@ -3307,6 +3316,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     logEvent(client,{company_id:cid,action:"edit_contractor",entity:fullName(f),detail:{engagement:nm,...upd}});
     setSavedMsg("Saved engagement for "+nm+".");
     setEngEdit(e=>{ const n={...e}; delete n[cid]; return n; });
+    setSessOn(s=>{ const n={...s}; delete n[cid]; return n; });   // re-derive the toggle from reloaded data
     loadMemberships();
   }
   useEffect(()=>{ loadMemberships();
@@ -3439,8 +3449,10 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
                           <input style={{...inp,minWidth:160,width:"auto"}} value={engVal(m,"role")} placeholder="e.g. Billing Specialist" onChange={e=>setEng(m.company_id,"role",e.target.value)}/></label>
                         <label className="muted" style={{fontSize:11}}>Bill rate (USD/hr)<br/>
                           <input style={{...inp,width:110}} type="number" min="0" step="0.01" value={engVal(m,"bill_rate_usd")} placeholder="—" onChange={e=>setEng(m.company_id,"bill_rate_usd",e.target.value)}/></label>
-                        <label className="muted" style={{fontSize:11}}>Session rate (USD/visit)<br/>
-                          <input style={{...inp,width:120}} type="number" min="0" step="0.01" value={engVal(m,"session_rate_usd")} placeholder="—" onChange={e=>setEng(m.company_id,"session_rate_usd",e.target.value)}/></label>
+                        <label className="muted" style={{fontSize:11,display:"flex",alignItems:"center",gap:5,alignSelf:"center"}}>
+                          <input type="checkbox" checked={sessEnabled(m)} onChange={e=>toggleSess(m,e.target.checked)}/> Bill per session</label>
+                        {sessEnabled(m) && <label className="muted" style={{fontSize:11}}>Session rate (USD/visit)<br/>
+                          <input style={{...inp,width:120}} type="number" min="0" step="0.01" value={engVal(m,"session_rate_usd")} placeholder="—" onChange={e=>setEng(m.company_id,"session_rate_usd",e.target.value)}/></label>}
                         <button className="btn sm" disabled={coBusy||!dirty} onClick={()=>saveEngagement(m.company_id,engEdit[m.company_id]||{})}>{coBusy?"…":"Save"}</button>
                       </div>
                     </div>
