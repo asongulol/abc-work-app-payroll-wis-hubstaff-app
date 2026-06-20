@@ -63,6 +63,58 @@ function authHeaders(token: string) {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 }
 
+// --- Wise SCA (Strong Customer Authentication / "2FA") ----------------------
+// Sensitive endpoints — funding a transfer from balance — require SCA. The
+// first call returns HTTP 403 with an `x-2fa-approval` one-time token (OTT);
+// we sign that token with our registered private key (RSA, SHA-256, PKCS#1
+// v1.5) and retry the SAME request with `x-2fa-approval` + `X-Signature`.
+// Key setup (generate keypair, register the PUBLIC key in Wise, set the
+// PRIVATE key as WISE_PRIVATE_KEY): see WISE_SCA_SETUP.md.
+function pemToDer(pem: string): Uint8Array {
+  const b64 = pem.replace(/-----BEGIN [^-]+-----/g, "")
+                 .replace(/-----END [^-]+-----/g, "")
+                 .replace(/\s+/g, "");
+  const bin = atob(b64);
+  const der = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) der[i] = bin.charCodeAt(i);
+  return der;
+}
+let _scaKey: CryptoKey | null = null;
+async function getScaKey(): Promise<CryptoKey | null> {
+  if (_scaKey) return _scaKey;
+  const pem = Deno.env.get("WISE_PRIVATE_KEY");
+  if (!pem) return null;
+  _scaKey = await crypto.subtle.importKey(
+    "pkcs8", pemToDer(pem) as BufferSource,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false, ["sign"],
+  );
+  return _scaKey;
+}
+async function signOtt(ott: string): Promise<string> {
+  const key = await getScaKey();
+  if (!key) throw new Error("WISE_PRIVATE_KEY not set — required to fund via API (Wise SCA). See WISE_SCA_SETUP.md");
+  const sig = await crypto.subtle.sign(
+    { name: "RSASSA-PKCS1-v1_5" }, key, new TextEncoder().encode(ott));
+  let bin = ""; const bytes = new Uint8Array(sig);
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);   // base64 signature for the X-Signature header
+}
+// Perform a request that may require SCA. On 403 + x-2fa-approval, sign the OTT
+// and retry once with the approval + signature headers. Anything else passes
+// through unchanged (no-op when SCA isn't required, e.g. non-EEA accounts).
+async function fetchWithSca(url: string, init: RequestInit, _token: string): Promise<Response> {
+  const res = await fetch(url, init);
+  const ott = res.headers.get("x-2fa-approval");
+  if (res.status === 403 && ott) {
+    const signature = await signOtt(ott);
+    const headers = { ...(init.headers as Record<string, string>),
+      "x-2fa-approval": ott, "X-Signature": signature };
+    return await fetch(url, { ...init, headers });
+  }
+  return res;
+}
+
 // Run async `fn` over `items` with bounded concurrency, preserving input order.
 // Used to parallelize the per-transfer Wise GET loops (status / rates / poll)
 // without hammering the Wise API; cap kept modest for rate-limit safety.
@@ -167,7 +219,24 @@ async function draftOne(token: string, profileId: number, item: any) {
       details: { reference: "Payroll", transferPurpose: "verification.transfers.purpose.pay.bills" },
     }),
   });
-  if (!tRes.ok) return { worker_id: item.worker_id, status: "failed", error: `transfer ${tRes.status}: ${await tRes.text()}` };
+  if (!tRes.ok) {
+    const errText = await tRes.text();
+    // C5 — Wisetag / non-bank-account recipient detection. When the stored
+    // recipient_id is a Wisetag (balance) contact rather than a bank-account
+    // recipient, /v1/transfers rejects it (typically 422/403 referencing the
+    // target account / recipient type). Surface a SPECIFIC, actionable status
+    // instead of a raw error so the UI can say "pay via Manual CSV" rather
+    // than leaving a half-drafted row that would fail at funding.
+    const looksWisetag = (tRes.status === 422 || tRes.status === 403) &&
+      /target.?account|recipient|not.*(bank|active)|balance/i.test(errText);
+    if (looksWisetag) {
+      return { worker_id: item.worker_id, status: "wisetag_unsupported",
+        error: "Recipient is a Wisetag / Wise-balance contact, not a bank-account recipient — "+
+               "the API draft path can't use it. Pay this contractor via the Manual Wise batch CSV.",
+        recipient_id: item.recipient_id };
+    }
+    return { worker_id: item.worker_id, status: "failed", error: `transfer ${tRes.status}: ${errText}` };
+  }
   const transfer = await tRes.json();
 
   // IMPORTANT: we stop here. No POST .../payments. Money has NOT moved.
@@ -184,7 +253,8 @@ Deno.serve(async (req) => {
     // --- caller authorization -------------------------------------------------
     // This function wields the company Wise token AND the service-role key, so
     // EVERY action requires an authenticated admin (the public anon key alone is
-    // not enough). Money-staging actions (draft / batch) require the OWNER role.
+    // not enough). Money-moving actions (draft / batch / fund) require the OWNER
+    // role — fund actually disburses from the Wise balance, so it is owner-only.
     // The machine reconcile actions (poll / match) may alternatively present the
     // cron secret, so a scheduled job can run them without a user session. This
     // is the same in-function gate portal-admin / admin-manage use; the function
@@ -195,7 +265,7 @@ Deno.serve(async (req) => {
       if (!SB || !SR) return json({ error: "server missing SUPABASE_URL / SERVICE_ROLE_KEY" }, 500);
       const svc = { apikey: SR, Authorization: `Bearer ${SR}`, "Content-Type": "application/json" };
       const action = body.action;
-      const OWNER_ACTIONS = new Set(["draft", "batch"]);
+      const OWNER_ACTIONS = new Set(["draft", "batch", "fund"]);
       const CRON_ACTIONS = new Set(["poll", "match"]);
 
       let authed = false;
@@ -246,6 +316,171 @@ Deno.serve(async (req) => {
       return json({ profile_id: profileId, results });
     }
 
+    // FUND a single drafted transfer — calls Wise's funding endpoint
+    // (POST /v3/profiles/{id}/transfers/{transferId}/payments) which is what
+    // actually moves money from the business Wise balance. Independent of
+    // the `draft` action so the UI can fund per-row and surface per-row
+    // outcomes. Owner-gated above (OWNER_ACTIONS) AND gated client-side on
+    // companies.api_payouts_enabled; this function additionally enforces
+    // idempotency (refuse to refund a row that already has funded_at).
+    //
+    // Body: { action: "fund",
+    //         transfer_id: <string|number>,   // required: Wise transfer id
+    //         payment_id?: <uuid>,            // optional: DB payment row for
+    //                                         //   idempotency check + audit update
+    //         actor?: <string> }              // optional: admin email/id for
+    //                                         //   funded_by column
+    //
+    // Returns:
+    //   ok=true   → { ok: true, funded_at, wise_status, already_funded? }
+    //   ok=false  → { ok: false, error, http_status?, fund_error_stored? }
+    if (body.action === "fund") {
+      const transferId = body.transfer_id;
+      const paymentId  = body.payment_id;
+      const actor      = body.actor ?? null;
+      if (transferId == null || String(transferId).trim() === "") {
+        return json({ ok: false, error: "need transfer_id" }, 400);
+      }
+      const supaUrl = Deno.env.get("SUPABASE_URL");
+      const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+      if (!supaUrl || !serviceKey) {
+        return json({ ok: false, error: "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set on the server" }, 500);
+      }
+      const restHeaders = {
+        "apikey": serviceKey,
+        "Authorization": `Bearer ${serviceKey}`,
+        "Content-Type": "application/json",
+      };
+
+      // 1. Defensive idempotency: if the DB row already has funded_at, refuse
+      //    to call Wise a second time. Wise rejects double-funding too, but
+      //    avoiding the API call entirely is faster and surfaces the prior
+      //    funded_at to the UI without another roundtrip.
+      let priorFundedAt: string | null = null;
+      if (paymentId) {
+        const pq = new URLSearchParams({
+          "select": "funded_at,wise_transfer_id",
+          "id": `eq.${paymentId}`,
+        });
+        const pr = await fetch(`${supaUrl}/rest/v1/payments?${pq}`, { headers: restHeaders });
+        if (pr.ok) {
+          const rows = await pr.json();
+          if (Array.isArray(rows) && rows[0]) {
+            priorFundedAt = rows[0].funded_at ?? null;
+            const dbTransfer = String(rows[0].wise_transfer_id ?? "");
+            if (dbTransfer && dbTransfer !== String(transferId)) {
+              return json({ ok: false, error:
+                `transfer_id mismatch: DB has ${dbTransfer}, request has ${transferId}` }, 400);
+            }
+          }
+        }
+        if (priorFundedAt) {
+          return json({ ok: true, already_funded: true, funded_at: priorFundedAt });
+        }
+      }
+
+      // 2. Call Wise's funding endpoint. This is SCA-protected: fetchWithSca
+      //    transparently signs the x-2fa-approval challenge and retries. If
+      //    SCA is required but WISE_PRIVATE_KEY isn't configured, signing
+      //    throws — surface it as a normal ok:false (and store fund_error) so
+      //    the UI shows a clear reason instead of a 500.
+      const profileId = body.profile_id ?? await getBusinessProfileId(token);
+      let fRes: Response;
+      try {
+        fRes = await fetchWithSca(
+          `${BASE}/v3/profiles/${profileId}/transfers/${transferId}/payments`,
+          { method: "POST", headers: authHeaders(token), body: JSON.stringify({ type: "BALANCE" }) },
+          token,
+        );
+      } catch (scaErr) {
+        const errMsg = String((scaErr as any)?.message ?? scaErr);
+        if (paymentId) {
+          await fetch(`${supaUrl}/rest/v1/payments?id=eq.${paymentId}`, {
+            method: "PATCH",
+            headers: { ...restHeaders, "Prefer": "return=minimal" },
+            body: JSON.stringify({ fund_error: errMsg.slice(0, 500) }),
+          });
+        }
+        return json({ ok: false, error: errMsg.slice(0, 500), fund_error_stored: !!paymentId }, 500);
+      }
+      const fText = await fRes.text();
+      let fJson: any = null;
+      try { fJson = fText ? JSON.parse(fText) : null; } catch { /* ignore */ }
+
+      // 3a. Failure path. Store fund_error so the UI can render the reason.
+      if (!fRes.ok) {
+        const errMsg = (fJson?.errors?.[0]?.message)
+                    ?? (fJson?.message)
+                    ?? fText
+                    ?? `Wise fund ${fRes.status}`;
+        if (paymentId) {
+          await fetch(`${supaUrl}/rest/v1/payments?id=eq.${paymentId}`, {
+            method: "PATCH",
+            headers: { ...restHeaders, "Prefer": "return=minimal" },
+            body: JSON.stringify({ fund_error: String(errMsg).slice(0, 500) }),
+          });
+        }
+        return json({
+          ok: false,
+          error: String(errMsg).slice(0, 500),
+          http_status: fRes.status,
+          fund_error_stored: !!paymentId,
+        }, fRes.status === 422 ? 422 : 500);
+      }
+
+      // 3b. Success path. Store funded_at + funded_by; clear any prior
+      //     fund_error.
+      const fundedAt = new Date().toISOString();
+      const patch: Record<string, unknown> = {
+        funded_at: fundedAt,
+        funded_by: actor,
+        fund_error: null,
+      };
+
+      // H8 — auto-reconcile after fund: immediately re-read the transfer's
+      // status so the UI doesn't lag in "drafted" until a separate Reconcile
+      // pass runs. If Wise already reports a terminal-sent state, set
+      // paid_at (to the real sent/funded date) + status='sent' in the SAME
+      // write. Best-effort: a probe failure just leaves the row funded (the
+      // normal Reconcile will catch up later).
+      let wiseStatus = fJson?.status ?? null;
+      let autoSent = false;
+      try {
+        const dates = await fetchWiseDates(token, { id: transferId });
+        const sRes = await fetch(`${BASE}/v1/transfers/${transferId}`, { headers: authHeaders(token) });
+        if (sRes.ok) {
+          const tdetail = await sRes.json();
+          wiseStatus = tdetail.status ?? wiseStatus;
+          const sentStates = new Set(["outgoing_payment_sent", "completed", "sent"]);
+          const sentIso = dates.dateSent || dates.dateFunded || dates.created || null;
+          if (wiseStatus && sentStates.has(wiseStatus) && sentIso) {
+            patch.paid_at = sentIso;
+            patch.status = "sent";
+            patch.wise_dates = dates;
+            autoSent = true;
+          }
+        }
+      } catch (_e) { /* best-effort; leave row funded for the next Reconcile */ }
+
+      let dbWriteOk = true;
+      if (paymentId) {
+        const u = await fetch(`${supaUrl}/rest/v1/payments?id=eq.${paymentId}`, {
+          method: "PATCH",
+          headers: { ...restHeaders, "Prefer": "return=minimal" },
+          body: JSON.stringify(patch),
+        });
+        dbWriteOk = u.ok;
+      }
+      return json({
+        ok: true,
+        funded_at: fundedAt,
+        wise_status: wiseStatus,
+        wise_type:   fJson?.type   ?? null,
+        auto_sent:   autoSent,
+        db_write_ok: dbWriteOk,
+      });
+    }
+
     if (body.action === "batch") {
       const items = (body.items ?? []).filter((i: any) => i.recipient_id && i.amount_php > 0);
       if (!items.length) return json({ error: "no fundable items" }, 400);
@@ -273,7 +508,17 @@ Deno.serve(async (req) => {
               customerTransactionId: crypto.randomUUID(),
               details: { reference: "Payroll", transferPurpose: "verification.transfers.purpose.pay.bills" } }),
           });
-          if (!tRes.ok) { results.push({ worker_id: item.worker_id, status: "failed", error: `transfer ${tRes.status}: ${await tRes.text()}` }); continue; }
+          if (!tRes.ok) {
+            const errText = await tRes.text();
+            // C5 — Wisetag / non-bank-account recipient (see draftOne).
+            const looksWisetag = (tRes.status === 422 || tRes.status === 403) &&
+              /target.?account|recipient|not.*(bank|active)|balance/i.test(errText);
+            results.push(looksWisetag
+              ? { worker_id: item.worker_id, status: "wisetag_unsupported", recipient_id: item.recipient_id,
+                  error: "Wisetag / Wise-balance recipient — can't API-draft; pay via Manual CSV." }
+              : { worker_id: item.worker_id, status: "failed", error: `transfer ${tRes.status}: ${errText}` });
+            continue;
+          }
           const t = await tRes.json();
           results.push({ worker_id: item.worker_id, transfer_id: t.id, fx_rate: quote.rate ?? 1, status: "drafted" });
         } catch (e) { results.push({ worker_id: item.worker_id, status: "failed", error: String(e?.message ?? e) }); }

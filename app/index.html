@@ -8557,7 +8557,7 @@ function PullRecipients({client,companyId,consolidated,onClose}){
   );
 }
 
-function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillingDirty,openContractor}){
+function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillingDirty,openContractor,apiPayoutsEnabled,toggleApiPayouts}){
   const gate = (label)=> typeof confirmBillingDirty==="function" ? confirmBillingDirty(label) : true;
   const [periods,setPeriods]=useState([]);
   const [periodId,setPeriodId]=useState("");
@@ -8585,7 +8585,7 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
     setPeriodId(pid);setRows(null);setMsg("");setArmed(false);setBatchId(null);
     if(!pid)return;
     const {data,error}=await client.from("payments")
-      .select("worker_id,net_php,payout_amount,wise_transfer_id,fx_rate,status,payout_method,"+
+      .select("id,worker_id,net_php,payout_amount,wise_transfer_id,fx_rate,status,payout_method,funded_at,funded_by,fund_error,"+
               "workers(first_name,middle_name,last_name,wise_recipient_id,wise_recipient_uuid,wise_recipients,payout_method)")
       .eq("pay_period_id",pid);
     if(error){setMsg(error.message);return;}
@@ -8600,14 +8600,19 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
         const list=Array.isArray(p.workers?.wise_recipients)?p.workers.wise_recipients:[];
         const def=p.workers?.wise_recipient_id||list[0]?.id||null;  // last-used default
         return {
+          payment_id:p.id,                                // needed by the fund action
           worker_id:p.worker_id,
           name:fullName(p.workers),
           amount:Number(p.net_php||p.payout_amount||0),  // editable
           recipients:list,
           recipient_id:def,                               // editable; defaults to last-used
           recipient_uuid:p.workers?.wise_recipient_uuid||"",  // Wisetag/contact rows have only a UUID
+          // include: by default true for unfunded drafts and untouched rows.
+          // We don't auto-select rows that are already funded — they're done.
           include:!!def && !p.wise_transfer_id,
           transfer_id:p.wise_transfer_id, status:p.status,
+          funded_at:p.funded_at||null,
+          fund_error:p.fund_error||null,
         };
       })
       // only contractors who actually have a Wise recipient on file
@@ -8619,6 +8624,91 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
 
   const selected=(rows||[]).filter(r=>r.include && r.recipient_id && r.amount>0 && !r.transfer_id);
   const total=selected.reduce((s,r)=>s+r.amount,0);
+
+  // Drafted-but-not-yet-funded rows. Surfaced when companies.api_payouts_enabled
+  // is true so the user can fund them via the API path (real money). Excludes
+  // rows with a Wisetag-only / missing-numeric-id since the existing draft
+  // path rejects those (manual CSV handles them instead).
+  const drafted=(rows||[]).filter(r=>r.transfer_id && !r.funded_at);
+  const draftedTotal=drafted.reduce((s,r)=>s+r.amount,0);
+
+  // Per-row fund: hits the edge function for one transfer, updates the local
+  // row state with the outcome, surfaces error inline. Returns {ok, error}.
+  const [fundBusyId,setFundBusyId]=useState(null);  // payment_id or "__bulk__" while in flight
+  async function fundOne(row, actor){
+    if(!row?.transfer_id){ return { ok:false, error:"no transfer_id" }; }
+    if(row.funded_at){ return { ok:true, already_funded:true }; }
+    setFundBusyId(row.payment_id || row.worker_id);
+    try{
+      const { data, error }=await client.functions.invoke("wise-payouts",{
+        body:{
+          action:"fund",
+          transfer_id: row.transfer_id,
+          payment_id:  row.payment_id || null,
+          actor:       actor || null,
+        }});
+      if(error) throw new Error(error.message||"Edge function error");
+      if(data && data.ok===false){
+        const errMsg=data.error||"Wise fund failed";
+        setRow(row.worker_id, { fund_error: errMsg });
+        logEvent(client,{ company_id:companyId, action:"api_payout",
+          entity:`${row.name} · transfer ${row.transfer_id}`,
+          detail:{ outcome:"failed", amount_php:row.amount, transfer_id:String(row.transfer_id),
+                   error:errMsg, http_status:data.http_status||null } });
+        return { ok:false, error:errMsg };
+      }
+      // success path
+      const fundedAt=data?.funded_at||new Date().toISOString();
+      setRow(row.worker_id, { funded_at:fundedAt, fund_error:null });
+      logEvent(client,{ company_id:companyId, action:"api_payout",
+        entity:`${row.name} · transfer ${row.transfer_id}`,
+        detail:{ outcome:data?.already_funded?"already_funded":"funded",
+                 amount_php:row.amount, transfer_id:String(row.transfer_id),
+                 wise_status:data?.wise_status||null, funded_at:fundedAt } });
+      return { ok:true, funded_at:fundedAt };
+    }catch(ex){
+      const errMsg=String(ex.message||ex);
+      setRow(row.worker_id, { fund_error: errMsg });
+      logEvent(client,{ company_id:companyId, action:"api_payout",
+        entity:`${row.name} · transfer ${row.transfer_id}`,
+        detail:{ outcome:"failed", amount_php:row.amount, transfer_id:String(row.transfer_id),
+                 error:errMsg } });
+      return { ok:false, error:errMsg };
+    }finally{
+      setFundBusyId(null);
+    }
+  }
+
+  // Bulk fund all drafted-but-unfunded rows. Per-row outcomes; doesn't stop
+  // on first failure (other rows may still succeed). Requires a typed-amount
+  // confirmation since this moves real money.
+  async function fundDrafted(){
+    if(!drafted.length){ setMsg("Nothing drafted to fund."); return; }
+    if(!(await gate("Fund drafted Wise transfers (real money)"))) return;
+    const totalStr=money(draftedTotal,"PHP");
+    const sample=drafted.slice(0,8).map(r=>`• ${r.name} — ${money(r.amount,"PHP")}`).join("\n");
+    const more=drafted.length>8?`\n…and ${drafted.length-8} more`:"";
+    const ok=window.confirm(
+      `⚠ REAL MONEY: about to fund ${drafted.length} drafted Wise transfer(s):\n\n`+
+      sample+more+
+      `\n\nTotal: ${totalStr}\n\nThis calls Wise's funding endpoint and moves money out of your business Wise balance. The action is per-row idempotent (refuses to refund a row already funded) and each outcome is logged to the audit log.\n\nProceed?`
+    );
+    if(!ok) return;
+    setFundBusyId("__bulk__"); setBusy(true); setMsg("");
+    let funded=0, alreadyFunded=0, failed=0;
+    const actor=null;  // future: pull from auth.user.email if available
+    for(const r of drafted){
+      const res=await fundOne(r, actor);
+      if(res.ok){ if(res.already_funded) alreadyFunded++; else funded++; }
+      else failed++;
+    }
+    setFundBusyId(null); setBusy(false);
+    setMsg(`Funded ${funded} transfer(s)`+
+      (alreadyFunded?`; ${alreadyFunded} already funded`:"")+
+      (failed?`; ${failed} failed — see per-row error pills`:"")+`. Total intended: ${totalStr}.`);
+    // refresh from DB to pull canonical funded_at / fund_error values
+    loadBatch(periodId);
+  }
 
   async function createBatch(){
     if(!(await gate("Create Wise batch (API draft)"))) return;
@@ -8635,7 +8725,12 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
       // a NOT-NULL insert-candidate on a partial payment row. ok/fail counts match
       // the prior semantics (ok = transfers created).
       const succ=(data.results||[]).filter(r=>r.transfer_id);
-      const ok=succ.length, fail=(data.results||[]).length-ok;
+      const ok=succ.length;
+      // C5 — Wisetag/Wise-balance recipients can't be API-drafted; surface them
+      // separately so they're not lumped into a generic "failed" count (the user
+      // pays those via the Manual Wise batch CSV instead).
+      const wisetagRows=(data.results||[]).filter(r=>r.status==="wisetag_unsupported");
+      const fail=(data.results||[]).length-ok-wisetagRows.length;
       const CH=8;
       for(let i=0;i<succ.length;i+=CH){
         await Promise.all(succ.slice(i,i+CH).map(r=>client.from("payments").update({
@@ -8649,9 +8744,13 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
       for(let i=0;i<recEntries.length;i+=CH){
         await Promise.all(recEntries.slice(i,i+CH).map(([wid,rid])=>client.from("workers").update({wise_recipient_id:rid}).eq("id",wid)));
       }
+      const wisetag=wisetagRows.map(res=>{ const row=selected.find(r=>r.worker_id===res.worker_id); return row?row.name:String(res.worker_id).slice(0,8); });
+      const wisetagNote=wisetag.length
+        ? ` ${wisetag.length} Wisetag contractor(s) skipped — pay via Manual CSV: ${wisetag.join(", ")}.`
+        : "";
       setBatchId(data.batch_group_id);
-      setMsg(`Created Wise batch with ${ok} transfer(s)${fail?`, ${fail} failed`:""}. `+
-        `Batch group id: ${data.batch_group_id}. NO money has moved — open Wise to review, complete, and FUND this batch.`);
+      setMsg(`Created Wise batch with ${ok} transfer(s)${fail?`, ${fail} failed`:""}.`+wisetagNote+
+        ` Batch group id: ${data.batch_group_id}. NO money has moved — open Wise to review, complete, and FUND this batch.`);
       loadBatch(periodId);
     }catch(ex){
       setMsg("Wise batch failed: "+ex.message+
@@ -8723,14 +8822,45 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
                                 </button>
                               : <span style={{color:"var(--warn)"}}>add recipient on profile</span>)}
                   </td>
-                  <td className="card-action">{r.transfer_id
-                    ? <span className="pill active">drafted</span>
-                    : <span className="pill" style={{background:"#f3f4f6",color:"var(--muted)"}}>{r.status||"ready"}</span>}</td>
+                  <td className="card-action" style={{whiteSpace:"nowrap"}}>
+                    {r.funded_at
+                      ? <span className="pill" style={{background:"#dcfce7",color:"#166534"}}
+                          title={`Funded ${new Date(r.funded_at).toLocaleString()} — money out of your Wise balance.`}>
+                          ✓ funded
+                        </span>
+                      : r.transfer_id
+                        ? <span style={{display:"inline-flex",gap:4,alignItems:"center",flexWrap:"wrap"}}>
+                            <span className="pill active">drafted</span>
+                            {apiPayoutsEnabled && (
+                              fundBusyId===(r.payment_id||r.worker_id)
+                                ? <span className="muted" style={{fontSize:11}}>funding…</span>
+                                : <button className="btn ghost sm" disabled={!!fundBusyId}
+                                    title={`Fund this single transfer (${money(r.amount,"PHP")}) via Wise API. Real money will move.`}
+                                    onClick={async ()=>{
+                                      if(!(await gate("Fund this Wise transfer (real money)"))) return;
+                                      if(!window.confirm(`Fund ${r.name} for ${money(r.amount,"PHP")} via Wise API?\n\nThis moves real money out of your Wise balance.`)) return;
+                                      await fundOne(r, null);
+                                    }}>
+                                    Fund
+                                  </button>
+                            )}
+                            {r.fund_error && (
+                              <span className="tip-wrap" tabIndex={0}
+                                style={{fontSize:10,verticalAlign:"middle",cursor:"help"}}>
+                                <span className="pill" style={{background:"#fef2f2",color:"#b91c1c"}}>
+                                  fund failed
+                                </span>
+                                <span className="tip-body">{`Last Wise fund attempt failed:\n${r.fund_error}\n\nClick Fund to retry.`}</span>
+                              </span>
+                            )}
+                          </span>
+                        : <span className="pill" style={{background:"#f3f4f6",color:"var(--muted)"}}>{r.status||"ready"}</span>}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table></div>
-          <div style={{marginTop:12}}>
+          <div style={{marginTop:12,display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
             {selected.length===0
               ? <span className="muted">Nothing selected to batch.</span>
               : armed
@@ -8741,6 +8871,31 @@ function WisePayouts({client,companyId,consolidated,presetPeriodId,confirmBillin
                   </span>
                 : <button className="btn" disabled={busy} onClick={()=>setArmed(true)}>
                     Create Wise batch ({selected.length})</button>}
+            {/* Bulk Fund — only when api_payouts_enabled is on for this company AND
+                there's at least one drafted-but-unfunded row to fund. Separate
+                from Create Wise batch because the existing batch action stops
+                at draft (the safer default); funding is a real-money step that
+                deserves its own button and its own confirmation. */}
+            {apiPayoutsEnabled && drafted.length>0 && (
+              <button className="btn" disabled={busy||fundBusyId==="__bulk__"}
+                onClick={fundDrafted}
+                title={`Call Wise's funding endpoint for every drafted transfer (${money(draftedTotal,"PHP")}). REAL MONEY moves.`}
+                style={{background:"#166534",color:"#fff",borderColor:"#166534"}}>
+                {fundBusyId==="__bulk__" ? `Funding…` : `Fund ${drafted.length} drafted (${money(draftedTotal,"PHP")})`}
+              </button>
+            )}
+            {toggleApiPayouts && !consolidated && companyId && (
+              <span style={{fontSize:11,display:"inline-flex",gap:6,alignItems:"center",marginLeft:"auto"}}>
+                API payouts {apiPayoutsEnabled
+                  ? <b style={{color:"#166534"}}>ENABLED</b>
+                  : <b className="muted">off</b>}
+                <button className="btn ghost sm" style={{fontSize:11,padding:"2px 8px",
+                  ...(apiPayoutsEnabled?{borderColor:"#b91c1c",color:"#b91c1c"}:{})}}
+                  onClick={async ()=>{ const r=await toggleApiPayouts(!apiPayoutsEnabled); if(r) setMsg(r); }}>
+                  {apiPayoutsEnabled?"Disable…":"Enable API payouts…"}
+                </button>
+              </span>
+            )}
           </div>
         </div>; })())}
       <Banner msg={msg} style={{marginTop:12}} />
@@ -8863,7 +9018,7 @@ function ReconcileOverview({ client, companyId, consolidated, onPick }){
   );
 }
 
-function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirty,openContractor,reconcileOnly,goTab,openPeriodForEdit}){
+function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirty,openContractor,reconcileOnly,goTab,openPeriodForEdit,apiPayoutsEnabled,toggleApiPayouts}){
   const gate = (label)=> typeof confirmBillingDirty==="function" ? confirmBillingDirty(label) : true;
   const [periods,setPeriods]=useState([]);
   const [periodId,setPeriodId]=useState("");
@@ -10393,7 +10548,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
           <h3 style={{margin:"0 0 4px"}}>3 · Automatic Wise API draft</h3>
           <p className="sub">Draft the Wise transfers directly via the API (drafts only — you fund in Wise).
             Lets you edit recipients/amounts per person and create one batch.</p>
-          <WisePayouts client={client} companyId={companyId} consolidated={consolidated} presetPeriodId={periodId} confirmBillingDirty={confirmBillingDirty} openContractor={openContractor}/>
+          <WisePayouts client={client} companyId={companyId} consolidated={consolidated} presetPeriodId={periodId} confirmBillingDirty={confirmBillingDirty} openContractor={openContractor} apiPayoutsEnabled={apiPayoutsEnabled} toggleApiPayouts={toggleApiPayouts}/>
         </div>
         </>)}
       </>}
@@ -10493,7 +10648,7 @@ function WiseApiDialog({ rows, total, period, onClose }){
 
 // ============================ AUDIT LOG ======================================
 const AUDIT_LABELS={import:"Import",delete_import:"Delete import",approve:"Approve time",
-  reject:"Reject time",lock:"Lock period",unlock_period:"Unlock period",delete_statement:"Delete pay statement",mark_paid:"Mark paid",mark_unpaid:"Mark unpaid",manual_hours:"Manual hours",
+  reject:"Reject time",lock:"Lock period",unlock_period:"Unlock period",delete_statement:"Delete pay statement",mark_paid:"Mark paid",mark_unpaid:"Mark unpaid",manual_hours:"Manual hours",api_payout:"API payout (fund)",api_payouts_flag:"API payouts flag",
   wise_recipient_sync:"Wise recipient sync",
   wise_lock_release:"Unlock Wise-locked row",
   wise_lock_warning:"Edit attempted on locked row",
@@ -12925,6 +13080,44 @@ function App() {
       .then(({data})=>{ if(!live||!data||!data.length) return; const ids=new Set(data.map(c=>c.id));
         setEmployerId(cur=> ids.has(cur) ? cur : data[0].id); }).catch(()=>{});
     return ()=>{live=false;}; },[sb.client]);
+
+  // Per-company API-payouts gate (keyed on the selected EMPLOYER — the payroll
+  // context). When TRUE, the Process & Pay screen shows Fund affordances that
+  // move real money via the wise-payouts edge function `fund` action. Default
+  // FALSE — flip per employer via the owner-only toggle (or SQL). Re-queried
+  // when the employer changes.
+  const [apiPayoutsEnabled, setApiPayoutsEnabled] = useState(false);
+  useEffect(()=>{
+    if (!sb.client || !employerId) { setApiPayoutsEnabled(false); return; }
+    sb.client.from("companies").select("api_payouts_enabled").eq("id", employerId).single()
+      .then(({data}) => setApiPayoutsEnabled(!!data?.api_payouts_enabled));
+  }, [sb.client, employerId]);
+  // H7 — flip the per-employer API-payout flag from the UI (was SQL-only).
+  // Real-money gate, so it requires a typed ENABLE/DISABLE confirmation and
+  // writes an audit row. Returns a status string for the caller to surface.
+  const toggleApiPayouts = React.useCallback(async (next)=>{
+    if (!sb.client || !employerId) return "Pick an employer first.";
+    const word = next ? "ENABLE" : "DISABLE";
+    const typed = window.prompt(
+      `${next?"ENABLE":"DISABLE"} API payouts for this employer?\n\n`+
+      (next
+        ? "When ENABLED, the Process & Pay screen can fund Wise transfers directly "+
+          "via the API — this moves REAL MONEY out of your Wise balance (per-row and "+
+          "bulk Fund buttons appear). Each fund still has its own confirmation.\n\n"
+        : "When DISABLED, the Fund buttons disappear; payouts go back to draft-only "+
+          "(money moves via the Manual Wise batch CSV).\n\n")+
+      `Type ${word} to confirm:`);
+    if (typed==null) return null;                       // cancelled
+    if (typed.trim().toUpperCase()!==word) return `Not ${word.toLowerCase()}d — confirmation text didn't match.`;
+    const { error } = await sb.client.from("companies")
+      .update({ api_payouts_enabled: next }).eq("id", employerId);
+    if (error) return "Couldn't update flag: "+error.message;
+    setApiPayoutsEnabled(next);
+    logEvent(sb.client, { company_id:employerId, action:"api_payouts_flag",
+      entity:"company", detail:{ enabled:next } });
+    return `API payouts ${next?"ENABLED":"DISABLED"} for this employer.`;
+  }, [sb.client, employerId]);
+
   // Bumped when companies are added/archived/deleted (Configuration → CompaniesModal)
   // so the EmployerSwitcher / pickers re-fetch their lists without a full reload.
   const [companiesNonce,setCompaniesNonce]=useState(0);
@@ -13116,7 +13309,7 @@ function App() {
         {seenTabs.has("time") && <div style={{display:tab==="time"?"block":"none"}}><TimeImport {...{client:sb.client,companyId:employerId,consolidated:false,goTab:go,openPeriodForEdit}} /></div>}
         {seenTabs.has("imports") && <div style={{display:tab==="imports"?"block":"none"}}><DeleteImports {...{client:sb.client,companyId:employerId,consolidated:false}} /></div>}
         {seenTabs.has("payroll") && <div style={{display:tab==="payroll"?"block":"none"}}><Payroll {...{client:sb.client,companyId:employerId,consolidated:false,confirmBillingDirty,openContractor,goTab:go,pendingPeriod,consumePendingPeriod}} /></div>}
-        {seenTabs.has("process") && <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId:employerId,consolidated:false,active:tab==="process",confirmBillingDirty,openContractor,goTab:go,openPeriodForEdit}} /></div>}
+        {seenTabs.has("process") && <div style={{display:tab==="process"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId:employerId,consolidated:false,active:tab==="process",confirmBillingDirty,openContractor,goTab:go,openPeriodForEdit,apiPayoutsEnabled,toggleApiPayouts}} /></div>}
         {seenTabs.has("documents") && <div style={{display:tab==="documents"?"block":"none"}}><Documents {...{client:sb.client,companyId:employerId,consolidated:false}} /></div>}
         {seenTabs.has("batches") && <div style={{display:tab==="batches"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId:employerId,consolidated:false,active:tab==="batches",confirmBillingDirty,openContractor,reconcileOnly:true}} /></div>}
         {seenTabs.has("reports") && <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId:employerId,consolidated:false}} /></div>}

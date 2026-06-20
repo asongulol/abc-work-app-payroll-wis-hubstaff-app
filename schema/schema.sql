@@ -40,6 +40,12 @@ create table companies (
     -- The Hubstaff organization this company's time comes from (one Hubstaff
     -- org may feed one company). Used to map imports -> company.
     hubstaff_org_id  bigint,
+    -- API-based payout flag. When TRUE the Process & Pay tab exposes a
+    -- "Create + Fund batch" affordance that calls Wise's funding endpoint
+    -- directly. When FALSE (the default) the UI only drafts via API; money
+    -- moves via the Manual Wise batch CSV uploaded in Wise's web UI.
+    -- Flip per-company via SQL when ready; never auto-flipped by the app.
+    api_payouts_enabled boolean not null default false,
     created_at    timestamptz not null default now()
 );
 
@@ -223,6 +229,16 @@ create table payments (
     -- not retroactively repriced when rates change.
     misc_items        jsonb not null default '[]'::jsonb
                        check (jsonb_typeof(misc_items) = 'array'),
+    -- API-payout audit columns. funded_at is set when the wise-payouts edge
+    -- function's `fund` action successfully calls Wise's funding endpoint
+    -- for wise_transfer_id; funded_by captures the admin who clicked Fund;
+    -- fund_error retains the last failure text from Wise (for UI display
+    -- and retry). These three move together as the API funding tail of
+    -- the draft → fund → confirm lifecycle. Independent of wise_locked_at
+    -- (funding is "money sent"; locking is "Wise confirmed sent").
+    funded_at         timestamptz,
+    funded_by         text,
+    fund_error        text,
     status            payment_status not null default 'draft',
     paid_at           timestamptz,
     note              text,
@@ -348,7 +364,8 @@ end$$;
 -- silently rewrite what was paid. This BEFORE UPDATE trigger hard-blocks changes
 -- to those PROTECTED columns on a locked row. PERMITTED-on-locked (not listed in
 -- the trigger) = note, wise_locked_at, wise_dates, status, fx_rate,
--- wise_transfer_id, paid_at — the settlement/reconcile columns. To edit a frozen
+-- wise_transfer_id, paid_at, funded_at, funded_by, fund_error — the
+-- settlement/reconcile columns (funding metadata is set pre-lock). To edit a frozen
 -- amount: Unlock the row (clears wise_locked_at in its own UPDATE) → edit.
 -- See schema/migrations/2026-06-06_payments_hard_lock.sql (incl. rollback).
 -- ============================================================================
