@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-20 01:59 EDT · 5d11dcc";
+const BUILD = "2026-06-20 02:58 EDT · fbe2bdf";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -2207,7 +2207,7 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
   const today=new Date().toISOString().slice(0,10);
   const DEFAULTS={ first_name:"", middle_name:"", last_name:"", email:"",
     ph_address:"", permanent_address:"", date_of_birth:"",
-    company_id:companyId||"", contract:"FT", role:"", rate:"", bill_rate_usd:"", hours:"40", contract_date:today, hire_date:today,
+    company_id:companyId||"", contract:"FT", pay_basis:"hourly", role:"", rate:"", bill_rate_usd:"", hours:"40", contract_date:today, hire_date:today,
     shift_start:etToPhtHHMM("08:00"), shift_end:etToPhtHHMM("17:00"),
     ic_addendum_type:"", ic_addendum_text:"", extra_docs:[],
     tools:{gmail:false,providersoft:false,hubstaff:false,zoom:false,others:""},
@@ -2277,7 +2277,7 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
       if(!ne(f.company_id)) e.company_id="Select a company";
       if(!ne(f.role)) e.role="Required";
       if(!ne(f.rate)) e.rate="Required"; else if(!(parseFloat(f.rate)>0)) e.rate="Enter a positive amount";
-      if(!ne(f.hours)) e.hours="Required"; else if(!(parseFloat(f.hours)>0)) e.hours="Enter a positive number";
+      if(f.contract!=="PHS"){ if(!ne(f.hours)) e.hours="Required"; else if(!(parseFloat(f.hours)>0)) e.hours="Enter a positive number"; }
       if(!ne(f.hire_date)) e.hire_date="Required";
       if(!ne(f.countersigner_user_id)) e.countersigner_user_id="Assign a countersigner";
       if(!ne(f.shift_start)||!ne(f.shift_end)) e.shift="Set a shift start and end";
@@ -2344,7 +2344,7 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
       if(r.error) throw r.error;
       w=r.data;
       const billV=parseFloat(f.bill_rate_usd);   // USD the client is invoiced per hour (optional at hire)
-      const {error:e2}=await client.from("worker_companies").insert({worker_id:w.id, company_id:coId, contract:f.contract, role:f.role.trim()||null, weekly_hours:parseFloat(f.hours)||null, bill_rate_usd:(Number.isFinite(billV)&&billV>=0?billV:null), status:"active", started_on:f.hire_date||null});
+      const {error:e2}=await client.from("worker_companies").insert({worker_id:w.id, company_id:coId, contract:f.contract, pay_basis:(f.contract==="PHS"?f.pay_basis:null), role:f.role.trim()||null, weekly_hours:parseFloat(f.hours)||null, bill_rate_usd:(Number.isFinite(billV)&&billV>=0?billV:null), status:"active", started_on:f.hire_date||null});
       if(e2) throw e2;
       if(parseFloat(f.rate)>0){
         const {error:e3}=await client.from("rates").insert({worker_id:w.id, company_id:coId, amount_php:parseFloat(f.rate), effective_start:f.contract_date||f.hire_date||today});
@@ -2464,14 +2464,18 @@ function AddContractorWizard({ client, companyId, companyName, onClose, onCreate
         </div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
           <div style={{margin:"6px 0"}}><label className="muted" style={{fontSize:12}}>Contract *</label>
-            <select style={inp} value={f.contract} onChange={e=>{ const v=e.target.value; setF(x=>({...x,contract:v,hours:v==="PT"?"20":"40"})); }}><option value="FT">Full-time</option><option value="PT">Part-time</option></select></div>
-          <div style={{margin:"6px 0"}}><label className="muted" style={{fontSize:12}}>Expected hours / week *</label>
-            <input style={inp} type="number" min="1" max="60" step="0.5" value={f.hours} onChange={e=>set("hours",e.target.value)} aria-invalid={errs.hours?"true":"false"}/>
-            {errs.hours && <div style={{color:"#b91c1c",fontSize:12}}>{errs.hours}</div>}
-            <div className="muted" style={{fontSize:11,marginTop:2}}>Defaults to {f.contract==="PT"?"20 (part-time)":"40 (full-time)"} — adjust if different.</div></div>
+            <select style={inp} value={f.contract} onChange={e=>{ const v=e.target.value; setF(x=>({...x,contract:v,hours:v==="PHS"?"":(v==="PT"?"20":"40")})); }}><option value="FT">Full-time</option><option value="PT">Part-time</option><option value="PHS">Per hour / session</option></select></div>
+          {f.contract==="PHS"
+            ? <div style={{margin:"6px 0"}}><label className="muted" style={{fontSize:12}}>Pay basis *</label>
+                <select style={inp} value={f.pay_basis} onChange={e=>set("pay_basis",e.target.value)}><option value="hourly">Per hour</option><option value="per_session">Per session</option></select>
+                <div className="muted" style={{fontSize:11,marginTop:2}}>No expected hours — pay = {f.pay_basis==="per_session"?"approved sessions":"worked hours"} × the rate.</div></div>
+            : <div style={{margin:"6px 0"}}><label className="muted" style={{fontSize:12}}>Expected hours / week *</label>
+                <input style={inp} type="number" min="1" max="60" step="0.5" value={f.hours} onChange={e=>set("hours",e.target.value)} aria-invalid={errs.hours?"true":"false"}/>
+                {errs.hours && <div style={{color:"#b91c1c",fontSize:12}}>{errs.hours}</div>}
+                <div className="muted" style={{fontSize:11,marginTop:2}}>Defaults to {f.contract==="PT"?"20 (part-time)":"40 (full-time)"} — adjust if different.</div></div>}
         </div>
         {field("Role / position *","role","text","e.g. Billing Specialist — shows on the IC Agreement")}
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>{field("Rate (PHP / period)","rate","number")}{field("Contract date","contract_date","date")}</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>{field(f.contract==="PHS"?`Rate (PHP / ${f.pay_basis==="per_session"?"session":"hour"})`:"Rate (PHP / period)","rate","number")}{field("Contract date","contract_date","date")}</div>
         {field("Client bill rate (USD/hr)","bill_rate_usd","number","optional — the rate the client is invoiced; set later if unknown")}
         {field("Hire date (start) *","hire_date","date")}
         <div style={{display:"flex",gap:16,marginTop:6}}>
@@ -2562,7 +2566,7 @@ function Contractors({ client, companyId, consolidated, onBillingChange, pending
   const { data, loading, reload } = useQuery(client, c => {
     // workers joined to their company link(s) + current rate
     let q = c.from("worker_companies")
-      .select("contract,role,weekly_hours,hubstaff_name,hubstaff_user_id,status,company_id,companies(name),"+
+      .select("contract,pay_basis,role,weekly_hours,hubstaff_name,hubstaff_user_id,status,company_id,companies(name),"+
               "workers(id,first_name,middle_name,last_name,status,email,mobile,ph_address,hire_date,date_of_birth,"+
               "payout_method,gcash,paymaya,paypal,wise_recipient_id,wise_recipient_uuid,wise_recipients,wise_tag,photo_url,health_allowance_eligible,thirteenth_month_eligible,"+
               "emergency_name,emergency_relationship,emergency_mobile,permanent_address,address_landmark,postal_code,marital_status,education_level,course,year_graduated,school,work_email,work_number,work_extension,profile_extras)");
@@ -3027,6 +3031,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   const [weeklyHours,setWeeklyHours]=useState(r.weekly_hours!=null?String(r.weekly_hours):"");
   const [hubName,setHubName]=useState(r.hubstaff_name||"");
   const [rate,setRate]=useState("");
+  const [payBasis,setPayBasis]=useState(r.pay_basis||"hourly");   // PHS only: 'hourly' | 'per_session' — lives on worker_companies (next to contract)
   const [rateEff,setRateEff]=useState(new Date().toISOString().slice(0,10));
   const set=(k,v)=>setF(x=>({...x,[k]:v}));
   const [sameAddr,setSameAddr]=useState(()=> !!w.ph_address && (w.permanent_address||"")===(w.ph_address||""));
@@ -3153,8 +3158,8 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     },["first_name","middle_name","last_name","email","work_email","mobile","work_number","work_extension","ph_address","hire_date",
        "date_of_birth","health_allowance_eligible","thirteenth_month_eligible",
        "emergency_name","emergency_relationship","emergency_mobile","permanent_address","address_landmark","postal_code","marital_status","education_level","course","year_graduated","school"]);
-    const linkDiff=auditDiff({contract:r.contract,role:r.role,hubstaff_name:r.hubstaff_name,weekly_hours:r.weekly_hours},
-      {contract,role:role||null,hubstaff_name:hubName||null,weekly_hours:parseFloat(weeklyHours)||null},["contract","role","hubstaff_name","weekly_hours"]);
+    const linkDiff=auditDiff({contract:r.contract,role:r.role,hubstaff_name:r.hubstaff_name,weekly_hours:r.weekly_hours,pay_basis:r.pay_basis},
+      {contract,role:role||null,hubstaff_name:hubName||null,weekly_hours:parseFloat(weeklyHours)||null,pay_basis:(contract==="PHS"?payBasis:null)},["contract","role","hubstaff_name","weekly_hours","pay_basis"]);
     // culture / fun facts live in the profile_extras jsonb — merge, don't clobber
     const exOld=(w.profile_extras&&typeof w.profile_extras==="object")?w.profile_extras:{};
     const exNew={...exOld};
@@ -3177,7 +3182,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     let e2=null;
     if(r.company_id){
       ({error:e2}=await client.from("worker_companies")
-        .update({contract, role:role||null, hubstaff_name:hubName||null, weekly_hours:parseFloat(weeklyHours)||null})
+        .update({contract, role:role||null, hubstaff_name:hubName||null, weekly_hours:parseFloat(weeklyHours)||null, pay_basis:(contract==="PHS"?payBasis:null)})
         .eq("worker_id",w.id).eq("company_id",r.company_id));
     }
     if(e1||e2){setSavedMsg("Error: "+((e1||e2).message));return false;}
@@ -3395,9 +3400,14 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
             <select style={inp} value={contract} onChange={e=>setContract(e.target.value)}>
               <option value="FT">Full-time</option>
               <option value="PT">Part-time</option>
+              <option value="PHS">Per hour / session</option>
             </select></div>
           <div className="field"><label>Role</label><input style={inp} value={role} onChange={e=>setRole(e.target.value)} placeholder="e.g. Billing Associate"/></div>
-          <div className="field"><label>Expected hours / week</label><input style={inp} type="number" min="1" max="60" step="0.5" value={weeklyHours} onChange={e=>setWeeklyHours(e.target.value)} placeholder={contract==="PT"?"20":"40"}/></div>
+          {contract==="PHS"
+            ? <div className="field"><label>Pay basis</label>
+                <select style={inp} value={payBasis} onChange={e=>setPayBasis(e.target.value)}>
+                  <option value="hourly">Per hour</option><option value="per_session">Per session</option></select></div>
+            : <div className="field"><label>Expected hours / week</label><input style={inp} type="number" min="1" max="60" step="0.5" value={weeklyHours} onChange={e=>setWeeklyHours(e.target.value)} placeholder={contract==="PT"?"20":"40"}/></div>}
           <Field label="Payout method">
             <select value={payMethod} onChange={e=>savePayMethod(e.target.value)}
               style={{border:payMethod?"1px solid var(--border)":"1px solid var(--warn)",
@@ -3550,13 +3560,15 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
         {ptab==="pay" && <>
         {/* --- Rate (effective-dated) --- */}
         <div className="row" style={{alignItems:"flex-end",borderTop:"1px solid var(--border)",paddingTop:12,marginTop:8}}>
-          <div className="field"><label>Rate (PHP per period)</label>
-            <input style={inp} type="number" step="0.01" value={rate} onChange={e=>setRate(e.target.value)} placeholder="per half-month amount"/></div>
+          <div className="field"><label>Rate (PHP per {contract==="PHS"?(payBasis==="per_session"?"session":"hour"):"period"})</label>
+            <input style={inp} type="number" step="0.01" value={rate} onChange={e=>setRate(e.target.value)} placeholder={contract==="PHS"?(payBasis==="per_session"?"amount per session":"amount per hour"):"per half-month amount"}/></div>
           <div className="field"><label>Effective from</label>
             <input style={inp} type="date" value={rateEff} onChange={e=>setRateEff(e.target.value)}/></div>
           <div className="field" style={{flex:"0 0 auto"}}><button className="btn" onClick={saveRate}>Save rate</button></div>
         </div>
-        <p className="muted" style={{fontSize:12,marginTop:-4}}>Monthly = rate × 2. New rates are effective-dated (past periods keep their old rate).</p>
+        <p className="muted" style={{fontSize:12,marginTop:-4}}>{contract==="PHS"
+          ? `Pay = ${payBasis==="per_session"?"approved sessions":"worked hours"} in the period × this rate (no expected hours). Effective-dated.`
+          : "Monthly = rate × 2. New rates are effective-dated (past periods keep their old rate)."}</p>
 
         {/* --- Rate history --- */}
         {r?.company_id && rateHistory.length>0 && (
@@ -5912,6 +5924,7 @@ function holidaysInRange(start,end,weekdayOnly){
 // Expected hours: WORKING DAYS (Mon-Fri) in period x dayHours, minus dayHours
 // for each holiday that falls on a working day.
 function expectedHours(contract, start, end){
+  if(contract==="PHS") return 0;   // per hour/session: no expected-hours commitment
   const dayH = contract==="PT"?PT_DAY_HOURS:FT_DAY_HOURS;
   const s=new Date(start+"T00:00:00"), e=new Date(end+"T00:00:00");
   let weekdays=0;
@@ -6199,7 +6212,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     if(e1){setMsg(e1.message);setBusy(false);return;}
     // 2. roster (contract, hire) + rates
     const {data:wc}=await client.from("worker_companies")
-      .select("worker_id,contract,hubstaff_name,status,ended_on,workers(first_name,middle_name,last_name,hire_date,status,payout_method,health_allowance_eligible,thirteenth_month_eligible)")
+      .select("worker_id,contract,pay_basis,hubstaff_name,status,ended_on,workers(first_name,middle_name,last_name,hire_date,status,payout_method,health_allowance_eligible,thirteenth_month_eligible)")
       .eq("company_id",companyId);
     // map source_name -> worker_id so time rows with a null worker_id still attribute
     const widByName={};
@@ -6219,11 +6232,26 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     (priorPays||[]).forEach(p=>{ if(p.payout_method && !(p.worker_id in lastMethod)) lastMethod[p.worker_id]=p.payout_method; });
 
     const wcById={}; (wc||[]).forEach(r=>wcById[r.worker_id]=r);
-    function rateFor(wid){
+    // Approved service-session units per worker in [start,end] (summed across ALL
+    // their clients) — pays per-session PHS contractors. Scoped to this roster.
+    const sessByWorker={};
+    { const rosterIds=(wc||[]).map(l=>l.worker_id).filter(Boolean);
+      if(rosterIds.length){
+        // NOTE: summed across ALL the worker's clients (sessions live on clients).
+        // Correct while there is ONE employer (every client rolls up to it); if a
+        // second employer is ever added, scope this to this employer's clients so
+        // the same sessions aren't paid by two employers.
+        const {data:ss,error:ssErr}=await client.from("service_sessions").select("worker_id,units")
+          .eq("approval","approved").gte("session_date",start).lte("session_date",end).in("worker_id",rosterIds);
+        if(ssErr){ setMsg("Couldn't load sessions: "+ssErr.message); setBusy(false); return; }
+        (ss||[]).forEach(s=>{ if(s.worker_id) sessByWorker[s.worker_id]=(sessByWorker[s.worker_id]||0)+(Number(s.units)||0); });
+      } }
+    // The effective rate ROW (amount + period_basis) for a worker in this period.
+    function rateRowFor(wid){
       const cands=(rt||[]).filter(r=>r.worker_id===wid &&
         r.effective_start<=end && (!r.effective_end||r.effective_end>=start));
       cands.sort((a,b)=>a.effective_start<b.effective_start?1:-1);
-      return cands[0]?Number(cands[0].amount_php):null;
+      return cands[0]||null;
     }
     // aggregate worked seconds per worker (resolve null worker_id by source_name).
     // worked = tracked + paid-PTO so PTO leave is paid like worked time.
@@ -6241,19 +6269,43 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     });
     const out=[];
     const noLink=[];   // worker has approved time but no worker_companies link in THIS company
-    Object.keys(secByWorker).forEach(wid=>{
+    // Pay set = workers with approved time, PLUS per-session PHS workers who have
+    // approved sessions this period but may have logged no tracked time at all.
+    const widsToPay=new Set(Object.keys(secByWorker));
+    (wc||[]).forEach(l=>{ if(l.worker_id && l.contract==="PHS" && (sessByWorker[l.worker_id]||0)>0) widsToPay.add(l.worker_id); });
+    widsToPay.forEach(wid=>{
       const link=wcById[wid]; if(!link){ noLink.push(wid); return; }
       const w=link.workers||{};
-      const worked=secByWorker[wid]/3600;
-      const exp=expectedHours(link.contract, start, end);
-      const ratio=Math.min(worked/exp,5);          // cap matches workbook V
-      const rate=rateFor(wid);
-      const gross=rate==null?null:(ratio>=1?rate:+(ratio*rate).toFixed(2));
+      const worked=(secByWorker[wid]||0)/3600;
+      const sessions=sessByWorker[wid]||0;
+      const rr=rateRowFor(wid);
+      const rate=rr?Number(rr.amount_php):null;
+      const isPHS=link.contract==="PHS";
+      // PHS pay basis is the SINGLE source of truth on the engagement (next to
+      // .contract) so it can never drift from a separately-saved rate.
+      const basis=link.pay_basis;
+      // PHS (per hour / per session): NO expected hours, NO fixed-salary proration.
+      // Pay = the count × the per-unit rate (unit set by pay_basis). If the basis
+      // isn't configured ('hourly'|'per_session'), DO NOT silently pay worked×rate
+      // (a stale/blank basis must never turn a salary into an hourly rate) — leave
+      // gross null and flag the row so it can't be Locked & Saved with a bad amount.
+      let exp, ratio, gross, ded, phsUnset=false;
+      if(isPHS){
+        exp=0; ratio=1; ded=0;
+        if(basis!=="hourly" && basis!=="per_session"){ gross=null; phsUnset=true; }
+        else { const units=(basis==="per_session")?sessions:worked; gross=rate==null?null:+(units*rate).toFixed(2); }
+      } else {
+        exp=expectedHours(link.contract, start, end);
+        ratio=Math.min(worked/exp,5);          // cap matches workbook V
+        gross=rate==null?null:(ratio>=1?rate:+(ratio*rate).toFixed(2));
+        ded=rate==null?0:+(rate-(gross||0)).toFixed(2);
+      }
       const ha=(includeHA && w.health_allowance_eligible)?healthAllowance(w.hire_date,start,end):0;
-      const t13=(include13 && w.thirteenth_month_eligible && rate!=null)?thirteenthAccrual(rate,w.hire_date,end):0;
+      // 13th month accrues on a MONTHLY basic salary; a PHS per-unit rate is not
+      // a salary, so it never accrues for PHS (gate on eligibility flag otherwise).
+      const t13=(!isPHS && include13 && w.thirteenth_month_eligible && rate!=null)?thirteenthAccrual(rate,w.hire_date,end):0;
       const pdd=0;     // PDD Lunch: manual per-period add-on, editable in the table
       const bonus=0;   // performance / other bonus, editable in the table
-      const ded=rate==null?0:+(rate-(gross||0)).toFixed(2);
       // Calculate resets misc_items — they are user-entered adjustments per
       // pay period, not derivable from rate/hours/dates. The Recalculate
       // warning already tells users overrides will be wiped; that applies
@@ -6268,6 +6320,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       const inactive=(link.status && link.status!=="active") || (w.status && w.status!=="active");
       out.push({worker_id:wid,name:fullName(w)||link.worker_id,
         contract:link.contract,worked:+worked.toFixed(2),expected:exp,ratio:+ratio.toFixed(4),
+        sessions:(isPHS&&basis==="per_session")?sessions:0, pay_basis:isPHS?(basis||null):null, phs_unset:phsUnset,
         rate,gross,computed_gross:gross,ha,t13,computed_t13:t13,pdd,bonus,ded,net,overridden:false,
         misc_items,
         usd_ref:(net==null||!fx)?null:+(net/fx).toFixed(2),   // reference only; paid in PHP
@@ -6321,6 +6374,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       const draftRows=currentRows.filter(r=>r.net!=null).map(r=>({
         company_id:companyId, pay_period_id:pp.id, worker_id:r.worker_id,
         expected_hours:r.expected, worked_hours:r.worked, performance_ratio:r.ratio,
+        contract:r.contract||null, pay_basis:r.pay_basis||null, units:(r.pay_basis==="per_session"?r.sessions:null),
         rate_php:r.rate, gross_php:r.gross, health_allowance_php:r.ha,
         thirteenth_month_php:r.t13, pdd_lunch_php:r.pdd||0, bonus_php:r.bonus||0,
         deduction_php:r.ded, net_php:r.net,
@@ -6373,7 +6427,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     const {data:pays}=await client.from("payments")
       .select("worker_id,expected_hours,worked_hours,performance_ratio,rate_php,gross_php,"+
               "health_allowance_php,thirteenth_month_php,pdd_lunch_php,bonus_php,deduction_php,net_php,fx_rate,"+
-              "misc_items,payout_method,note,workers(first_name,middle_name,last_name)")
+              "contract,pay_basis,units,misc_items,payout_method,note,workers(first_name,middle_name,last_name)")
       .eq("pay_period_id",pp.id);
     if(!pays||!pays.length){ setRows(null); setPeriod({id:pp.id,state:pp.state}); setMsg(""); setStaleRows([]); return; }
     setPeriod({id:pp.id,state:pp.state});
@@ -6407,6 +6461,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
       return {
         worker_id:p.worker_id, name:fullName(p.workers),
         worked:Number(p.worked_hours||0), expected:Number(p.expected_hours||0),
+        contract:p.contract||null, pay_basis:p.pay_basis||null, sessions:Number(p.units||0),
         ratio:Number(p.performance_ratio||0), rate:storedRate, live_rate:liveRate,
         gross:p.gross_php==null?null:Number(p.gross_php), computed_gross:p.gross_php==null?null:Number(p.gross_php),
         ha:Number(p.health_allowance_php||0), t13:Number(p.thirteenth_month_php||0), computed_t13:Number(p.thirteenth_month_php||0),
@@ -6802,6 +6857,7 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
     const pays=rows.filter(r=>r.net!=null).map(r=>({
       company_id:companyId, pay_period_id:pp.id, worker_id:r.worker_id,
       expected_hours:r.expected, worked_hours:r.worked, performance_ratio:r.ratio,
+      contract:r.contract||null, pay_basis:r.pay_basis||null, units:(r.pay_basis==="per_session"?r.sessions:null),
       rate_php:r.rate, gross_php:r.gross, health_allowance_php:r.ha,
       thirteenth_month_php:r.t13, pdd_lunch_php:r.pdd||0, bonus_php:r.bonus||0, deduction_php:r.ded, net_php:r.net,
       misc_items: Array.isArray(r.misc_items)?r.misc_items:[],
@@ -7096,7 +7152,13 @@ function Payroll({client,companyId,consolidated,confirmBillingDirty,openContract
                       <span className="tip-body">This contractor (or their company link) is marked inactive. They're still included in this calculation so you can pay a final period — but Lock &amp; Save will ask you to confirm. If this isn't a final period, reactivate them on the Contractors tab and recalculate.</span>
                     </span>}
                   </td>
-                  <td>{r.worked}</td><td>{r.expected}</td><td>{(r.ratio*100).toFixed(0)}%</td>
+                  <td>{r.phs_unset
+                        ? <span className="pill" style={{background:"#fef2f2",color:"#b91c1c"}} title="Per-hour/session pay basis not set — open the contractor's profile, pick Per hour / Per session, and Save details, then recalculate.">set pay basis</span>
+                        : r.contract==="PHS"
+                          ? (r.pay_basis==="per_session" ? <span title="per-session pay">{r.sessions} sess</span> : <span title="per-hour pay">{r.worked}h</span>)
+                          : r.worked}</td>
+                  <td>{r.contract==="PHS"?<span className="muted" title="No expected hours for per-hour/session contracts">—</span>:r.expected}</td>
+                  <td>{r.contract==="PHS"?<span className="muted">—</span>:`${(r.ratio*100).toFixed(0)}%`}</td>
                   <td>{r.rate==null?<span className="muted">no rate</span>:r.rate.toLocaleString()}</td>
                   <td>
                     <input type="number" step="0.01" value={r.gross==null?"":r.gross}
