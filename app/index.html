@@ -593,7 +593,7 @@
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useCallback } = React;
 // Build stamp — replaced on each deploy by tools/stamp-build.mjs.
-const BUILD = "2026-06-19 22:54 EDT · eedc3ae";
+const BUILD = "2026-06-20 00:51 EDT · ca2a41c";
 // Self-update: on load, compare the running build to the deployed version.txt
 // (fetched no-store). If a newer build is live, reload to it via a cache-busting
 // URL — so a NORMAL refresh always lands on the latest, no hard refresh needed.
@@ -3289,7 +3289,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
   const setEng=(cid,k,v)=> setEngEdit(e=>({...e,[cid]:{...e[cid],[k]:v}}));
   const todayISO=new Date().toISOString().slice(0,10);
   function loadMemberships(){
-    client.from("worker_companies").select("company_id,status,role,contract,bill_rate_usd,companies(name)").eq("worker_id",w.id)
+    client.from("worker_companies").select("company_id,status,role,contract,bill_rate_usd,session_rate_usd,companies(name)").eq("worker_id",w.id)
       .then(({data})=>setMemberships(data||[]));
   }
   // Save the position (role) + USD bill rate for one client engagement — the rate
@@ -3299,6 +3299,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
     const upd={};
     if("role" in patch) upd.role=(patch.role||"").trim()||null;
     if("bill_rate_usd" in patch){ const v=parseFloat(patch.bill_rate_usd); upd.bill_rate_usd=Number.isFinite(v)&&v>=0?v:null; }
+    if("session_rate_usd" in patch){ const v=parseFloat(patch.session_rate_usd); upd.session_rate_usd=Number.isFinite(v)&&v>=0?v:null; }
     const {error}=await client.from("worker_companies").update(upd).eq("worker_id",w.id).eq("company_id",cid);
     setCoBusy(false);
     if(error){ setSavedMsg("Couldn't save: "+error.message); return; }
@@ -3424,7 +3425,7 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
               ? <div className="muted" style={{fontSize:12,marginBottom:8}}>Not assigned to any client yet.</div>
               : <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:8}}>
                   {memberships.map(m=>{ const act=m.status==="active";
-                    const dirty=!!engEdit[m.company_id] && ((("role" in engEdit[m.company_id]) && (engEdit[m.company_id].role||"")!==(m.role||"")) || (("bill_rate_usd" in engEdit[m.company_id]) && String(engEdit[m.company_id].bill_rate_usd)!==String(m.bill_rate_usd??"")));
+                    const dirty=!!engEdit[m.company_id] && ((("role" in engEdit[m.company_id]) && (engEdit[m.company_id].role||"")!==(m.role||"")) || (("bill_rate_usd" in engEdit[m.company_id]) && String(engEdit[m.company_id].bill_rate_usd)!==String(m.bill_rate_usd??"")) || (("session_rate_usd" in engEdit[m.company_id]) && String(engEdit[m.company_id].session_rate_usd)!==String(m.session_rate_usd??"")));
                     return (
                     <div key={m.company_id} style={{border:"1px solid var(--border)",borderRadius:8,padding:"8px 10px"}}>
                       <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
@@ -3438,6 +3439,8 @@ function ProfileModal({ r, onClose, client, onBillingChange, onSaved }) {
                           <input style={{...inp,minWidth:160,width:"auto"}} value={engVal(m,"role")} placeholder="e.g. Billing Specialist" onChange={e=>setEng(m.company_id,"role",e.target.value)}/></label>
                         <label className="muted" style={{fontSize:11}}>Bill rate (USD/hr)<br/>
                           <input style={{...inp,width:110}} type="number" min="0" step="0.01" value={engVal(m,"bill_rate_usd")} placeholder="—" onChange={e=>setEng(m.company_id,"bill_rate_usd",e.target.value)}/></label>
+                        <label className="muted" style={{fontSize:11}}>Session rate (USD/visit)<br/>
+                          <input style={{...inp,width:120}} type="number" min="0" step="0.01" value={engVal(m,"session_rate_usd")} placeholder="—" onChange={e=>setEng(m.company_id,"session_rate_usd",e.target.value)}/></label>
                         <button className="btn sm" disabled={coBusy||!dirty} onClick={()=>saveEngagement(m.company_id,engEdit[m.company_id]||{})}>{coBusy?"…":"Save"}</button>
                       </div>
                     </div>
@@ -10648,7 +10651,7 @@ function WiseApiDialog({ rows, total, period, onClose }){
 
 // ============================ AUDIT LOG ======================================
 const AUDIT_LABELS={import:"Import",delete_import:"Delete import",approve:"Approve time",
-  reject:"Reject time",lock:"Lock period",unlock_period:"Unlock period",delete_statement:"Delete pay statement",mark_paid:"Mark paid",mark_unpaid:"Mark unpaid",manual_hours:"Manual hours",api_payout:"API payout (fund)",api_payouts_flag:"API payouts flag",
+  reject:"Reject time",lock:"Lock period",unlock_period:"Unlock period",delete_statement:"Delete pay statement",mark_paid:"Mark paid",mark_unpaid:"Mark unpaid",manual_hours:"Manual hours",api_payout:"API payout (fund)",api_payouts_flag:"API payouts flag",session_added:"Add session",approve_session:"Approve sessions",reject_session:"Reject sessions",delete_session:"Delete session",
   wise_recipient_sync:"Wise recipient sync",
   wise_lock_release:"Unlock Wise-locked row",
   wise_lock_warning:"Edit attempted on locked row",
@@ -12778,6 +12781,188 @@ function CompaniesModal({ client, isOwner, kind, currentCompanyId, setCompanyId,
 // Portal Fields / Agreement Templates / Onboarding Configuration open the same
 // modals used elsewhere; the Wise admin tools (Backfill all paid periods, Email
 // cross-check, Cross-system drift) live in WiseReconciliation.
+// ============================ SERVICE SESSIONS ===============================
+// Per-VISIT billing source. Unlike Time (employer/Hubstaff-centric), sessions
+// attach DIRECTLY to a CLIENT company (service_sessions.company_id = client).
+// Admins hand-enter sessions per client+contractor and approve them; the
+// Invoicing tab bills APPROVED sessions × the contractor's per-client
+// session_rate_usd (flat fee; duration ignored). Mirrors the Time Approval
+// add/approve/reject/undo pattern, with a client picker like Invoicing.
+function SessionsApproval({ client, companiesNonce }){
+  const inp={width:"100%"};
+  // Client picker (sessions are billed to a client; mirrors the Invoicing tab).
+  const { data:clients }=useQuery(client,
+    c=>c.from("companies").select("id,name").eq("kind","client").eq("status","active").order("name"),[client,companiesNonce]);
+  const [selClient,setSelClient]=useState("");
+  const companyId=selClient||"";
+  return (
+    <div className="card">
+      <div><h2 style={{marginTop:0}}>Service Sessions</h2>
+        <p className="sub">Log and approve flat-fee service sessions (visits) per client. The Invoicing tab bills <b>approved</b> sessions × each contractor's <b>session rate</b> for that client — duration is not used.</p></div>
+      <div className="row" style={{alignItems:"flex-end",gap:8,flexWrap:"wrap",marginTop:4}}>
+        <div className="field" style={{minWidth:220}}><label>Client</label>
+          <select style={inp} value={selClient} onChange={e=>setSelClient(e.target.value)}>
+            <option value="">— Pick a client —</option>
+            {(clients||[]).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+          </select></div>
+      </div>
+      {!companyId
+        ? <div className="empty" style={{marginTop:12}}>Pick a client above to log and review its service sessions.</div>
+        : <SessionsClientView key={companyId} client={client} companyId={companyId} />}
+    </div>
+  );
+}
+
+// Inner view for ONE client. The parent keys this on companyId, so switching
+// clients REMOUNTS it (dropping the prior client's rows) — which is what makes
+// the `loading && !data` skeleton guard correct here despite the picker above.
+function SessionsClientView({ client, companyId }){
+  const inp={width:"100%"};
+  const today=new Date().toISOString().slice(0,10);
+  // This client's active contractors — powers the add-session picker + name/rate lookups.
+  const { data:roster }=useQuery(client,
+    c=>c.from("worker_companies").select("worker_id,role,session_rate_usd,workers(first_name,middle_name,last_name)").eq("status","active").eq("company_id",companyId),
+    [client,companyId]);
+  const nameBy={}, rateBy={};
+  (roster||[]).forEach(r=>{ if(!r.worker_id)return; nameBy[r.worker_id]=fullName(r.workers); rateBy[r.worker_id]=Number(r.session_rate_usd)||0; });
+  const rosterOpts=(roster||[]).filter(r=>r.worker_id).map(r=>({id:r.worker_id,name:nameBy[r.worker_id]})).sort((a,b)=>a.name.localeCompare(b.name));
+
+  // ACTIVE = pending/rejected (needs a decision). APPROVED = billable history.
+  const { data, loading, reload:reloadActive }=useQuery(client,
+    c=>c.from("service_sessions").select("id,worker_id,session_date,session_type,units,case_ref,notes,approval").neq("approval","approved").eq("company_id",companyId).order("session_date",{ascending:false}),
+    [client,companyId]);
+  const { data:approvedData, reload:reloadApproved }=useQuery(client,
+    c=>c.from("service_sessions").select("id,worker_id,session_date,session_type,units,approval").eq("approval","approved").eq("company_id",companyId).order("session_date",{ascending:false}).limit(500),
+    [client,companyId]);
+  const reload=useCallback(()=>{reloadActive();reloadApproved();},[reloadActive,reloadApproved]);
+
+  const [busy,setBusy]=useState(false);
+  const [msg,setMsg]=useState("");
+  const [undo,setUndo]=useState(null);
+  const [showHistory,setShowHistory]=useState(false);
+  const [aWid,setAWid]=useState(""); const [aDate,setADate]=useState(today);
+  const [aUnits,setAUnits]=useState("1"); const [aType,setAType]=useState(""); const [aCase,setACase]=useState("");
+
+  async function runUndo(){ if(!undo)return; const fn=undo.fn; setUndo(null); setBusy(true); setMsg("");
+    try{ await fn(); reload(); } catch(ex){ setMsg("Undo failed: "+(ex.message||ex)); } finally{ setBusy(false); } }
+
+  const active=data||[]; const approved=approvedData||[];
+  const entries=active.concat(approved);
+  const pendingIds=active.filter(s=>s.approval==="pending").map(s=>s.id);
+
+  async function addSession(){
+    if(!companyId){ setMsg("Pick a client first."); return; }
+    if(!aWid){ setMsg("Pick a contractor."); return; }
+    if(!aDate){ setMsg("Pick a session date."); return; }
+    const units=parseInt(aUnits,10);
+    if(!Number.isFinite(units)||units<0){ setMsg("Units must be a whole number ≥ 0."); return; }
+    setBusy(true); setMsg("");
+    const row={ company_id:companyId, worker_id:aWid, session_date:aDate, units, approval:"pending",
+      session_type:aType.trim()||null, case_ref:aCase.trim()||null };
+    const { error }=await client.from("service_sessions").insert(row);
+    setBusy(false);
+    if(error){ setMsg("Couldn't add session: "+error.message); return; }
+    logEvent(client,{company_id:companyId,action:"session_added",entity:nameBy[aWid]||aWid,detail:{session_date:aDate,units,type:row.session_type}});
+    setMsg("Added a pending session for "+(nameBy[aWid]||"contractor")+".");
+    setAType(""); setACase(""); setAUnits("1");
+    reload();
+  }
+
+  // approve/reject — chunked .in() by 100, captures prior status for a full undo.
+  async function setApproval(ids,status){
+    if(!ids.length)return; setBusy(true); setMsg("");
+    try{
+      const idSet=new Set(ids);
+      const prior=entries.filter(e=>idSet.has(e.id)).map(e=>({id:e.id,approval:e.approval}));
+      for(let i=0;i<ids.length;i+=100){ const {error}=await client.from("service_sessions").update({approval:status}).in("id",ids.slice(i,i+100)); if(error)throw error; }
+      logEvent(client,{company_id:companyId,action:status==="approved"?"approve_session":"reject_session",entity:"sessions",detail:{entries:ids.length}});
+      const verb=status==="approved"?"Approved":"Rejected";
+      setUndo({ label:`${verb} ${ids.length} session${ids.length===1?"":"s"}.`, fn:async()=>{
+        const byStatus={}; prior.forEach(p=>{(byStatus[p.approval]=byStatus[p.approval]||[]).push(p.id);});
+        for(const [st,idl] of Object.entries(byStatus)){ for(let i=0;i<idl.length;i+=100){ await client.from("service_sessions").update({approval:st}).in("id",idl.slice(i,i+100)); } }
+        logEvent(client,{company_id:companyId,action:"undo",entity:"sessions",detail:{of:status,entries:ids.length}}); }});
+      reload();
+    }catch(ex){ setMsg("Couldn't update approval: "+(ex.message||ex)); }
+    finally{ setBusy(false); }
+  }
+
+  // delete (hard) with verbatim-restore undo, mirroring the Time delete path.
+  async function deleteSessions(ids,label){
+    if(!ids.length)return; setBusy(true); setMsg("");
+    try{
+      const { data:snap }=await client.from("service_sessions").select("*").in("id",ids);
+      const { error }=await client.from("service_sessions").delete().in("id",ids);
+      if(error)throw error;
+      logEvent(client,{company_id:companyId,action:"delete_session",entity:label||"session",detail:{entries:ids.length}});
+      setUndo({ label:`Removed ${ids.length} session${ids.length===1?"":"s"}.`, fn:async()=>{ if(snap&&snap.length){ await client.from("service_sessions").insert(snap); logEvent(client,{company_id:companyId,action:"undo",entity:"delete_session",detail:{entries:snap.length}}); } }});
+      reload();
+    }catch(ex){ setMsg("Couldn't remove: "+(ex.message||ex)); }
+    finally{ setBusy(false); }
+  }
+
+  if(loading && !data) return <div style={{marginTop:12}}><Skeleton rows={5}/></div>;
+  return (
+    <>
+      {pendingIds.length>0 &&
+        <div style={{marginTop:10,textAlign:"right"}}><button className="btn" disabled={busy} onClick={()=>setApproval(pendingIds,"approved")}>{busy?"Working…":`Approve all (${pendingIds.length})`}</button></div>}
+
+      {undo && <div className="banner" style={{marginTop:10,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,background:"#eef2ff",borderColor:"#c7d2fe",color:"#3730a3"}}>
+        <span>{undo.label}</span>
+        <span style={{display:"inline-flex",gap:6,whiteSpace:"nowrap"}}>
+          <button className="btn sm" disabled={busy} onClick={runUndo}>Undo</button>
+          <button className="btn ghost sm" onClick={()=>setUndo(null)}>Dismiss</button>
+        </span>
+      </div>}
+      <Banner msg={msg} style={{marginTop:10}} />
+
+        <div style={{border:"1px solid var(--border)",borderRadius:8,padding:"10px 12px",marginTop:10,display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap"}}>
+          <label className="muted" style={{fontSize:11}}>Contractor<br/>
+            <select style={{...inp,minWidth:190}} value={aWid} onChange={e=>setAWid(e.target.value)}>
+              <option value="">— pick —</option>
+              {rosterOpts.map(o=><option key={o.id} value={o.id}>{o.name}{rateBy[o.id]?` ($${rateBy[o.id]}/visit)`:" — no rate"}</option>)}
+            </select></label>
+          <label className="muted" style={{fontSize:11}}>Date<br/><input style={{...inp,width:150}} type="date" value={aDate} onChange={e=>setADate(e.target.value)}/></label>
+          <label className="muted" style={{fontSize:11}}>Units<br/><input style={{...inp,width:70}} type="number" min="0" step="1" value={aUnits} onChange={e=>setAUnits(e.target.value)}/></label>
+          <label className="muted" style={{fontSize:11}}>Type<br/><input style={{...inp,width:140}} value={aType} placeholder="e.g. visit" onChange={e=>setAType(e.target.value)}/></label>
+          <label className="muted" style={{fontSize:11}}>Case ref<br/><input style={{...inp,width:120}} value={aCase} placeholder="—" onChange={e=>setACase(e.target.value)}/></label>
+          <button className="btn" disabled={busy||!aWid} onClick={addSession}>{busy?"…":"Add session"}</button>
+          {rosterOpts.length===0 && <span className="muted" style={{fontSize:11}}>No active contractors assigned to this client — assign them in Configuration → Clients (or the contractor's Edit → Client engagements).</span>}
+        </div>
+
+        <div className="table-scroll" style={{marginTop:12}}><table>
+          <thead><tr><th>Contractor</th><th>Date</th><th>Type</th><th>Units</th><th>Case</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {active.length===0 ? <tr><td colSpan={7} className="muted" style={{padding:"10px 8px"}}>No pending or rejected sessions for this client.</td></tr>
+            : active.map(s=>(
+              <tr key={s.id}>
+                <td className="card-title"><b>{nameBy[s.worker_id]||<span className="muted">—</span>}</b></td>
+                <td data-label="Date">{s.session_date}</td>
+                <td data-label="Type">{s.session_type||<span className="muted">—</span>}</td>
+                <td data-label="Units">{s.units}</td>
+                <td data-label="Case">{s.case_ref||<span className="muted">—</span>}</td>
+                <td data-label="Status"><span className="pill" style={s.approval==="rejected"?{background:"#fee2e2",color:"var(--bad)"}:{background:"var(--warn-soft)",color:"var(--warn)"}}>{s.approval}</span></td>
+                <td className="card-action" style={{textAlign:"right",whiteSpace:"nowrap"}}>
+                  <button className="btn sm" disabled={busy} onClick={()=>setApproval([s.id],"approved")}>Approve</button>{" "}
+                  <button className="btn ghost sm" style={{borderColor:"var(--bad)",color:"var(--bad)"}} disabled={busy} onClick={()=>deleteSessions([s.id],nameBy[s.worker_id])}>Delete</button>
+                </td>
+              </tr>))}
+          </tbody>
+        </table></div>
+
+        {approved.length>0 && <div style={{marginTop:14}}>
+          <a href="#" onClick={e=>{e.preventDefault(); setShowHistory(h=>!h);}} style={{color:"var(--accent)",fontWeight:600,fontSize:13}}>{showHistory?"Hide":"View"} approved sessions ({approved.length})</a>
+          {showHistory && <div className="table-scroll" style={{marginTop:8}}><table>
+            <thead><tr><th>Contractor</th><th>Date</th><th>Type</th><th>Units</th><th></th></tr></thead>
+            <tbody>{approved.map(s=>(
+              <tr key={s.id}><td>{nameBy[s.worker_id]||<span className="muted">—</span>}</td><td>{s.session_date}</td><td>{s.session_type||<span className="muted">—</span>}</td><td>{s.units}</td>
+                <td className="card-action" style={{textAlign:"right"}}><button className="btn ghost sm" disabled={busy} onClick={()=>setApproval([s.id],"pending")}>Unapprove</button></td></tr>))}
+            </tbody>
+          </table></div>}
+        </div>}
+    </>
+  );
+}
+
 // Phase 4 — client invoicing. Invoice a CLIENT for WORKED hours per contractor ×
 // their USD bill rate (worker_companies.bill_rate_usd); PTO is excluded (it's the
 // employer's cost, never billed). Reads time_entries by company_id + date window;
@@ -12811,11 +12996,11 @@ function Invoicing({ client, employerId, companiesNonce }){
     setBusy(true); setErr(""); setMsg(""); setPreview(null);
     // 1) the CLIENT's roster + USD bill rates (the worker→client billing links).
     const { data:wc, error:wcErr }=await client.from("worker_companies")
-      .select("worker_id,role,bill_rate_usd,workers(first_name,middle_name,last_name)")
+      .select("worker_id,role,bill_rate_usd,session_rate_usd,workers(first_name,middle_name,last_name)")
       .eq("company_id",companyId).eq("status","active");
     if(wcErr){ setErr("Couldn't load client roster: "+wcErr.message); setBusy(false); return; }
     const rateBy={}, nameBy={}, ids=[];
-    (wc||[]).forEach(l=>{ if(!l.worker_id) return; rateBy[l.worker_id]={ rate:Number(l.bill_rate_usd)||0, role:l.role||"" }; nameBy[l.worker_id]=fullName(l.workers); ids.push(l.worker_id); });
+    (wc||[]).forEach(l=>{ if(!l.worker_id) return; rateBy[l.worker_id]={ rate:Number(l.bill_rate_usd)||0, sessionRate:Number(l.session_rate_usd)||0, role:l.role||"" }; nameBy[l.worker_id]=fullName(l.workers); ids.push(l.worker_id); });
     if(!ids.length){ setPreview({lines:[],subtotal:0,total_hours:0}); setMsg("No contractors are assigned to this client yet — assign them in Configuration → Clients."); setBusy(false); return; }
     // 2) EMPLOYER time for those workers (time lives on the employer; we attribute
     //    it to this client via the billing links above — NOT via time_entries.company_id).
@@ -12825,14 +13010,52 @@ function Invoicing({ client, employerId, companiesNonce }){
     if(error){ setErr("Couldn't load time: "+error.message); setBusy(false); return; }
     const agg={};   // worked seconds per worker (PTO already excluded — only tracked_seconds summed)
     (te||[]).forEach(t=>{ if(!t.worker_id) return; (agg[t.worker_id]=agg[t.worker_id]||{sec:0}).sec+=Number(t.tracked_seconds)||0; });
-    const lines=ids.map(wid=>{ const r=rateBy[wid]||{rate:0,role:""}; const sec=(agg[wid]||{}).sec||0;
-      const hours=Math.round(sec/3600*100)/100; return { worker_id:wid, worker_name:nameBy[wid], position:r.role, worked_hours:hours, bill_rate_usd:r.rate, amount_usd:Math.round(hours*r.rate*100)/100 }; })
-      .filter(l=>l.worked_hours>0).sort((a,b)=>a.worker_name.localeCompare(b.worker_name));
+    // 2b) APPROVED sessions for those workers, billed to THIS client. Sessions
+    //     attach directly to the client (company_id = the selected client), so no
+    //     employer indirection. Flat fee: units × session_rate; duration ignored.
+    const { data:ss, error:ssErr }=await client.from("service_sessions")
+      .select("worker_id,units")
+      .eq("company_id",companyId).eq("approval","approved").gte("session_date",from).lte("session_date",to).limit(100000);
+    if(ssErr){ setErr("Couldn't load sessions: "+ssErr.message); setBusy(false); return; }
+    const sessBy={};   // Σ approved session units per worker
+    (ss||[]).forEach(s=>{ if(!s.worker_id) return; sessBy[s.worker_id]=(sessBy[s.worker_id]||0)+(Number(s.units)||0); });
+    // A worker with APPROVED sessions but no longer on the ACTIVE roster (e.g. the
+    // client engagement ended after the visit) must still bill — an approved
+    // session is committed billable work. Pull their name + session rate from
+    // worker_companies regardless of status (rate isn't snapshotted on the session).
+    const sessOnly=Object.keys(sessBy).filter(wid=>!rateBy[wid]);
+    if(sessOnly.length){
+      const { data:extra }=await client.from("worker_companies")
+        .select("worker_id,role,session_rate_usd,workers(first_name,middle_name,last_name)")
+        .eq("company_id",companyId).in("worker_id",sessOnly);
+      (extra||[]).forEach(l=>{ if(!l.worker_id||rateBy[l.worker_id]) return;
+        rateBy[l.worker_id]={ rate:0, sessionRate:Number(l.session_rate_usd)||0, role:l.role||"" };
+        nameBy[l.worker_id]=fullName(l.workers); });
+    }
+    // Billing worker set = active roster ∪ workers with approved sessions.
+    const billIds=[...new Set([...ids, ...Object.keys(sessBy)])];
+    // A worker can yield TWO lines: an hourly line (worked hours>0) AND a session
+    // line (approved sessions>0). Zero-quantity lines are dropped; a zero-RATE line
+    // is KEPT (billed $0) so the UI flags the missing rate — same rule both kinds.
+    const lines=[];
+    billIds.forEach(wid=>{ const r=rateBy[wid]||{rate:0,sessionRate:0,role:""};
+      const hours=Math.round(((agg[wid]||{}).sec||0)/3600*100)/100;
+      if(hours>0) lines.push({ worker_id:wid, worker_name:nameBy[wid], position:r.role, kind:"hourly",
+        worked_hours:hours, bill_rate_usd:r.rate, sessions_count:0, session_rate_usd:null,
+        amount_usd:Math.round(hours*r.rate*100)/100 });
+      const units=sessBy[wid]||0;
+      if(units>0) lines.push({ worker_id:wid, worker_name:nameBy[wid], position:r.role, kind:"session",
+        worked_hours:0, bill_rate_usd:null, sessions_count:units, session_rate_usd:r.sessionRate,
+        amount_usd:Math.round(units*r.sessionRate*100)/100 });
+    });
+    lines.sort((a,b)=> a.worker_name.localeCompare(b.worker_name) || (a.kind===b.kind?0:(a.kind==="hourly"?-1:1)) );
     const subtotal=Math.round(lines.reduce((s,l)=>s+l.amount_usd,0)*100)/100;
-    const total_hours=Math.round(lines.reduce((s,l)=>s+l.worked_hours,0)*100)/100;
-    setPreview({lines,subtotal,total_hours}); setBusy(false);
-    if(!lines.length) setMsg("No worked hours for this client's contractors in the window.");
-    else if(lines.some(l=>!l.bill_rate_usd)) setMsg("Heads up: some contractors have no USD bill rate (their lines are $0). Set each one's rate in the contractor's Edit → Client engagements.");
+    const total_hours=Math.round(lines.filter(l=>l.kind==="hourly").reduce((s,l)=>s+l.worked_hours,0)*100)/100;
+    const total_sessions=lines.filter(l=>l.kind==="session").reduce((s,l)=>s+l.sessions_count,0);
+    setPreview({lines,subtotal,total_hours,total_sessions}); setBusy(false);
+    if(!lines.length) setMsg("No worked hours or approved sessions for this client's contractors in the window.");
+    else if(lines.some(l=>(l.kind==="hourly"&&!l.bill_rate_usd)||(l.kind==="session"&&!l.session_rate_usd)))
+      setMsg("Heads up: some lines have no rate set (billed $0). Set the bill rate / session rate in the contractor's Edit → Client engagements.");
   }
 
   async function generate(){
@@ -12846,7 +13069,13 @@ function Invoicing({ client, employerId, companiesNonce }){
       subtotal_usd:subtotal, total_usd:total, markup_pct:mk, currency:"USD", created_by:(u&&u.user&&u.user.id)||null,
     }).select("id,invoice_no").single();
     if(error){ setErr(/one_live_per_period/.test(error.message)?"A live invoice already exists for this client + period — void it first to regenerate.":"Couldn't create invoice: "+error.message); setBusy(false); return; }
-    const { error:le }=await client.from("invoice_lines").insert(preview.lines.map(l=>({ invoice_id:inv.id, worker_id:l.worker_id, worker_name:l.worker_name, position:l.position, worked_hours:l.worked_hours, bill_rate_usd:l.bill_rate_usd, amount_usd:l.amount_usd })));
+    const { error:le }=await client.from("invoice_lines").insert(preview.lines.map(l=>({
+      invoice_id:inv.id, worker_id:l.worker_id, worker_name:l.worker_name, position:l.position,
+      kind:l.kind||"hourly",
+      worked_hours:Number(l.worked_hours)||0, bill_rate_usd:Number(l.bill_rate_usd)||0,
+      sessions_count:l.kind==="session"?(Number(l.sessions_count)||0):null,
+      session_rate_usd:l.kind==="session"?(Number(l.session_rate_usd)||0):null,
+      amount_usd:l.amount_usd })));
     if(le){ setErr("Invoice created but lines failed: "+le.message); setBusy(false); return; }
     logEvent(client,{company_id:companyId,action:"invoice_generated",entity:"Invoice "+(inv.invoice_no||inv.id),detail:{period:[from,to],subtotal_usd:subtotal,total_usd:total,lines:preview.lines.length}});
     setMsg("Invoice "+(inv.invoice_no||"")+" generated — "+money(total,"USD")+"."); setPreview(null); setBusy(false); reload();
@@ -12857,17 +13086,30 @@ function Invoicing({ client, employerId, companiesNonce }){
     const { data:inv }=await client.from("invoices").select("*,companies(name)").eq("id",id).single();
     const { data:lines }=await client.from("invoice_lines").select("*").eq("invoice_id",id).order("worker_name");
     if(!inv) return;
-    const rows=(lines||[]).map(l=>`<tr><td>${escapeHtml(l.worker_name||"")}</td><td>${escapeHtml(l.position||"")}</td><td style="text-align:right">${Number(l.worked_hours).toFixed(2)}</td><td style="text-align:right">${money(l.bill_rate_usd,"USD")}</td><td style="text-align:right">${money(l.amount_usd,"USD")}</td></tr>`).join("");
+    const rows=(lines||[]).map(l=>{ const isS=l.kind==="session";
+      const qty=isS?(l.sessions_count==null?"":l.sessions_count):Number(l.worked_hours).toFixed(2);
+      const rate=money(isS?l.session_rate_usd:l.bill_rate_usd,"USD");
+      return `<tr><td>${escapeHtml(l.worker_name||"")}</td><td>${escapeHtml(l.position||"")}</td><td>${isS?"Session":"Hourly"}</td><td style="text-align:right">${qty}</td><td style="text-align:right">${rate}</td><td style="text-align:right">${money(l.amount_usd,"USD")}</td></tr>`; }).join("");
     const html=`<html><head><title>Invoice ${escapeHtml(inv.invoice_no||"")}</title><style>body{font-family:Arial,sans-serif;color:#1a1d21;margin:40px;font-size:13px}h1{color:#1F3A68}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}th{font-size:11px;text-transform:uppercase;color:#666}tfoot td{font-weight:700;border-top:2px solid #1F3A68}</style></head><body>`+
       `<h1>INVOICE</h1><div><b>From:</b> Aaron Anderson E.H.S. LLC</div><div><b>Bill to:</b> ${escapeHtml(inv.companies?.name||"")}</div>`+
       `<div style="margin-top:6px"><b>Invoice #:</b> ${escapeHtml(inv.invoice_no||"")} &nbsp; <b>Period:</b> ${escapeHtml(inv.period_start)} → ${escapeHtml(inv.period_end)} &nbsp; <b>Status:</b> ${escapeHtml(inv.status)}</div>`+
-      `<table><thead><tr><th>Contractor</th><th>Position</th><th>Hours</th><th>Rate (USD/hr)</th><th>Amount</th></tr></thead><tbody>${rows}</tbody>`+
-      `<tfoot>${Number(inv.markup_pct)>0?`<tr><td colspan="4" style="text-align:right">Subtotal</td><td style="text-align:right">${money(inv.subtotal_usd,"USD")}</td></tr><tr><td colspan="4" style="text-align:right">Markup ${Number(inv.markup_pct)}%</td><td style="text-align:right">${money(inv.total_usd-inv.subtotal_usd,"USD")}</td></tr>`:""}<tr><td colspan="4" style="text-align:right">Total (USD)</td><td style="text-align:right">${money(inv.total_usd,"USD")}</td></tr></tfoot></table>`+
-      `<p style="margin-top:24px;color:#666;font-size:11px">Billed for worked hours; paid time off is not billed.</p></body></html>`;
+      `<table><thead><tr><th>Contractor</th><th>Position</th><th>Type</th><th>Qty</th><th>Unit rate</th><th>Amount</th></tr></thead><tbody>${rows}</tbody>`+
+      `<tfoot>${Number(inv.markup_pct)>0?`<tr><td colspan="5" style="text-align:right">Subtotal</td><td style="text-align:right">${money(inv.subtotal_usd,"USD")}</td></tr><tr><td colspan="5" style="text-align:right">Markup ${Number(inv.markup_pct)}%</td><td style="text-align:right">${money(inv.total_usd-inv.subtotal_usd,"USD")}</td></tr>`:""}<tr><td colspan="5" style="text-align:right">Total (USD)</td><td style="text-align:right">${money(inv.total_usd,"USD")}</td></tr></tfoot></table>`+
+      `<p style="margin-top:24px;color:#666;font-size:11px">Hourly lines are billed for worked hours (paid time off is not billed); session lines are a flat fee per approved service session.</p></body></html>`;
     const wnd=window.open("","_blank"); if(wnd){ wnd.document.write(html); wnd.document.close(); wnd.focus(); setTimeout(()=>wnd.print(),300); }
   }
-  function exportCsv(){ if(!preview) return; downloadCSV(`invoice_preview_${from}_${to}.csv`,
-    [["Contractor","Position","Hours","Rate USD","Amount USD"], ...preview.lines.map(l=>[l.worker_name,l.position,l.worked_hours,l.bill_rate_usd,l.amount_usd]), ["","","","Total",preview.subtotal]]); }
+  function exportCsv(){ if(!preview) return;
+    // Footer mirrors the generated invoice exactly: Subtotal, optional Markup, and
+    // a Total that equals invoices.total_usd (so the CSV reconciles to the PDF).
+    const mk=Number(markup)||0; const total=Math.round(preview.subtotal*(1+mk/100)*100)/100;
+    const foot=[["","","","","Subtotal",preview.subtotal]];
+    if(mk>0) foot.push(["","","","",`Markup ${mk}%`,Math.round((total-preview.subtotal)*100)/100]);
+    foot.push(["","","","","Total (USD)",total]);
+    downloadCSV(`invoice_preview_${from}_${to}.csv`,
+    [["Contractor","Position","Type","Qty","Unit rate USD","Amount USD"],
+     ...preview.lines.map(l=>{ const isS=l.kind==="session";
+       return [l.worker_name, l.position, isS?"Session":"Hourly", isS?l.sessions_count:l.worked_hours, isS?l.session_rate_usd:l.bill_rate_usd, l.amount_usd]; }),
+     ...foot]); }
 
   const pill=(s)=>({draft:"#92400e",sent:"#1e40af",paid:"#166534",void:"#991b1b"}[s]||"#374151");
   return (
@@ -12891,13 +13133,15 @@ function Invoicing({ client, employerId, companiesNonce }){
       {msg && <div className="muted" style={{fontSize:13,marginTop:8}}>{msg}</div>}
       {preview && preview.lines.length>0 && <div style={{marginTop:12}}>
         <div className="table-scroll"><table>
-          <thead><tr><th>Contractor</th><th>Position</th><th>Hours</th><th>Rate (USD/hr)</th><th>Amount</th></tr></thead>
-          <tbody>{preview.lines.map(l=>(
-            <tr key={l.worker_id}><td>{l.worker_name}</td><td>{l.position||<span className="muted">—</span>}</td>
-              <td>{l.worked_hours.toFixed(2)}</td><td>{l.bill_rate_usd?money(l.bill_rate_usd,"USD"):<span style={{color:"var(--warn)"}}>not set</span>}</td>
-              <td>{money(l.amount_usd,"USD")}</td></tr>))}
+          <thead><tr><th>Contractor</th><th>Position</th><th>Type</th><th>Qty</th><th>Unit rate</th><th>Amount</th></tr></thead>
+          <tbody>{preview.lines.map(l=>{ const isS=l.kind==="session"; const rate=isS?l.session_rate_usd:l.bill_rate_usd;
+            return <tr key={`${l.worker_id}-${l.kind}`}><td>{l.worker_name}</td><td>{l.position||<span className="muted">—</span>}</td>
+              <td>{isS?"Session":"Hourly"}</td>
+              <td>{isS?l.sessions_count:l.worked_hours.toFixed(2)}</td>
+              <td>{rate?money(rate,"USD"):<span style={{color:"var(--warn)"}}>not set</span>}</td>
+              <td>{money(l.amount_usd,"USD")}</td></tr>; })}
           </tbody>
-          <tfoot><tr><td colSpan={2}><b>Total</b></td><td><b>{preview.total_hours.toFixed(2)}</b></td><td></td><td><b>{money(preview.subtotal,"USD")}</b>{Number(markup)>0?` → ${money(Math.round(preview.subtotal*(1+(Number(markup)||0)/100)*100)/100,"USD")}`:""}</td></tr></tfoot>
+          <tfoot><tr><td colSpan={3}><b>Total</b></td><td><b>{preview.total_hours.toFixed(2)}h{preview.total_sessions?` · ${preview.total_sessions} sess`:""}</b></td><td></td><td><b>{money(preview.subtotal,"USD")}</b>{Number(markup)>0?` → ${money(Math.round(preview.subtotal*(1+(Number(markup)||0)/100)*100)/100,"USD")}`:""}</td></tr></tfoot>
         </table></div>
         <div style={{display:"flex",gap:8,marginTop:8}}>
           <button className="btn" disabled={busy} onClick={generate}>{busy?"…":"Generate invoice"}</button>
@@ -13040,7 +13284,7 @@ function App() {
   // keeps you on the screen you were on instead of resetting to Contractors.
   const [tab, setTab] = useState(()=>{
     try{ const t=localStorage.getItem("eis_tab");
-      return ["overview","contractors","onboarding","documents","time","payroll","process","batches","reports","invoicing","imports","audit","configuration"].includes(t)?t:"overview";
+      return ["overview","contractors","onboarding","documents","time","payroll","process","batches","reports","invoicing","sessions","imports","audit","configuration"].includes(t)?t:"overview";
     }catch{ return "overview"; }
   });
   useEffect(()=>{ setToastTab(tab); try{ localStorage.setItem("eis_tab",tab); }catch{ /* ignore */ } },[tab]);
@@ -13242,12 +13486,12 @@ function App() {
     ["Home",    [["overview","Overview"]]],
     ["Manage Team", [["contractors","Contractors"],["onboarding","Hiring & Onboarding"],["documents","Documents"]]],
     ["Run payroll", [["time","Time & Approval"],["payroll","Calculate"],["process","Process and Pay"]]],
-    ["Review",  [["batches","Review & Recon Batches"],["reports","Reports"],["invoicing","Invoicing"],["imports","Imports"],["audit","Audit Log"]]],
+    ["Review",  [["batches","Review & Recon Batches"],["reports","Reports"],["invoicing","Invoicing"],["sessions","Service Sessions"],["imports","Imports"],["audit","Audit Log"]]],
     ["Configuration", [["configuration","Configuration"]]],
   ];
   async function go(id){ if(id===tab) return; if(unsavedDirty() && !(await confirmUnsaved())) return; setTab(id); const w=document.querySelector(".wrap"); if(w) w.scrollIntoView({block:"start"}); window.scrollTo(0,0); }
   // One icon per destination, used by the sidebar, the mobile bottom bar and the More-sheet.
-  const NAV_ICON={overview:"🏠",contractors:"👥",onboarding:"🧭",documents:"📄",time:"⏱",payroll:"🧮",process:"💸",batches:"📦",reports:"📊",invoicing:"🧾",imports:"🗂",audit:"📝",configuration:"⚙"};
+  const NAV_ICON={overview:"🏠",contractors:"👥",onboarding:"🧭",documents:"📄",time:"⏱",payroll:"🧮",process:"💸",batches:"📦",reports:"📊",invoicing:"🧾",sessions:"📋",imports:"🗂",audit:"📝",configuration:"⚙"};
   // Mobile bottom bar: 4 most-used + a "More" button (opens the full grouped sheet).
   const bottomPrimary=[["overview","Home"],["time","Time"],["payroll","Calc"],["process","Pay"]];
   const inPrimary=bottomPrimary.some(([id])=>id===tab);
@@ -13314,6 +13558,7 @@ function App() {
         {seenTabs.has("batches") && <div style={{display:tab==="batches"?"block":"none"}}><ProcessPayroll {...{client:sb.client,companyId:employerId,consolidated:false,active:tab==="batches",confirmBillingDirty,openContractor,reconcileOnly:true}} /></div>}
         {seenTabs.has("reports") && <div style={{display:tab==="reports"?"block":"none"}}><Reports {...{client:sb.client,companyId:employerId,consolidated:false}} /></div>}
         {seenTabs.has("invoicing") && <div style={{display:tab==="invoicing"?"block":"none"}}><Invoicing {...{client:sb.client,employerId,companiesNonce}} /></div>}
+        {seenTabs.has("sessions") && <div style={{display:tab==="sessions"?"block":"none"}}><SessionsApproval {...{client:sb.client,companiesNonce}} /></div>}
         {seenTabs.has("audit") && <div style={{display:tab==="audit"?"block":"none"}}><AuditLog {...{client:sb.client,companyId:employerId,consolidated:false}} /></div>}
         {seenTabs.has("onboarding") && <div style={{display:tab==="onboarding"?"block":"none"}}><OnboardingAdmin {...{client:sb.client,companyId:employerId,consolidated:false,active:tab==="onboarding",onContractorChanged:bumpRoster}} /></div>}
         {tab==="configuration" && <ErrorBoundary><Configuration {...{client:sb.client,isOwner,employerId,onCompaniesChanged:bumpCompanies}} /></ErrorBoundary>}
