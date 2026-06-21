@@ -3,7 +3,7 @@
   // Cloudflare runs `npx wrangler deploy` from this folder (Path = portal/),
   // reads this config, and serves the files here (index.html) as static assets.
   // Scoped to portal/ — does not affect the admin app's worker.
-  "name": "contractor-portal",
+  "name": "abc-work-app-provider-portal-app",
   "compatibility_date": "2025-01-01",
   "assets": { "directory": "./" }
 }
