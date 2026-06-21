@@ -12,17 +12,19 @@
     "build:check": "node tools/build-apps.mjs --check",
     "check": "npm run lint && npm run build:check",
     "check:secrets": "bash tools/check-secrets.sh",
-    "deploy": "bash tools/deploy.sh",
+    "deploy": "wrangler deploy",
     "deploy:frontend": "bash tools/deploy.sh --frontend",
     "deploy:functions": "bash tools/deploy.sh --functions",
     "docs": "bash tools/gen-changelog.sh",
-    "hooks:install": "bash tools/install-hooks.sh"
+    "hooks:install": "bash tools/install-hooks.sh",
+    "preview": "wrangler dev"
   },
   "devDependencies": {
     "@eslint/js": "^9.13.0",
     "esbuild": "^0.24.0",
     "eslint": "^9.13.0",
     "globals": "^15.11.0",
-    "typescript-eslint": "^8.11.0"
+    "typescript-eslint": "^8.11.0",
+    "wrangler": "^4.103.0"
   }
 }

@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "abc-work-app-payroll-wis-hubstaff-app",
+  "compatibility_date": "2026-06-21",
+  "observability": {
+    "enabled": true
+  },
+  "assets": {
+    "directory": "app"
+  },
+  "compatibility_flags": [
+    "nodejs_compat"
+  ]
+}
