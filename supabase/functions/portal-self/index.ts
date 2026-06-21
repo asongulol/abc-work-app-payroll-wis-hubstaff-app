@@ -192,10 +192,11 @@ Deno.serve(async (req) => {
 
     // ---- finish_onboarding (contractor self-complete) ----
     // Lets the contractor finish onboarding once Stage 1 + Stage 2 are done and
-    // every REQUIRED document is approved (optional docs never block — they're
-    // reminded at login instead). Covers the case where the config has NO
-    // required docs, so HR review never fires the completion. Mirrors
-    // portal-review.reEvalStage3 exactly; completed_at is monotonic.
+    // every REQUIRED document is cleared — approved, waived, or deferred
+    // (optional docs never block — they're reminded at login instead). Covers
+    // the case where the config has NO required docs, so HR review never fires
+    // the completion. Mirrors portal-review.reEvalStage3 exactly; completed_at
+    // is monotonic.
     if (action === "finish_onboarding") {
       const opRes = await fetch(`${SB}/rest/v1/onboarding_progress?worker_id=eq.${worker_id}&select=stage1_complete,stage2_complete,completed_at`, { headers: svc });
       const op = (await opRes.json())?.[0];
@@ -211,16 +212,25 @@ Deno.serve(async (req) => {
         : [{ kind: "resume" }, { kind: "diploma" }, { kind: "nbi_clearance" }, { kind: "gov_id", sides: ["front", "back"] }];
       const reqDocs = cfgDocs.filter((d: any) => d.required !== false);
 
-      // approved evidence (honor per-side completion for sided kinds)
-      const apRes = await fetch(`${SB}/rest/v1/documents?worker_id=eq.${worker_id}&review_status=eq.approved&select=id,kind,side,storage_path`, { headers: svc });
+      // cleared evidence — mirror portal-review.reEvalStage3 EXACTLY: a required
+      // doc is satisfied when it is approved (each configured side, for sided
+      // kinds) OR waived OR deferred (waive/defer clear the whole-kind
+      // requirement; the contractor isn't blocked on it). Counting only
+      // 'approved' here previously diverged from HR's reEvalStage3, leaving a
+      // contractor whose last required doc was waived/deferred unable to
+      // self-finish even though HR considered onboarding complete.
+      const apRes = await fetch(`${SB}/rest/v1/documents?worker_id=eq.${worker_id}&review_status=in.(approved,waived,deferred)&select=id,kind,side,storage_path,review_status`, { headers: svc });
       const apRows = (await apRes.json()) || [];
       const evidence: Record<string, Set<string>> = {};
       const sidesSeen: Record<string, Set<string>> = {};
+      const cleared: Record<string, boolean> = {};
       for (const r of apRows) {
+        if (r.review_status === "waived" || r.review_status === "deferred") { cleared[r.kind] = true; continue; }
         (evidence[r.kind] ||= new Set()).add(r.storage_path || r.id);
         if (r.side) (sidesSeen[r.kind] ||= new Set()).add(r.side);
       }
       const stage3_complete = reqDocs.every((d: any) => {
+        if (cleared[d.kind]) return true;
         if (Array.isArray(d.sides) && d.sides.length) {
           const have = sidesSeen[d.kind] || new Set<string>();
           return d.sides.every((s: string) => have.has(s));
