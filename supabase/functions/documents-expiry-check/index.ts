@@ -36,6 +36,13 @@ const cors = {
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 }
+// HTML-escape contractor-supplied values (worker names, document titles) before
+// they go into the digest email — a contractor could otherwise name a document
+// with markup and inject it into the admin's inbox.
+function esc(x: unknown): string {
+  return String(x ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
+}
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -142,8 +149,8 @@ Deno.serve(async (req) => {
 
     if (RESEND && TO && FROM) {
       const line = (e: any) =>
-        `<li><b>${e.worker}</b>${e.company ? ` (${e.company})` : ""} — ${e.kind}` +
-        `${e.title ? ` “${e.title}”` : ""}: ${e.days < 0 ? `overdue ${Math.abs(e.days)}d` : `in ${e.days}d`}` +
+        `<li><b>${esc(e.worker)}</b>${e.company ? ` (${esc(e.company)})` : ""} — ${esc(e.kind)}` +
+        `${e.title ? ` “${esc(e.title)}”` : ""}: ${e.days < 0 ? `overdue ${Math.abs(e.days)}d` : `in ${e.days}d`}` +
         ` (expires ${e.expires_on})</li>`;
       const html =
         `<h2>Document expiry reminder</h2>` +
