@@ -37,7 +37,7 @@ added="$(git diff --cached --no-color -U0 -- . ':(exclude)tools/check-secrets.sh
 # Patterns: provider-specific + generic high-entropy assignments.
 patterns=(
   'eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}'          # JWT (Supabase anon/service-role)
-  'service_role'                                         # service-role key references with values nearby
+  'service[_-]?role[_a-z]*["'\'']?[[:space:]]*[:=][[:space:]]*["'\'']?[A-Za-z0-9._-]{20,}'  # service-role key VALUE in an assignment (not the bare role name in GRANTs / the SUPABASE_SERVICE_ROLE_KEY env-var name / prose). Real keys are JWTs — also caught by the eyJ pattern above.
   'sk-[A-Za-z0-9]{20,}'                                 # OpenAI/Anthropic-style keys
   'sk_live_[A-Za-z0-9]{20,}'                            # Stripe-style live keys
   '(WISE|HUBSTAFF)[A-Z_]*(TOKEN|KEY|SECRET)\s*[:=]\s*[A-Za-z0-9._-]{12,}'
