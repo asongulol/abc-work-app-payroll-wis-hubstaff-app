@@ -21,3 +21,10 @@ tools/.modal-width-repro.html
 tools/.gallery.*
 tools/.redesign-*.png
 tools/.shot.mjs
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
