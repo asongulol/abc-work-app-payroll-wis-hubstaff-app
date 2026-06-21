@@ -8256,7 +8256,7 @@ function WiseReconciliation({client,companyId,consolidated}){
     try{
       // No pay_period_id — scans all unmatched Wise payments.
       const { data, error }=await client.functions.invoke("wise-payouts",{
-        body:{ action:"match", window_days:14 } });
+        body:{ action:"match" } });
       if(error) throw new Error(error.message||"Edge function error");
       if(data?.error) throw new Error(data.error);
       setResult(data);
@@ -9792,7 +9792,7 @@ function ProcessPayroll({client,companyId,consolidated,active,confirmBillingDirt
     setBusy(true); setMsg(""); setMatchResult(null);
     try{
       const { data, error }=await client.functions.invoke("wise-payouts",{
-        body:{ action:"match", pay_period_id:periodId, window_days:14, refresh:!!refresh } });
+        body:{ action:"match", pay_period_id:periodId, refresh:!!refresh } });
       if(error) throw new Error(error.message||"Edge function error");
       if(data?.error) throw new Error(data.error);
       setMatchResult(data);
